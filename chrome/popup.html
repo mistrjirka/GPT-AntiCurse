@@ -1,26 +1,154 @@
 <!doctype html>
+<html lang="en">
+<head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GPT AntiCurse</title>
 <style>
-  body { font: 13px system-ui,sans-serif; width: 330px; margin: 14px; }
-  h1 { font-size: 15px; margin: 0 0 12px; }
-  label { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
-  .mode { display: block; padding: 8px 0; }
-  .mode label { margin: 5px 0; align-items: flex-start; }
-  input[type=number] { width: 70px; }
-  button { width: 100%; margin-top: 8px; padding: 7px; }
-  #stats { margin-top: 12px; white-space: pre-wrap; font-size: 12px; opacity: .85; }
-  .hint { font-size: 11px; opacity: .68; line-height: 1.35; }
+  :root {
+    color-scheme: dark;
+    --bg: #071116;
+    --panel: #0c1b22;
+    --panel2: #10252c;
+    --border: rgba(148,163,184,.14);
+    --text: #ecfeff;
+    --muted: #8ea4ad;
+    --teal: #2dd4bf;
+    --teal2: #5eead4;
+    --danger: #fb7185;
+  }
+  * { box-sizing: border-box; }
+  body {
+    width: 370px;
+    margin: 0;
+    background: radial-gradient(circle at 15% 0%, rgba(45,212,191,.13), transparent 38%), var(--bg);
+    color: var(--text);
+    font: 13px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  .app { padding: 16px; }
+  header { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+  .logo {
+    width:38px; height:38px; border-radius:12px; display:grid; place-items:center;
+    background: linear-gradient(145deg, #143b42, #0b242b);
+    border:1px solid rgba(94,234,212,.25); box-shadow:0 8px 24px rgba(45,212,191,.12);
+    color:var(--teal2); font-weight:900; font-size:18px;
+  }
+  .heading { flex:1; min-width:0; }
+  h1 { font-size:15px; margin:0; letter-spacing:.01em; }
+  .subtitle { color:var(--muted); font-size:11px; margin-top:1px; }
+  .status-pill { padding:4px 8px; border-radius:999px; font-size:10px; font-weight:800; border:1px solid var(--border); color:var(--muted); }
+  .status-pill.active { color:var(--teal2); border-color:rgba(45,212,191,.25); background:rgba(45,212,191,.08); }
+  .status-pill.error { color:#fecdd3; border-color:rgba(251,113,133,.3); background:rgba(251,113,133,.08); }
+
+  .card { background:linear-gradient(160deg, rgba(16,37,44,.96), rgba(9,24,30,.96)); border:1px solid var(--border); border-radius:15px; padding:13px; box-shadow:0 8px 26px rgba(0,0,0,.16); }
+  .eyebrow { color:var(--muted); font-size:9px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
+  .hero-row { display:flex; align-items:flex-end; justify-content:space-between; gap:10px; margin-top:5px; }
+  .big { font-size:38px; line-height:1; font-weight:850; letter-spacing:-.04em; }
+  .big span:last-child { font-size:15px; color:var(--teal2); margin-left:2px; }
+  .big-label { color:var(--muted); font-size:11px; margin-top:4px; }
+  .node-flow { text-align:right; font-size:11px; color:var(--muted); }
+  .node-flow strong { display:block; color:var(--text); font-size:13px; }
+  .bar { height:7px; background:rgba(148,163,184,.12); border-radius:999px; overflow:hidden; margin:11px 0 10px; }
+  .bar > div { width:0; height:100%; border-radius:inherit; background:linear-gradient(90deg, var(--teal), #22c55e); transition:width .25s ease; }
+  .metric-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .metric { padding:9px 10px; border-radius:11px; background:rgba(2,12,17,.35); border:1px solid rgba(148,163,184,.09); }
+  .metric b { display:block; font-size:17px; letter-spacing:-.02em; }
+  .metric span { color:var(--muted); font-size:10px; }
+  .detail { display:flex; justify-content:space-between; margin-top:8px; color:var(--muted); font-size:10px; }
+  .detail strong { color:#c8fdf6; }
+
+  .section { margin-top:12px; }
+  .section-title { display:flex; justify-content:space-between; align-items:center; margin:0 2px 6px; color:var(--muted); font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+  .lifetime { display:grid; grid-template-columns:1fr 1fr 1fr; gap:7px; }
+  .tiny-stat { background:rgba(12,27,34,.8); border:1px solid var(--border); border-radius:11px; padding:9px; min-width:0; }
+  .tiny-stat b { display:block; font-size:14px; overflow:hidden; text-overflow:ellipsis; }
+  .tiny-stat span { color:var(--muted); font-size:9px; }
+  .reset { appearance:none; border:0; background:none; color:#6f8b95; font:inherit; font-size:9px; cursor:pointer; padding:0; }
+  .reset:hover { color:var(--teal2); }
+
+  .toggle-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .toggle-copy b { display:block; font-size:12px; }
+  .toggle-copy span { color:var(--muted); font-size:10px; }
+  .switch { position:relative; width:38px; height:22px; flex:0 0 38px; }
+  .switch input { opacity:0; width:0; height:0; }
+  .slider { position:absolute; inset:0; border-radius:999px; background:#22363d; cursor:pointer; transition:.18s; }
+  .slider:before { content:""; position:absolute; width:16px; height:16px; left:3px; top:3px; border-radius:50%; background:white; transition:.18s; }
+  .switch input:checked + .slider { background:#0f766e; box-shadow:0 0 0 1px rgba(45,212,191,.25); }
+  .switch input:checked + .slider:before { transform:translateX(16px); }
+
+  .modes { display:grid; gap:7px; margin-top:10px; }
+  .mode { display:flex; gap:9px; align-items:flex-start; padding:9px; border:1px solid var(--border); border-radius:11px; cursor:pointer; background:rgba(4,15,20,.26); }
+  .mode:has(input:checked) { border-color:rgba(45,212,191,.28); background:rgba(45,212,191,.055); }
+  .mode input { margin-top:2px; accent-color:var(--teal); }
+  .mode b { font-size:11px; }
+  .mode small { display:block; color:var(--muted); font-size:9.5px; margin-top:1px; }
+  .limit-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:8px; color:var(--muted); font-size:10px; }
+  input[type=number] { width:70px; border:1px solid var(--border); border-radius:8px; background:#07171d; color:var(--text); padding:5px 7px; }
+  input[type=number]:disabled { opacity:.4; }
+
+  .buttons { display:grid; grid-template-columns:1.35fr 1fr; gap:8px; margin-top:11px; }
+  button.action { border:1px solid var(--border); border-radius:10px; padding:8px 9px; cursor:pointer; font:700 10px system-ui,sans-serif; }
+  #reload { color:#052e2b; background:linear-gradient(135deg, #5eead4, #2dd4bf); border-color:transparent; }
+  #full { color:#cbd5e1; background:#101f25; }
+
+  details { margin-top:12px; border-top:1px solid var(--border); padding-top:10px; }
+  summary { cursor:pointer; color:#b9d1d8; font-size:10px; font-weight:750; }
+  .how { color:var(--muted); font-size:10px; margin:7px 0 0; }
+  .how strong { color:#d8fffa; }
+  footer { color:#58727b; text-align:center; font-size:9px; margin-top:11px; }
 </style>
-<h1>GPT AntiCurse</h1>
-<label><input id="enabled" type="checkbox"> Enable conversation guarding</label>
-<div class="mode">
-  <label><input type="radio" name="mode" value="visible-history"> <span><b>All visible history</b><br><span class="hint">Keep every non-hidden user/assistant message; remove tool/system/hidden state nodes. Should allow scrolling to the top.</span></span></label>
-  <label><input type="radio" name="mode" value="recent"> <span><b>Recent safe window</b><br><span class="hint">Keep the newest display messages plus their interstitial tool nodes.</span></span></label>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">A↯</div>
+    <div class="heading"><h1>GPT AntiCurse</h1><div class="subtitle">Long-chat performance guard</div></div>
+    <div id="statusPill" class="status-pill">Waiting</div>
+  </header>
+
+  <section class="card">
+    <div class="eyebrow">Last conversation load</div>
+    <div class="hero-row">
+      <div><div class="big"><span id="savedPct">—</span><span>%</span></div><div class="big-label">conversation graph trimmed</div></div>
+      <div class="node-flow"><strong id="nodeFlow">No data yet</strong><span>nodes delivered to ChatGPT</span></div>
+    </div>
+    <div class="bar"><div id="savedBar"></div></div>
+    <div class="metric-grid">
+      <div class="metric"><b id="removedNodes">—</b><span>internal nodes removed</span></div>
+      <div class="metric"><b id="visibleKept">—</b><span>visible turns preserved</span></div>
+    </div>
+    <div class="detail"><span>Response bytes removed</span><strong id="bytesSaved">—</strong></div>
+    <div class="detail"><span>AntiCurse processing</span><strong id="processing">—</strong></div>
+  </section>
+
+  <section class="section">
+    <div class="section-title"><span>Since install / reset</span><button id="resetTotals" class="reset">Reset counters</button></div>
+    <div class="lifetime">
+      <div class="tiny-stat"><b id="totalRemoved">0</b><span>nodes skipped</span></div>
+      <div class="tiny-stat"><b id="totalResponses">0</b><span>loads optimized</span></div>
+      <div class="tiny-stat"><b id="totalBytes">0 B</b><span>response data removed</span></div>
+    </div>
+  </section>
+
+  <section class="section card">
+    <div class="toggle-row">
+      <div class="toggle-copy"><b>Conversation guarding</b><span>Trim heavy internal state before ChatGPT processes it.</span></div>
+      <label class="switch"><input id="enabled" type="checkbox"><span class="slider"></span></label>
+    </div>
+    <div class="modes">
+      <label class="mode"><input type="radio" name="mode" value="visible-history"><span><b>All visible history</b><small>Keep user/assistant history; drop tool, system and explicitly hidden state.</small></span></label>
+      <label class="mode"><input type="radio" name="mode" value="recent"><span><b>Recent safe window</b><small>Keep only the newest visible turns plus the internal nodes between them.</small></span></label>
+    </div>
+    <div class="limit-row"><span>Recent visible turns</span><input id="limit" type="number" min="4" max="500" step="2"></div>
+    <div class="buttons"><button id="reload" class="action">Save & reload ChatGPT</button><button id="full" class="action">Disable & reload</button></div>
+  </section>
+
+  <details>
+    <summary>How does this make long chats faster?</summary>
+    <p class="how">A long ChatGPT chat can contain <strong>far more internal nodes than messages you actually see</strong>—tool calls, system state and hidden items. ChatGPT's page JavaScript repeatedly walks that large conversation graph. AntiCurse removes unnecessary nodes <strong>before the page receives the conversation</strong>, so those repeated walks operate on a much smaller graph. In <strong>All visible history</strong> mode, your visible user/assistant turns are preserved. Processing stays local in the browser.</p>
+  </details>
+  <footer>Counters measure graph/data removed, not an estimated CPU percentage.</footer>
 </div>
-<label>Recent display messages <input id="limit" type="number" min="4" max="500" step="2"></label>
-<div class="hint">The number only applies to Recent safe window. Tool nodes no longer consume this quota.</div>
-<button id="reload">Save & reload ChatGPT</button>
-<button id="full">Disable & reload unmodified chat</button>
-<div id="stats">No interception stats yet.</div>
 <script src="popup.js"></script>
+</body>
+</html>
