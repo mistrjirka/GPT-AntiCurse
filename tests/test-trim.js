@@ -1,6 +1,6 @@
 "use strict";
 const assert = require("assert");
-const { trimConversation, isDisplayCandidate } = require("../firefox/trim.js");
+const { trimConversation, extractVisibleHistory, isDisplayCandidate } = require("../firefox/trim.js");
 
 function node(id, parent, role, metadata = {}) {
   return { id, parent, children: [], message: role ? { author: { role }, content: { content_type: "text", parts: [id] }, metadata } : null };
@@ -31,6 +31,18 @@ function assertLinear(data) {
 {
   const src = buildToolHeavy(40, 5); const out = trimConversation(src, { mode: "recent", maxDisplayMessages: 24 });
   assert.equal(out.changed, true); assert.equal(out.stats.displayAfter, 24); assert(out.stats.mappingNodesAfter > 24); assert(out.data.mapping["tool-39-0"]); assert(!out.data.mapping["user-0"]); assertLinear(out.data);
+}
+{
+  const src = buildToolHeavy(40, 5); const out = trimConversation(src, { mode: "latest-visible", maxDisplayMessages: 24 });
+  assert.equal(out.changed, true); assert.equal(out.stats.displayBefore, 80); assert.equal(out.stats.displayAfter, 24); assert.equal(out.stats.mappingNodesAfter, 24); assert(out.data.mapping["user-28"]); assert(out.data.mapping["assistant-39"]); assert(!out.data.mapping["user-27"]); assert(!out.data.mapping["tool-39-0"]); assert(!out.data.mapping["assistant-hidden-39"]); assertLinear(out.data);
+}
+{
+  const src = buildToolHeavy(40, 5); const out = trimConversation(src, { mode: "windowed-visible", maxDisplayMessages: 16 });
+  assert.equal(out.changed, true); assert.equal(out.stats.displayAfter, 16); assert.equal(out.stats.mappingNodesAfter, 16); assert(!out.data.mapping["tool-39-0"]); assertLinear(out.data);
+}
+{
+  const src = buildToolHeavy(40, 5); const history = extractVisibleHistory(src);
+  assert.equal(history.length, 80); assert.equal(history[0].id, "user-0"); assert.equal(history[0].role, "user"); assert.equal(history[0].text, "user-0"); assert.equal(history[history.length - 1].id, "assistant-39"); assert(!history.some((x) => x.id.startsWith("tool-"))); assert(!history.some((x) => x.id.startsWith("assistant-hidden-")));
 }
 {
   assert.equal(isDisplayCandidate(node("x", null, "assistant")), true);
