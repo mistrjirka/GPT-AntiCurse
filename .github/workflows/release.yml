@@ -30,7 +30,7 @@ jobs:
           node tests/test-trim.js
 
       - name: Build browser packages
-        run: ./scripts/build.sh
+        run: bash ./scripts/build.sh
 
       - name: Create GitHub Release if missing
         env:
