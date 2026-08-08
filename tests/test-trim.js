@@ -38,7 +38,12 @@ function assertLinear(data) {
 }
 {
   const src = buildToolHeavy(40, 5); const out = trimConversation(src, { mode: "windowed-visible", maxDisplayMessages: 16 });
-  assert.equal(out.changed, true); assert.equal(out.stats.displayAfter, 16); assert.equal(out.stats.mappingNodesAfter, 16); assert(!out.data.mapping["tool-39-0"]); assertLinear(out.data);
+  assert.equal(out.changed, true); assert.equal(out.stats.displayAfter, 16);
+  assert(out.stats.mappingNodesAfter > 16, "windowed mode must retain recent interstitial state");
+  assert(out.data.mapping["tool-39-0"], "windowed mode must keep recent tool state");
+  assert(out.data.mapping["assistant-hidden-39"], "windowed mode must keep recent hidden state");
+  assert(!out.data.mapping["user-0"], "old native visible history should be removed");
+  assertLinear(out.data);
 }
 {
   const src = buildToolHeavy(40, 5); const history = extractVisibleHistory(src);
