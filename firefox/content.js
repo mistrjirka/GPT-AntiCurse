@@ -2,6 +2,14 @@
 
 let badge;
 let hideTimer;
+let lastStats = null;
+let showGuardNotice = true;
+
+function removeBadge() {
+  clearTimeout(hideTimer);
+  if (badge) badge.remove();
+  badge = null;
+}
 
 function ensureBadge() {
   if (badge && document.documentElement.contains(badge)) return badge;
@@ -19,6 +27,11 @@ function pctRemoved(stats) {
 }
 
 function render(stats) {
+  lastStats = stats || lastStats;
+  if (!showGuardNotice) {
+    removeBadge();
+    return;
+  }
   if (!stats) return;
   const el = ensureBadge();
   el.dataset.mode = stats.mode || "unknown";
@@ -33,7 +46,7 @@ function render(stats) {
 
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
-      if (el && el.dataset.mode === "trimmed") {
+      if (el && el.dataset.mode === "trimmed" && showGuardNotice) {
         el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${saved}% trimmed</span>`;
         el.classList.add("cg-compact");
       }
@@ -45,6 +58,18 @@ function render(stats) {
     el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span>no trimming needed</span>`;
   }
 }
+
+browser.storage.local.get({ showGuardNotice: true }).then((saved) => {
+  showGuardNotice = saved.showGuardNotice !== false;
+  if (!showGuardNotice) removeBadge();
+}).catch(() => {});
+
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.showGuardNotice) return;
+  showGuardNotice = changes.showGuardNotice.newValue !== false;
+  if (showGuardNotice) render(lastStats);
+  else removeBadge();
+});
 
 browser.runtime.onMessage.addListener((message) => {
   if (message && message.type === "cg-stats") render(message.stats);
