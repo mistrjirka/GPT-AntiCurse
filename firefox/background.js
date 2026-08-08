@@ -6,11 +6,33 @@ const DEFAULT_SETTINGS = {
   maxDisplayMessages: 32
 };
 
+const EMPTY_TOTALS = Object.freeze({
+  responsesTrimmed: 0,
+  nodesRemoved: 0,
+  nodesDelivered: 0,
+  visibleTurnsKept: 0,
+  inputBytes: 0,
+  outputBytes: 0,
+  bytesRemoved: 0
+});
+
 let settings = { ...DEFAULT_SETTINGS };
+let totals = { ...EMPTY_TOTALS };
 const lastStatsByTab = new Map();
 
-browser.storage.local.get(DEFAULT_SETTINGS).then((saved) => {
+function normalizeTotals(value) {
+  const out = { ...EMPTY_TOTALS };
+  if (!value || typeof value !== "object") return out;
+  for (const key of Object.keys(out)) {
+    const n = Number(value[key]);
+    if (Number.isFinite(n) && n >= 0) out[key] = n;
+  }
+  return out;
+}
+
+browser.storage.local.get({ ...DEFAULT_SETTINGS, cgTotals: EMPTY_TOTALS }).then((saved) => {
   settings = { ...DEFAULT_SETTINGS, ...saved };
+  totals = normalizeTotals(saved.cgTotals);
 }).catch(console.error);
 
 browser.storage.onChanged.addListener((changes, area) => {
@@ -18,6 +40,7 @@ browser.storage.onChanged.addListener((changes, area) => {
   for (const key of Object.keys(DEFAULT_SETTINGS)) {
     if (changes[key]) settings[key] = changes[key].newValue;
   }
+  if (changes.cgTotals) totals = normalizeTotals(changes.cgTotals.newValue);
 });
 
 function isExactConversationDocument(urlString) {
@@ -35,14 +58,46 @@ function safeSetAction(tabId, text, title) {
   browser.action.setTitle({ tabId, title }).catch(() => {});
 }
 
-function publishStats(tabId, stats) {
+function percentRemoved(stats) {
+  const before = Number(stats.mappingNodesBefore) || 0;
+  const after = Number(stats.mappingNodesAfter) || 0;
+  return before > 0 ? Math.max(0, Math.min(100, ((before - after) / before) * 100)) : 0;
+}
+
+function recordTotals(stats) {
+  if (!stats || stats.mode !== "trimmed") return stats;
+
+  const before = Math.max(0, Number(stats.mappingNodesBefore) || 0);
+  const after = Math.max(0, Number(stats.mappingNodesAfter) || 0);
+  const removed = Math.max(0, Number(stats.discardedNodes) || (before - after));
+  const inputBytes = Math.max(0, Number(stats.originalBytes) || 0);
+  const outputBytes = Math.max(0, Number(stats.outputBytes) || 0);
+  const bytesRemoved = inputBytes && outputBytes ? Math.max(0, inputBytes - outputBytes) : 0;
+
+  totals = {
+    responsesTrimmed: totals.responsesTrimmed + 1,
+    nodesRemoved: totals.nodesRemoved + removed,
+    nodesDelivered: totals.nodesDelivered + after,
+    visibleTurnsKept: totals.visibleTurnsKept + Math.max(0, Number(stats.displayAfter) || 0),
+    inputBytes: totals.inputBytes + inputBytes,
+    outputBytes: totals.outputBytes + outputBytes,
+    bytesRemoved: totals.bytesRemoved + bytesRemoved
+  };
+  browser.storage.local.set({ cgTotals: totals }).catch(() => {});
+  return { ...stats, totals: { ...totals } };
+}
+
+function publishStats(tabId, rawStats) {
   if (tabId < 0) return;
+  const stats = recordTotals(rawStats);
   lastStatsByTab.set(tabId, stats);
+
+  const saved = Math.round(percentRemoved(stats));
   const badge = stats.mode === "trimmed"
-    ? String(stats.mappingNodesAfter)
+    ? `${saved}%`
     : stats.mode === "error" ? "ERR" : "OK";
   const title = stats.mode === "trimmed"
-    ? `GPT AntiCurse: ${stats.mappingNodesBefore} → ${stats.mappingNodesAfter} mapping nodes; ${stats.displayAfter} display candidates kept`
+    ? `GPT AntiCurse: removed ${stats.discardedNodes || (stats.mappingNodesBefore - stats.mappingNodesAfter)} of ${stats.mappingNodesBefore} mapping nodes (${saved}%); kept ${stats.displayAfter} visible turns`
     : stats.mode === "error"
       ? `GPT AntiCurse error: original response passed through (${stats.error})`
       : "GPT AntiCurse: response unchanged";
@@ -152,6 +207,13 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (message && message.type === "cg-get-stats") {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
     return Promise.resolve(lastStatsByTab.get(tabId) || null);
+  }
+  if (message && message.type === "cg-get-totals") {
+    return Promise.resolve({ ...totals });
+  }
+  if (message && message.type === "cg-reset-totals") {
+    totals = { ...EMPTY_TOTALS };
+    return browser.storage.local.set({ cgTotals: totals }).then(() => ({ ...totals }));
   }
   if (message && message.type === "cg-settings") {
     const next = {};
