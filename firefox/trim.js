@@ -95,6 +95,16 @@
     return uniqueInOrder(prefix.concat(display, chain[chain.length - 1]));
   }
 
+  function selectLatestVisible(mapping, chain, cfg) {
+    const display = chain.filter((id) => isDisplayCandidate(mapping[id]));
+    const latest = display.slice(-cfg.maxDisplayMessages);
+    // Finished conversations normally have a visible current_node. If ChatGPT leaves a
+    // technical terminal node, retain only that one extra node so continuation remains safe.
+    const currentId = chain[chain.length - 1];
+    if (currentId && !latest.includes(currentId)) latest.push(currentId);
+    return uniqueInOrder(latest);
+  }
+
   function selectRecent(mapping, chain, cfg) {
     let seenDisplay = 0;
     let cutoff = chain.length - 1;
@@ -111,6 +121,47 @@
 
     const prefix = leadingPrefix(mapping, chain.slice(0, cutoff), cfg.maxPrefixNodes);
     return uniqueInOrder(prefix.concat(chain.slice(cutoff)));
+  }
+
+  function contentToText(content) {
+    if (!content) return "";
+    if (typeof content === "string") return content;
+    if (typeof content.text === "string") return content.text;
+    if (Array.isArray(content.parts)) {
+      const out = [];
+      for (const part of content.parts) {
+        if (typeof part === "string") {
+          out.push(part);
+        } else if (part && typeof part === "object") {
+          if (typeof part.text === "string") out.push(part.text);
+          else if (typeof part.content === "string") out.push(part.content);
+          else if (part.asset_pointer || part.image_url || part.content_type === "image_asset_pointer") out.push("[Image / attachment]");
+          else if (part.content_type) out.push(`[${part.content_type}]`);
+        }
+      }
+      return out.join("\n").trim();
+    }
+    return "";
+  }
+
+  function extractVisibleHistory(data) {
+    const mapping = data && data.mapping;
+    const currentId = data && data.current_node;
+    if (!mapping || typeof mapping !== "object" || !currentId || !mapping[currentId]) return [];
+    const chain = buildActiveChain(mapping, currentId);
+    const out = [];
+    for (const id of chain) {
+      const node = mapping[id];
+      if (!isDisplayCandidate(node)) continue;
+      const message = getMessage(node);
+      out.push({
+        id,
+        role: getRole(node),
+        text: contentToText(message && message.content),
+        createTime: message && message.create_time ? message.create_time : null
+      });
+    }
+    return out;
   }
 
   function rebuildLinearMapping(data, keptChain) {
@@ -130,6 +181,9 @@
     if (Object.prototype.hasOwnProperty.call(data, "root")) {
       result.root = keptChain[0] || data.current_node;
     }
+    if (!newMapping[result.current_node] && keptChain.length) {
+      result.current_node = keptChain[keptChain.length - 1];
+    }
     return result;
   }
 
@@ -145,14 +199,19 @@
     const mappingNodeCount = Object.keys(mapping).length;
     const chain = buildActiveChain(mapping, currentId);
     const before = countActivePath(mapping, chain);
+    const isLimitedMode = cfg.mode === "recent" || cfg.mode === "latest-visible" || cfg.mode === "windowed-visible";
+
+    if (isLimitedMode) {
+      cfg.maxDisplayMessages = Math.max(4, Math.min(500, Number(cfg.maxDisplayMessages) || DEFAULTS.maxDisplayMessages));
+    }
 
     let keptChain;
     if (cfg.mode === "visible-history") {
       keptChain = selectVisibleHistory(mapping, chain, cfg);
+    } else if (cfg.mode === "latest-visible" || cfg.mode === "windowed-visible") {
+      keptChain = selectLatestVisible(mapping, chain, cfg);
     } else {
-      const limit = Math.max(4, Math.min(500, Number(cfg.maxDisplayMessages) || DEFAULTS.maxDisplayMessages));
-      cfg.maxDisplayMessages = limit;
-      if (before.displayCandidates <= limit && mappingNodeCount === chain.length) {
+      if (before.displayCandidates <= cfg.maxDisplayMessages && mappingNodeCount === chain.length) {
         return {
           changed: false,
           data,
@@ -198,6 +257,7 @@
 
   global.CGTrim = {
     trimConversation,
+    extractVisibleHistory,
     DEFAULTS,
     isDisplayCandidate,
     isExplicitlyHidden
