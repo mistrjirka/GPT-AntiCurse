@@ -24,6 +24,7 @@ jobs:
           node --check firefox/background.js
           node --check firefox/content.js
           node --check firefox/popup.js
+          node --check chrome/background.js
           node --check chrome/main.js
           node --check chrome/content.js
           node --check chrome/popup.js
