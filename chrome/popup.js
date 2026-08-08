@@ -9,20 +9,59 @@ function addModeBeforeRecent(value, title, description) {
   const label = document.createElement("label");
   label.className = "mode";
   const input = document.createElement("input");
-  input.type = "radio"; input.name = "mode"; input.value = value;
+  input.type = "radio";
+  input.name = "mode";
+  input.value = value;
   const copy = document.createElement("span");
-  const bold = document.createElement("b"); bold.textContent = title;
-  const small = document.createElement("small"); small.textContent = description;
-  copy.append(bold, small); label.append(input, copy); recent.before(label);
+  const bold = document.createElement("b");
+  bold.textContent = title;
+  const small = document.createElement("small");
+  small.textContent = description;
+  copy.append(bold, small);
+  label.append(input, copy);
+  recent.before(label);
+}
+
+function addNoticeToggle() {
+  if (document.getElementById("showNotice")) return;
+  const guardRow = document.querySelector(".toggle-row");
+  if (!guardRow) return;
+  const row = document.createElement("div");
+  row.className = "toggle-row";
+  row.style.marginTop = "9px";
+  row.style.paddingTop = "9px";
+  row.style.borderTop = "1px solid var(--border)";
+
+  const copy = document.createElement("div");
+  copy.className = "toggle-copy";
+  const title = document.createElement("b");
+  title.textContent = "Show on-page status notice";
+  const subtitle = document.createElement("span");
+  subtitle.textContent = "Show the floating AntiCurse · N% trimmed pill in ChatGPT.";
+  copy.append(title, subtitle);
+
+  const label = document.createElement("label");
+  label.className = "switch";
+  const input = document.createElement("input");
+  input.id = "showNotice";
+  input.type = "checkbox";
+  const slider = document.createElement("span");
+  slider.className = "slider";
+  label.append(input, slider);
+  row.append(copy, label);
+  guardRow.after(row);
 }
 
 addModeBeforeRecent("latest-visible", "Latest visible only", "Newest N visible user/assistant turns only; hidden/tool nodes do not consume the window.");
 addModeBeforeRecent("windowed-visible", "Auto windowed history (experimental)", "Newest N stay native; older visible turns load on scroll-up and distant injected turns unload again.");
+addNoticeToggle();
+
 const limitLabel = document.querySelector(".limit-row span");
 if (limitLabel) limitLabel.textContent = "Visible-turn window";
 const how = document.querySelector(".how");
 if (how) how.append(" Auto windowed history keeps a small native window and virtualizes older visible turns as you scroll.");
 
+const showNotice = document.getElementById("showNotice");
 const modeInputs = Array.from(document.querySelectorAll('input[name="mode"]'));
 const nf = new Intl.NumberFormat();
 
@@ -67,7 +106,8 @@ async function save() {
   await chrome.storage.local.set({
     enabled: enabled.checked,
     mode: selectedMode(),
-    maxDisplayMessages: Math.max(4, Math.min(500, Number(limit.value) || 32))
+    maxDisplayMessages: Math.max(4, Math.min(500, Number(limit.value) || 32)),
+    showGuardNotice: showNotice ? showNotice.checked : true
   });
 }
 
@@ -131,9 +171,10 @@ function renderStats(s) {
   }
 }
 
-chrome.storage.local.get({ enabled: true, mode: "visible-history", maxDisplayMessages: 32, cgTotals: EMPTY_TOTALS }).then((s) => {
+chrome.storage.local.get({ enabled: true, mode: "visible-history", maxDisplayMessages: 32, showGuardNotice: true, cgTotals: EMPTY_TOTALS }).then((s) => {
   enabled.checked = s.enabled;
   limit.value = s.maxDisplayMessages;
+  if (showNotice) showNotice.checked = s.showGuardNotice !== false;
   const selected = modeInputs.find((x) => x.value === s.mode) || modeInputs[0];
   selected.checked = true;
   updateLimitState();
@@ -151,6 +192,7 @@ document.getElementById("resetTotals").addEventListener("click", async () => {
 });
 
 enabled.addEventListener("change", save);
+if (showNotice) showNotice.addEventListener("change", save);
 limit.addEventListener("change", save);
 for (const input of modeInputs) input.addEventListener("change", () => { updateLimitState(); save(); });
 
