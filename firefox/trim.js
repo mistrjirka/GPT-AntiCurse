@@ -98,8 +98,6 @@
   function selectLatestVisible(mapping, chain, cfg) {
     const display = chain.filter((id) => isDisplayCandidate(mapping[id]));
     const latest = display.slice(-cfg.maxDisplayMessages);
-    // Finished conversations normally have a visible current_node. If ChatGPT leaves a
-    // technical terminal node, retain only that one extra node so continuation remains safe.
     const currentId = chain[chain.length - 1];
     if (currentId && !latest.includes(currentId)) latest.push(currentId);
     return uniqueInOrder(latest);
@@ -208,8 +206,12 @@
     let keptChain;
     if (cfg.mode === "visible-history") {
       keptChain = selectVisibleHistory(mapping, chain, cfg);
-    } else if (cfg.mode === "latest-visible" || cfg.mode === "windowed-visible") {
+    } else if (cfg.mode === "latest-visible") {
       keptChain = selectLatestVisible(mapping, chain, cfg);
+    } else if (cfg.mode === "windowed-visible") {
+      // Auto mode keeps recent interstitial/terminal state so tool calls and
+      // continuation/resume logic still see a coherent newest window.
+      keptChain = selectRecent(mapping, chain, cfg);
     } else {
       if (before.displayCandidates <= cfg.maxDisplayMessages && mappingNodeCount === chain.length) {
         return {
