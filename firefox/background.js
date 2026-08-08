@@ -3,7 +3,8 @@
 const DEFAULT_SETTINGS = {
   enabled: true,
   mode: "visible-history",
-  maxDisplayMessages: 32
+  maxDisplayMessages: 32,
+  showGuardNotice: true
 };
 
 const EMPTY_TOTALS = Object.freeze({
@@ -247,6 +248,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
     if (Number.isFinite(Number(message.maxDisplayMessages))) {
       next.maxDisplayMessages = Math.max(4, Math.min(500, Number(message.maxDisplayMessages)));
     }
+    if (typeof message.showGuardNotice === "boolean") next.showGuardNotice = message.showGuardNotice;
     return browser.storage.local.set(next).then(() => {
       settings = { ...settings, ...next };
       return settings;
