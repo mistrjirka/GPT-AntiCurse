@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GPT AntiCurse",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Makes very long ChatGPT conversations responsive by shrinking invisible conversation state before page JavaScript processes it.",
   "permissions": [
     "storage",
@@ -20,9 +20,15 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_start"
     }
   ],
@@ -35,7 +41,9 @@
       "id": "gpt-anticurse@mistrjirka",
       "strict_min_version": "128.0",
       "data_collection_permissions": {
-        "required": ["none"]
+        "required": [
+          "none"
+        ]
       }
     }
   }
