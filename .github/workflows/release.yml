@@ -23,10 +23,12 @@ jobs:
           python -m json.tool chrome/manifest.json >/dev/null
           node --check firefox/background.js
           node --check firefox/content.js
+          node --check firefox/windowed.js
           node --check firefox/popup.js
           node --check chrome/background.js
           node --check chrome/main.js
           node --check chrome/content.js
+          node --check chrome/windowed.js
           node --check chrome/popup.js
           node tests/test-trim.js
 
