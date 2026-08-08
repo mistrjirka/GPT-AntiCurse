@@ -1,23 +1,36 @@
-# GPT AntiCurse v0.3.0
+# GPT AntiCurse v0.4.0
 
-UI, diagnostics, and installation improvements.
+Visible-only and virtualized-history release.
 
-## New
+## New modes
 
-- Redesigned Firefox and Chromium popup with a clearer long-chat performance dashboard.
-- Shows the percentage of the conversation mapping removed on the last load.
-- Shows internal mapping nodes removed and visible user/assistant turns preserved.
-- Firefox shows the actual response-byte reduction because its stream filter sees the original response bytes directly.
-- Adds cumulative local counters for optimized loads, nodes skipped, and measurable bytes removed, with a reset button.
-- Redesigned in-page status pill with a compact `AntiCurse · N% trimmed` summary.
-- Added a plain-language **How it works** explanation in the popup and README.
-- Added detailed permanent Firefox installation instructions covering AMO installs, signed XPI installation, self-distribution signing, and temporary development installs.
+### Latest visible only
 
-## Chrome / Chromium
+- Keeps only the newest N visible user/assistant turns in ChatGPT's native conversation graph.
+- Tool, system, and explicitly-hidden nodes do not consume the N-turn quota.
+- Unlike Recent safe window, interstitial hidden/tool state is removed too.
 
-- Adds a small MV3 service worker used only to safely aggregate cumulative numeric counters across tabs.
-- Conversation interception remains in the packaged `MAIN`-world script at `document_start`.
+### Auto windowed history (experimental)
+
+- Keeps the newest N visible turns fully native in ChatGPT.
+- Extracts a lightweight local archive of older visible user/assistant turns before trimming the response.
+- Automatically loads older visible turns in batches as you scroll upward.
+- Uses a bounded sliding DOM window: when moving farther into old history, newer injected batches are unloaded; scrolling back down reloads them while unloading distant older batches.
+- Never restores tool/system/explicitly-hidden nodes to ChatGPT's React conversation state.
+- Older virtualized history is a lightweight reader, so complex widgets, attachments, artifacts, or ChatGPT-specific rich formatting may appear as simplified text/placeholders. The newest native window remains fully native.
+
+## UI
+
+- Adds a **Show on-page status notice** option.
+- The floating `AntiCurse · N% trimmed` pill can now be hidden independently without disabling the guard or popup counters.
+- The visible-turn count setting now applies to Recent safe window, Latest visible only, and Auto windowed history.
+
+## Tests and packaging
+
+- Adds transformation tests for Latest visible only and Auto windowed history.
+- Tests visible-history extraction to ensure tool and explicitly-hidden messages are excluded.
+- Release CI now syntax-checks both Firefox and Chrome virtual-history scripts before packaging.
 
 ## Privacy
 
-No telemetry or conversation content is collected. All transformation and counters remain local to the browser. Cumulative counters contain numeric totals only.
+No telemetry or conversation data is transmitted. Auto windowed history keeps its lightweight visible-message archive only locally in browser/tab state. All trimming, virtual rendering, and counters remain local.
