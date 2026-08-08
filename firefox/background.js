@@ -19,6 +19,7 @@ const EMPTY_TOTALS = Object.freeze({
 let settings = { ...DEFAULT_SETTINGS };
 let totals = { ...EMPTY_TOTALS };
 const lastStatsByTab = new Map();
+const windowHistoryByTab = new Map();
 
 function normalizeTotals(value) {
   const out = { ...EMPTY_TOTALS };
@@ -144,10 +145,30 @@ function interceptConversation(details) {
       if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
       const parsed = JSON.parse(text);
 
+      const trimMode = ["visible-history", "recent", "latest-visible", "windowed-visible"].includes(settings.mode)
+        ? settings.mode
+        : "visible-history";
+      const visibleArchive = trimMode === "windowed-visible" ? CGTrim.extractVisibleHistory(parsed) : null;
       const transformed = CGTrim.trimConversation(parsed, {
-        mode: settings.mode === "recent" ? "recent" : "visible-history",
+        mode: trimMode,
         maxDisplayMessages: Math.max(4, Math.min(500, Number(settings.maxDisplayMessages) || 32))
       });
+
+      if (trimMode === "windowed-visible" && visibleArchive) {
+        const nativeVisibleCount = transformed.stats && Number.isFinite(Number(transformed.stats.displayAfter))
+          ? Math.max(0, Number(transformed.stats.displayAfter))
+          : Math.min(visibleArchive.length, Math.max(4, Math.min(500, Number(settings.maxDisplayMessages) || 32)));
+        windowHistoryByTab.set(details.tabId, {
+          messages: visibleArchive,
+          nativeVisibleCount,
+          batchSize: Math.max(8, Math.min(32, Math.ceil(nativeVisibleCount / 2))),
+          maxRendered: Math.max(48, nativeVisibleCount * 3)
+        });
+        browser.tabs.sendMessage(details.tabId, { type: "cg-window-history", history: windowHistoryByTab.get(details.tabId) }).catch(() => {});
+      } else {
+        windowHistoryByTab.delete(details.tabId);
+        browser.tabs.sendMessage(details.tabId, { type: "cg-window-history", history: null }).catch(() => {});
+      }
 
       if (!transformed.changed) {
         writeOriginal(filter, chunks);
@@ -208,6 +229,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
     return Promise.resolve(lastStatsByTab.get(tabId) || null);
   }
+  if (message && message.type === "cg-get-window-history") {
+    const tabId = sender.tab ? sender.tab.id : message.tabId;
+    return Promise.resolve(windowHistoryByTab.get(tabId) || null);
+  }
   if (message && message.type === "cg-get-totals") {
     return Promise.resolve({ ...totals });
   }
@@ -218,7 +243,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   if (message && message.type === "cg-settings") {
     const next = {};
     if (typeof message.enabled === "boolean") next.enabled = message.enabled;
-    if (message.mode === "visible-history" || message.mode === "recent") next.mode = message.mode;
+    if (["visible-history", "recent", "latest-visible", "windowed-visible"].includes(message.mode)) next.mode = message.mode;
     if (Number.isFinite(Number(message.maxDisplayMessages))) {
       next.maxDisplayMessages = Math.max(4, Math.min(500, Number(message.maxDisplayMessages)));
     }
@@ -228,4 +253,9 @@ browser.runtime.onMessage.addListener((message, sender) => {
     });
   }
   return undefined;
+});
+
+browser.tabs.onRemoved.addListener((tabId) => {
+  lastStatsByTab.delete(tabId);
+  windowHistoryByTab.delete(tabId);
 });
