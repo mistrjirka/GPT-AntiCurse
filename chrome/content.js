@@ -16,6 +16,12 @@ function ensureBadge() {
   return badge;
 }
 
+function pctRemoved(stats) {
+  const before = Number(stats.mappingNodesBefore) || 0;
+  const after = Number(stats.mappingNodesAfter) || 0;
+  return before > 0 ? Math.round(Math.max(0, Math.min(100, ((before - after) / before) * 100))) : 0;
+}
+
 function render(stats) {
   if (!stats) return;
   const el = ensureBadge();
@@ -23,25 +29,25 @@ function render(stats) {
   el.classList.remove("cg-compact");
 
   if (stats.mode === "trimmed") {
-    const display = Number.isFinite(stats.displayBefore)
-      ? `; ${stats.displayBefore} visible → ${stats.displayAfter}`
-      : "";
-    el.textContent = `AntiCurse: ${stats.mappingNodesBefore} → ${stats.mappingNodesAfter} nodes${display} (${stats.processingMs} ms)`;
-    el.title = `Mode: ${stats.trimMode || stats.mode}\nTransport: ${stats.transport || "Chromium"}\nActive path roles: ${JSON.stringify(stats.roleCountsBefore || {})}\nExplicitly hidden: ${stats.explicitlyHiddenBefore || 0}`;
+    const saved = pctRemoved(stats);
+    const removed = Math.max(0, Number(stats.discardedNodes) || ((Number(stats.mappingNodesBefore) || 0) - (Number(stats.mappingNodesAfter) || 0)));
+    const visible = Math.max(0, Number(stats.displayAfter) || 0);
+    el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${saved}% trimmed</span><span class="cg-sep">•</span><span>${visible.toLocaleString()} visible</span>`;
+    el.title = `Removed ${removed.toLocaleString()} internal mapping nodes\n${stats.mappingNodesBefore} → ${stats.mappingNodesAfter} nodes delivered to ChatGPT\n${visible} visible user/assistant turns preserved\nFilter processing: ${stats.processingMs} ms`;
+
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      if (el && el.dataset.mode === "trimmed") {
+        el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${saved}% trimmed</span>`;
+        el.classList.add("cg-compact");
+      }
+    }, 9000);
   } else if (stats.mode === "error") {
-    el.textContent = "AntiCurse ERROR: original response passed through";
+    el.textContent = "AntiCurse error — original response kept";
     el.title = stats.error || "Unknown interception error";
   } else {
-    el.textContent = `AntiCurse: unchanged (${stats.reason || "small chat"})`;
+    el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span>no trimming needed</span>`;
   }
-
-  clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => {
-    if (el && el.dataset.mode === "trimmed") {
-      el.textContent = "AntiCurse active";
-      el.classList.add("cg-compact");
-    }
-  }, 9000);
 }
 
 function postSettings() {
@@ -70,6 +76,11 @@ window.addEventListener("message", (event) => {
   } else if (msg.type === "stats") {
     lastStats = msg.stats || null;
     render(lastStats);
+    if (lastStats && lastStats.mode === "trimmed") {
+      chrome.runtime.sendMessage({ type: "cg-record-stats", stats: lastStats }).then((totals) => {
+        if (lastStats) lastStats = { ...lastStats, totals };
+      }).catch(() => {});
+    }
   }
 });
 
