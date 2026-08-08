@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GPT AntiCurse</title>
+<style>
+  body { font: 13px system-ui,sans-serif; width: 330px; margin: 14px; }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  label { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+  .mode { display: block; padding: 8px 0; }
+  .mode label { margin: 5px 0; align-items: flex-start; }
+  input[type=number] { width: 70px; }
+  button { width: 100%; margin-top: 8px; padding: 7px; }
+  #stats { margin-top: 12px; white-space: pre-wrap; font-size: 12px; opacity: .85; }
+  .hint { font-size: 11px; opacity: .68; line-height: 1.35; }
+</style>
+<h1>GPT AntiCurse</h1>
+<label><input id="enabled" type="checkbox"> Enable conversation guarding</label>
+<div class="mode">
+  <label><input type="radio" name="mode" value="visible-history"> <span><b>All visible history</b><br><span class="hint">Keep every non-hidden user/assistant message; remove tool/system/hidden state nodes. Should allow scrolling to the top.</span></span></label>
+  <label><input type="radio" name="mode" value="recent"> <span><b>Recent safe window</b><br><span class="hint">Keep the newest display messages plus their interstitial tool nodes.</span></span></label>
+</div>
+<label>Recent display messages <input id="limit" type="number" min="4" max="500" step="2"></label>
+<div class="hint">The number only applies to Recent safe window. Tool nodes no longer consume this quota.</div>
+<button id="reload">Save & reload ChatGPT</button>
+<button id="full">Disable & reload unmodified chat</button>
+<div id="stats">No interception stats yet.</div>
+<script src="popup.js"></script>
