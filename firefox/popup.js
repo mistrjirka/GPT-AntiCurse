@@ -2,6 +2,27 @@
 
 const enabled = document.getElementById("enabled");
 const limit = document.getElementById("limit");
+
+function addModeBeforeRecent(value, title, description) {
+  const recent = document.querySelector('input[name="mode"][value="recent"]')?.closest("label.mode");
+  if (!recent || document.querySelector(`input[name="mode"][value="${value}"]`)) return;
+  const label = document.createElement("label");
+  label.className = "mode";
+  const input = document.createElement("input");
+  input.type = "radio"; input.name = "mode"; input.value = value;
+  const copy = document.createElement("span");
+  const bold = document.createElement("b"); bold.textContent = title;
+  const small = document.createElement("small"); small.textContent = description;
+  copy.append(bold, small); label.append(input, copy); recent.before(label);
+}
+
+addModeBeforeRecent("latest-visible", "Latest visible only", "Newest N visible user/assistant turns only; hidden/tool nodes do not consume the window.");
+addModeBeforeRecent("windowed-visible", "Auto windowed history (experimental)", "Newest N stay native; older visible turns load on scroll-up and distant injected turns unload again.");
+const limitLabel = document.querySelector(".limit-row span");
+if (limitLabel) limitLabel.textContent = "Visible-turn window";
+const how = document.querySelector(".how");
+if (how) how.append(" Auto windowed history keeps a small native window and virtualizes older visible turns as you scroll.");
+
 const modeInputs = Array.from(document.querySelectorAll('input[name="mode"]'));
 const nf = new Intl.NumberFormat();
 
@@ -34,7 +55,7 @@ function selectedMode() {
 }
 
 function updateLimitState() {
-  limit.disabled = selectedMode() !== "recent";
+  limit.disabled = selectedMode() === "visible-history";
 }
 
 async function currentTab() {
