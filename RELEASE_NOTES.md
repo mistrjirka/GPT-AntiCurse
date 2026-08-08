@@ -1,22 +1,23 @@
-# GPT AntiCurse v0.2.0
+# GPT AntiCurse v0.3.0
 
-First public prototype release.
+UI, diagnostics, and installation improvements.
 
-## Firefox
+## New
 
-- Uses Firefox `webRequest.filterResponseData()` to reduce the conversation JSON before ChatGPT page JavaScript receives it.
-- Default **All visible history** mode keeps non-hidden user/assistant turns while removing the bulk of tool/system/hidden state nodes.
-- **Recent safe window** is available as a conservative fallback.
-- Popup diagnostics show mapping-node reduction, visible-message counts, roles, hidden nodes and processing time.
+- Redesigned Firefox and Chromium popup with a clearer long-chat performance dashboard.
+- Shows the percentage of the conversation mapping removed on the last load.
+- Shows internal mapping nodes removed and visible user/assistant turns preserved.
+- Firefox shows the actual response-byte reduction because its stream filter sees the original response bytes directly.
+- Adds cumulative local counters for optimized loads, nodes skipped, and measurable bytes removed, with a reset button.
+- Redesigned in-page status pill with a compact `AntiCurse · N% trimmed` summary.
+- Added a plain-language **How it works** explanation in the popup and README.
+- Added detailed permanent Firefox installation instructions covering AMO installs, signed XPI installation, self-distribution signing, and temporary development installs.
 
 ## Chrome / Chromium
 
-- Uses the same graph-reduction algorithm.
-- Because normal Chrome Manifest V3 extensions do not have Firefox's response-body `filterResponseData()` API and cannot normally use blocking `webRequest`, the Chromium build runs at `document_start` in the page's `MAIN` world and intercepts the native `Response.json()` / `Response.text()` decode boundary for the exact ChatGPT conversation endpoint.
-- This is less privileged and may be less robust than the Firefox build if ChatGPT changes its networking implementation.
+- Adds a small MV3 service worker used only to safely aggregate cumulative numeric counters across tabs.
+- Conversation interception remains in the packaged `MAIN`-world script at `document_start`.
 
-## Measured motivation
+## Privacy
 
-On the supplied Firefox profiles, reducing a long conversation from roughly 4,500 mapping nodes to a tiny active graph reduced the pathological recursive JavaScript traversal from the dominant CPU cost to a small fraction of CPU time. v0.2 then changed the policy to preserve all actual visible user/assistant history while dropping invisible state.
-
-This extension modifies only the response delivered to the local browser. It does not modify the server-side conversation.
+No telemetry or conversation content is collected. All transformation and counters remain local to the browser. Cumulative counters contain numeric totals only.
