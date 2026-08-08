@@ -22,10 +22,14 @@
     window.postMessage({ channel: CHANNEL, type: "stats", stats }, location.origin);
   }
 
+  function publishHistory(history) {
+    window.postMessage({ channel: CHANNEL, type: "history", history }, location.origin);
+  }
+
   function applySettings(next) {
     if (!next || typeof next !== "object") return;
     if (typeof next.enabled === "boolean") settings.enabled = next.enabled;
-    if (next.mode === "visible-history" || next.mode === "recent") settings.mode = next.mode;
+    if (["visible-history", "recent", "latest-visible", "windowed-visible"].includes(next.mode)) settings.mode = next.mode;
     if (Number.isFinite(Number(next.maxDisplayMessages))) {
       settings.maxDisplayMessages = Math.max(4, Math.min(500, Number(next.maxDisplayMessages)));
     }
@@ -40,10 +44,28 @@
 
   function transformParsed(data, originalBytes) {
     const started = performance.now();
+    const trimMode = ["visible-history", "recent", "latest-visible", "windowed-visible"].includes(settings.mode)
+      ? settings.mode
+      : "visible-history";
+    const visibleArchive = trimMode === "windowed-visible" ? CGTrim.extractVisibleHistory(data) : null;
     const transformed = CGTrim.trimConversation(data, {
-      mode: settings.mode === "recent" ? "recent" : "visible-history",
+      mode: trimMode,
       maxDisplayMessages: settings.maxDisplayMessages
     });
+
+    if (trimMode === "windowed-visible" && visibleArchive) {
+      const nativeVisibleCount = transformed.stats && Number.isFinite(Number(transformed.stats.displayAfter))
+        ? Math.max(0, Number(transformed.stats.displayAfter))
+        : Math.min(visibleArchive.length, settings.maxDisplayMessages);
+      publishHistory({
+        messages: visibleArchive,
+        nativeVisibleCount,
+        batchSize: Math.max(8, Math.min(32, Math.ceil(nativeVisibleCount / 2))),
+        maxRendered: Math.max(48, nativeVisibleCount * 3)
+      });
+    } else {
+      publishHistory(null);
+    }
 
     if (!transformed.changed) {
       if (transformed.reason !== "unsupported-shape") {
@@ -72,6 +94,10 @@
     return { data: transformed.data, transformed: true };
   }
 
+  // Chrome MV3 does not provide Firefox's filterResponseData body filter to
+  // normal extensions. Intercept the native Response decoding boundary instead.
+  // This leaves fetch/XHR ownership untouched and changes only the parsed result
+  // for the exact ChatGPT conversation-document endpoint.
   const nativeJson = Response.prototype.json;
   const nativeText = Response.prototype.text;
 
@@ -117,6 +143,7 @@
     }
   });
 
+  // The isolated content script owns extension storage and answers this request.
   function requestSettings() {
     window.postMessage({ channel: CHANNEL, type: "settings-request" }, location.origin);
   }
