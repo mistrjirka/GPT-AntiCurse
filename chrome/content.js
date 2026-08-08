@@ -1,11 +1,17 @@
 "use strict";
 
 const CHANNEL = "__gpt_anticurse_v1__";
-const DEFAULT_SETTINGS = { enabled: true, mode: "visible-history", maxDisplayMessages: 32 };
+const DEFAULT_SETTINGS = { enabled: true, mode: "visible-history", maxDisplayMessages: 32, showGuardNotice: true };
 let currentSettings = { ...DEFAULT_SETTINGS };
 let lastStats = null;
 let badge;
 let hideTimer;
+
+function removeBadge() {
+  clearTimeout(hideTimer);
+  if (badge) badge.remove();
+  badge = null;
+}
 
 function ensureBadge() {
   if (badge && document.documentElement.contains(badge)) return badge;
@@ -23,6 +29,11 @@ function pctRemoved(stats) {
 }
 
 function render(stats) {
+  lastStats = stats || lastStats;
+  if (!currentSettings.showGuardNotice) {
+    removeBadge();
+    return;
+  }
   if (!stats) return;
   const el = ensureBadge();
   el.dataset.mode = stats.mode || "unknown";
@@ -37,7 +48,7 @@ function render(stats) {
 
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
-      if (el && el.dataset.mode === "trimmed") {
+      if (el && el.dataset.mode === "trimmed" && currentSettings.showGuardNotice) {
         el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${saved}% trimmed</span>`;
         el.classList.add("cg-compact");
       }
@@ -57,6 +68,7 @@ function postSettings() {
 chrome.storage.local.get(DEFAULT_SETTINGS).then((saved) => {
   currentSettings = { ...DEFAULT_SETTINGS, ...saved };
   postSettings();
+  if (!currentSettings.showGuardNotice) removeBadge();
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -65,6 +77,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (changes[key]) currentSettings[key] = changes[key].newValue;
   }
   postSettings();
+  if (currentSettings.showGuardNotice) render(lastStats);
+  else removeBadge();
 });
 
 window.addEventListener("message", (event) => {
