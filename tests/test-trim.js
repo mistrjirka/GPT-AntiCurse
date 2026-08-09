@@ -57,8 +57,13 @@ function buildToolHeavyConversation(turns = 40, toolsPerTurn = 5) {
     parent = assistantId;
   }
 
-  mapping["branch-old"] = makeNode("branch-old", "assistant-10", "assistant");
-  mapping["assistant-10"].children.push("branch-old");
+  if (turns > 11) {
+    mapping["branch-old"] = makeNode("branch-old", "assistant-10", "assistant");
+    mapping["assistant-10"].children.push("branch-old");
+  } else {
+    mapping["branch-old"] = makeNode("branch-old", parent, "assistant");
+    mapping[parent].children.push("branch-old");
+  }
 
   return {
     mapping,
@@ -118,6 +123,22 @@ function testRecentSafeWindow() {
   assert(result.stats.mappingNodesAfter > 24);
   assert(result.data.mapping["tool-39-0"]);
   assert(!result.data.mapping["user-0"]);
+  assertLinearMapping(result.data);
+}
+
+function testRecentModeBelowLimitKeepsWholeActiveChain() {
+  const source = buildToolHeavyConversation(3, 2);
+  const result = trimConversation(source, {
+    mode: "recent",
+    maxDisplayMessages: 20
+  });
+
+  assert.equal(result.changed, true, "off-branch state still needs pruning");
+  assert.equal(result.stats.displayAfter, 6);
+  assert(result.data.mapping["user-0"]);
+  assert(result.data.mapping["tool-0-0"]);
+  assert(result.data.mapping["assistant-2"]);
+  assert(!result.data.mapping["branch-old"]);
   assertLinearMapping(result.data);
 }
 
@@ -185,6 +206,7 @@ function testDisplayCandidateRules() {
 const tests = [
   testVisibleHistoryMode,
   testRecentSafeWindow,
+  testRecentModeBelowLimitKeepsWholeActiveChain,
   testLatestVisibleOnly,
   testWindowedModeKeepsRecentInternalState,
   testVisibleHistoryArchive,
