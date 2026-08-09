@@ -1,30 +1,37 @@
-# GPT AntiCurse v0.4.1
+# GPT AntiCurse v0.4.2
 
-Crash-safety hotfix for **Auto windowed history**.
+History paging, auto-scroll detection, and source-reviewability update.
 
-## Fixed
+## History loading
 
-- The v0.4.0 auto-history renderer inserted and removed extension elements directly inside ChatGPT's React-managed conversation container. v0.4.1 removes that design completely.
-- Older virtual history now renders in a separate extension-owned **Shadow DOM overlay outside ChatGPT's React conversation subtree**.
-- Auto windowed mode now preserves the recent internal/tool/hidden nodes around the newest visible window instead of stripping them all. This keeps recent continuation, tool, and resume state coherent while still removing old graph state.
-- Older visible history remains bounded: only a limited number of lightweight archived turns are rendered at once, with older/newer batches swapped as the user scrolls.
+- Auto windowed history now targets ChatGPT's explicit `data-scroll-root` element instead of relying only on ancestor overflow detection.
+- Reaching the top while scrolling upward opens the older-history reader automatically.
+- A further upward wheel gesture at `scrollTop = 0` is handled explicitly because no additional native `scroll` event is generated at that point.
+- **Load previous N** is now available as a manual fallback in every limited-history mode.
+- Latest visible only and Recent safe window now also keep the lightweight local visible-message archive required by manual paging.
+- The older-history reader has its own **Load previous N** button and continues to auto-page near its top.
 
-## Why
+## UI
 
-The Firefox crash capture showed a clear regression relative to the earlier working guard profile: recursive conversation traversal increased substantially, nesting became deeper, and `sendResumeRequest` became a significant hot path. Directly mutating React-owned children was also an unsafe integration point.
+- Replaced the dashboard-style popup with a smaller, more minimal control panel.
+- Common controls and the main graph-reduction number stay visible.
+- Detailed counters moved behind a collapsed **Details** section.
+- Popup CSS is now a separate source file instead of a large inline style block.
 
-The hotfix therefore isolates all extension-rendered history from React and uses the compatibility-oriented recent graph window for the native ChatGPT state.
+## Graph logic fix
 
-## Other v0.4 features retained
+- Fixed the recent-window cutoff when a conversation contains fewer than N visible turns but still has off-branch nodes. The old implementation could choose the final node as the cutoff; it now correctly keeps the entire active chain while pruning the off-branch state.
+- Added a regression test for this case.
 
-- Latest visible only.
-- Auto windowed history, now using the isolated reader.
-- Recent safe window.
-- All visible history.
-- Configurable visible-turn window.
-- Optional on-page `AntiCurse · N% trimmed` notice.
-- Local graph/data savings counters.
+## Source reviewability
+
+- Split history rendering into `history-overlay.js` and scroll detection/control into `windowed.js`.
+- Refactored the Firefox response interceptor and Chromium response interceptor into small named helpers.
+- Refactored the pure graph transformation code so selection, cutoff calculation, rebuilding, and statistics are separate functions.
+- Formatted the test suite into named tests.
+- Added `REVIEWING.md` with the runtime flow, source map, security/privacy properties, and validation process.
+- Release CI now syntax-checks every shipped JavaScript file, verifies shared Firefox/Chromium modules are identical, rejects `eval`/`Function` dynamic execution, and runs graph regression tests before packaging.
 
 ## Privacy
 
-No telemetry or conversation data is transmitted. Trimming, virtual history, and counters remain local to the browser.
+No telemetry or conversation data is transmitted. Trimming, older-history archives, paging, and counters remain local to the browser.
