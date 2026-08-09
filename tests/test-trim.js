@@ -1,58 +1,195 @@
 "use strict";
-const assert = require("assert");
-const { trimConversation, extractVisibleHistory, isDisplayCandidate } = require("../firefox/trim.js");
 
-function node(id, parent, role, metadata = {}) {
-  return { id, parent, children: [], message: role ? { author: { role }, content: { content_type: "text", parts: [id] }, metadata } : null };
+const assert = require("assert");
+const {
+  trimConversation,
+  extractVisibleHistory,
+  isDisplayCandidate
+} = require("../firefox/trim.js");
+
+function makeNode(id, parent, role, metadata = {}) {
+  return {
+    id,
+    parent,
+    children: [],
+    message: role
+      ? {
+          author: { role },
+          content: { content_type: "text", parts: [id] },
+          metadata
+        }
+      : null
+  };
 }
-function link(mapping, parent, child) { mapping[child].parent = parent; mapping[parent].children.push(child); }
-function buildToolHeavy(turns = 40, toolsPerTurn = 5) {
-  const mapping = { root0: node("root0", null, null) };
+
+function link(mapping, parent, child) {
+  mapping[child].parent = parent;
+  mapping[parent].children.push(child);
+}
+
+function buildToolHeavyConversation(turns = 40, toolsPerTurn = 5) {
+  const mapping = { root0: makeNode("root0", null, null) };
   let parent = "root0";
-  for (let i = 0; i < turns; i++) {
-    const user = `user-${i}`; mapping[user] = node(user, parent, "user"); link(mapping, parent, user); parent = user;
-    for (let j = 0; j < toolsPerTurn; j++) { const tool = `tool-${i}-${j}`; mapping[tool] = node(tool, parent, "tool"); link(mapping, parent, tool); parent = tool; }
-    const hidden = `assistant-hidden-${i}`; mapping[hidden] = node(hidden, parent, "assistant", { is_visually_hidden_from_conversation: true }); link(mapping, parent, hidden); parent = hidden;
-    const assistant = `assistant-${i}`; mapping[assistant] = node(assistant, parent, "assistant"); link(mapping, parent, assistant); parent = assistant;
+
+  for (let turn = 0; turn < turns; turn++) {
+    const userId = `user-${turn}`;
+    mapping[userId] = makeNode(userId, parent, "user");
+    link(mapping, parent, userId);
+    parent = userId;
+
+    for (let tool = 0; tool < toolsPerTurn; tool++) {
+      const toolId = `tool-${turn}-${tool}`;
+      mapping[toolId] = makeNode(toolId, parent, "tool");
+      link(mapping, parent, toolId);
+      parent = toolId;
+    }
+
+    const hiddenId = `assistant-hidden-${turn}`;
+    mapping[hiddenId] = makeNode(hiddenId, parent, "assistant", {
+      is_visually_hidden_from_conversation: true
+    });
+    link(mapping, parent, hiddenId);
+    parent = hiddenId;
+
+    const assistantId = `assistant-${turn}`;
+    mapping[assistantId] = makeNode(assistantId, parent, "assistant");
+    link(mapping, parent, assistantId);
+    parent = assistantId;
   }
-  mapping["branch-old"] = node("branch-old", "assistant-10", "assistant");
+
+  mapping["branch-old"] = makeNode("branch-old", "assistant-10", "assistant");
   mapping["assistant-10"].children.push("branch-old");
-  return { mapping, current_node: parent, root: "root0", title: "mock" };
+
+  return {
+    mapping,
+    current_node: parent,
+    root: "root0",
+    title: "mock"
+  };
 }
-function assertLinear(data) {
-  let id = data.root, prev = null; const seen = new Set();
-  while (id) { assert(!seen.has(id)); seen.add(id); const n = data.mapping[id]; assert(n); assert.equal(n.parent, prev); assert(n.children.length <= 1); prev = id; id = n.children[0] || null; }
-  assert.equal(prev, data.current_node); assert.equal(seen.size, Object.keys(data.mapping).length);
+
+function assertLinearMapping(data) {
+  let id = data.root;
+  let previous = null;
+  const seen = new Set();
+
+  while (id) {
+    assert(!seen.has(id), `cycle detected at ${id}`);
+    seen.add(id);
+
+    const node = data.mapping[id];
+    assert(node, `missing node ${id}`);
+    assert.equal(node.parent, previous);
+    assert(node.children.length <= 1);
+
+    previous = id;
+    id = node.children[0] || null;
+  }
+
+  assert.equal(previous, data.current_node);
+  assert.equal(seen.size, Object.keys(data.mapping).length);
 }
-{
-  const src = buildToolHeavy(40, 5); const out = trimConversation(src, { mode: "visible-history" });
-  assert.equal(out.changed, true); assert.equal(out.stats.displayBefore, 80); assert.equal(out.stats.displayAfter, 80); assert.equal(out.stats.roleCountsBefore.tool, 200); assert.equal(out.stats.explicitlyHiddenBefore, 40); assert(out.stats.mappingNodesAfter <= 82); assert(!out.data.mapping["tool-39-0"]); assert(!out.data.mapping["assistant-hidden-39"]); assert(!out.data.mapping["branch-old"]); assertLinear(out.data);
+
+function testVisibleHistoryMode() {
+  const source = buildToolHeavyConversation();
+  const result = trimConversation(source, { mode: "visible-history" });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.displayBefore, 80);
+  assert.equal(result.stats.displayAfter, 80);
+  assert.equal(result.stats.roleCountsBefore.tool, 200);
+  assert.equal(result.stats.explicitlyHiddenBefore, 40);
+  assert(result.stats.mappingNodesAfter <= 82);
+  assert(!result.data.mapping["tool-39-0"]);
+  assert(!result.data.mapping["assistant-hidden-39"]);
+  assert(!result.data.mapping["branch-old"]);
+  assertLinearMapping(result.data);
 }
-{
-  const src = buildToolHeavy(40, 5); const out = trimConversation(src, { mode: "recent", maxDisplayMessages: 24 });
-  assert.equal(out.changed, true); assert.equal(out.stats.displayAfter, 24); assert(out.stats.mappingNodesAfter > 24); assert(out.data.mapping["tool-39-0"]); assert(!out.data.mapping["user-0"]); assertLinear(out.data);
+
+function testRecentSafeWindow() {
+  const source = buildToolHeavyConversation();
+  const result = trimConversation(source, {
+    mode: "recent",
+    maxDisplayMessages: 24
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.displayAfter, 24);
+  assert(result.stats.mappingNodesAfter > 24);
+  assert(result.data.mapping["tool-39-0"]);
+  assert(!result.data.mapping["user-0"]);
+  assertLinearMapping(result.data);
 }
-{
-  const src = buildToolHeavy(40, 5); const out = trimConversation(src, { mode: "latest-visible", maxDisplayMessages: 24 });
-  assert.equal(out.changed, true); assert.equal(out.stats.displayBefore, 80); assert.equal(out.stats.displayAfter, 24); assert.equal(out.stats.mappingNodesAfter, 24); assert(out.data.mapping["user-28"]); assert(out.data.mapping["assistant-39"]); assert(!out.data.mapping["user-27"]); assert(!out.data.mapping["tool-39-0"]); assert(!out.data.mapping["assistant-hidden-39"]); assertLinear(out.data);
+
+function testLatestVisibleOnly() {
+  const source = buildToolHeavyConversation();
+  const result = trimConversation(source, {
+    mode: "latest-visible",
+    maxDisplayMessages: 24
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.displayBefore, 80);
+  assert.equal(result.stats.displayAfter, 24);
+  assert.equal(result.stats.mappingNodesAfter, 24);
+  assert(result.data.mapping["user-28"]);
+  assert(result.data.mapping["assistant-39"]);
+  assert(!result.data.mapping["user-27"]);
+  assert(!result.data.mapping["tool-39-0"]);
+  assert(!result.data.mapping["assistant-hidden-39"]);
+  assertLinearMapping(result.data);
 }
-{
-  const src = buildToolHeavy(40, 5); const out = trimConversation(src, { mode: "windowed-visible", maxDisplayMessages: 16 });
-  assert.equal(out.changed, true); assert.equal(out.stats.displayAfter, 16);
-  assert(out.stats.mappingNodesAfter > 16, "windowed mode must retain recent interstitial state");
-  assert(out.data.mapping["tool-39-0"], "windowed mode must keep recent tool state");
-  assert(out.data.mapping["assistant-hidden-39"], "windowed mode must keep recent hidden state");
-  assert(!out.data.mapping["user-0"], "old native visible history should be removed");
-  assertLinear(out.data);
+
+function testWindowedModeKeepsRecentInternalState() {
+  const source = buildToolHeavyConversation();
+  const result = trimConversation(source, {
+    mode: "windowed-visible",
+    maxDisplayMessages: 16
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.displayAfter, 16);
+  assert(result.stats.mappingNodesAfter > 16, "windowed mode must retain recent interstitial state");
+  assert(result.data.mapping["tool-39-0"], "windowed mode must keep recent tool state");
+  assert(result.data.mapping["assistant-hidden-39"], "windowed mode must keep recent hidden state");
+  assert(!result.data.mapping["user-0"], "old native visible history should be removed");
+  assertLinearMapping(result.data);
 }
-{
-  const src = buildToolHeavy(40, 5); const history = extractVisibleHistory(src);
-  assert.equal(history.length, 80); assert.equal(history[0].id, "user-0"); assert.equal(history[0].role, "user"); assert.equal(history[0].text, "user-0"); assert.equal(history[history.length - 1].id, "assistant-39"); assert(!history.some((x) => x.id.startsWith("tool-"))); assert(!history.some((x) => x.id.startsWith("assistant-hidden-")));
+
+function testVisibleHistoryArchive() {
+  const source = buildToolHeavyConversation();
+  const history = extractVisibleHistory(source);
+
+  assert.equal(history.length, 80);
+  assert.equal(history[0].id, "user-0");
+  assert.equal(history[0].role, "user");
+  assert.equal(history[0].text, "user-0");
+  assert.equal(history[history.length - 1].id, "assistant-39");
+  assert(!history.some((message) => message.id.startsWith("tool-")));
+  assert(!history.some((message) => message.id.startsWith("assistant-hidden-")));
 }
-{
-  assert.equal(isDisplayCandidate(node("x", null, "assistant")), true);
-  assert.equal(isDisplayCandidate(node("x", null, "assistant", { is_visually_hidden_from_conversation: true })), false);
-  assert.equal(isDisplayCandidate(node("x", null, "user", { is_user_system_message: true })), false);
-  assert.equal(isDisplayCandidate(node("x", null, "tool")), false);
+
+function testDisplayCandidateRules() {
+  assert.equal(isDisplayCandidate(makeNode("a", null, "assistant")), true);
+  assert.equal(
+    isDisplayCandidate(makeNode("b", null, "assistant", { is_visually_hidden_from_conversation: true })),
+    false
+  );
+  assert.equal(
+    isDisplayCandidate(makeNode("c", null, "user", { is_user_system_message: true })),
+    false
+  );
+  assert.equal(isDisplayCandidate(makeNode("d", null, "tool")), false);
 }
-console.log("trim tests: PASS");
+
+const tests = [
+  testVisibleHistoryMode,
+  testRecentSafeWindow,
+  testLatestVisibleOnly,
+  testWindowedModeKeepsRecentInternalState,
+  testVisibleHistoryArchive,
+  testDisplayCandidateRules
+];
+
+for (const test of tests) test();
+console.log(`trim tests: PASS (${tests.length})`);
