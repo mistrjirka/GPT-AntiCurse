@@ -139,7 +139,8 @@
   function onNativeWheel(event) {
     if (reader.isOpen() || settings.mode !== "windowed-visible" || !history || !settings.enabled) return;
 
-    // A further upward wheel gesture at scrollTop=0 produces no scroll event.
+    // When scrollTop is already zero, another upward wheel gesture produces no
+    // scroll event. Catch that gesture explicitly so Auto mode still opens.
     if (event.deltaY < 0 && nativeTop() <= 12 && performance.now() >= suppressAutoUntil) {
       if (reader.open()) event.preventDefault();
     }
