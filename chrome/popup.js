@@ -1,205 +1,45 @@
 "use strict";
 
 const enabled = document.getElementById("enabled");
+const mode = document.getElementById("mode");
 const limit = document.getElementById("limit");
-
-function addModeBeforeRecent(value, title, description) {
-  const recent = document.querySelector('input[name="mode"][value="recent"]')?.closest("label.mode");
-  if (!recent || document.querySelector(`input[name="mode"][value="${value}"]`)) return;
-  const label = document.createElement("label");
-  label.className = "mode";
-  const input = document.createElement("input");
-  input.type = "radio";
-  input.name = "mode";
-  input.value = value;
-  const copy = document.createElement("span");
-  const bold = document.createElement("b");
-  bold.textContent = title;
-  const small = document.createElement("small");
-  small.textContent = description;
-  copy.append(bold, small);
-  label.append(input, copy);
-  recent.before(label);
-}
-
-function addNoticeToggle() {
-  if (document.getElementById("showNotice")) return;
-  const guardRow = document.querySelector(".toggle-row");
-  if (!guardRow) return;
-  const row = document.createElement("div");
-  row.className = "toggle-row";
-  row.style.marginTop = "9px";
-  row.style.paddingTop = "9px";
-  row.style.borderTop = "1px solid var(--border)";
-
-  const copy = document.createElement("div");
-  copy.className = "toggle-copy";
-  const title = document.createElement("b");
-  title.textContent = "Show on-page status notice";
-  const subtitle = document.createElement("span");
-  subtitle.textContent = "Show the floating AntiCurse · N% trimmed pill in ChatGPT.";
-  copy.append(title, subtitle);
-
-  const label = document.createElement("label");
-  label.className = "switch";
-  const input = document.createElement("input");
-  input.id = "showNotice";
-  input.type = "checkbox";
-  const slider = document.createElement("span");
-  slider.className = "slider";
-  label.append(input, slider);
-  row.append(copy, label);
-  guardRow.after(row);
-}
-
-addModeBeforeRecent("latest-visible", "Latest visible only", "Newest N visible user/assistant turns only; hidden/tool nodes do not consume the window.");
-addModeBeforeRecent("windowed-visible", "Auto windowed history (experimental)", "Newest N stay native; older visible turns load on scroll-up and distant injected turns unload again.");
-addNoticeToggle();
-
-const limitLabel = document.querySelector(".limit-row span");
-if (limitLabel) limitLabel.textContent = "Visible-turn window";
-const how = document.querySelector(".how");
-if (how) how.append(" Auto windowed history keeps a small native window and virtualizes older visible turns as you scroll.");
-
 const showNotice = document.getElementById("showNotice");
-const modeInputs = Array.from(document.querySelectorAll('input[name="mode"]'));
+const loadPrevious = document.getElementById("loadPrevious");
+const feedback = document.getElementById("feedback");
 const nf = new Intl.NumberFormat();
+const EMPTY_TOTALS = { responsesTrimmed:0, nodesRemoved:0, nodesDelivered:0, visibleTurnsKept:0, inputBytes:0, outputBytes:0, bytesRemoved:0 };
 
-const EMPTY_TOTALS = {
-  responsesTrimmed: 0,
-  nodesRemoved: 0,
-  nodesDelivered: 0,
-  visibleTurnsKept: 0,
-  inputBytes: 0,
-  outputBytes: 0,
-  bytesRemoved: 0
-};
-
-function fmt(n) {
-  const value = Number(n);
-  return nf.format(Number.isFinite(value) ? value : 0);
+function fmt(n) { const v=Number(n); return nf.format(Number.isFinite(v)?v:0); }
+function fmtBytes(n) { let v=Math.max(0,Number(n)||0), i=0; const u=["B","KB","MB","GB"]; while(v>=1024&&i<u.length-1){v/=1024;i++;} return `${v>=10||i===0?v.toFixed(0):v.toFixed(1)} ${u[i]}`; }
+function limitedMode() { return mode.value !== "visible-history"; }
+function updateControls() { limit.disabled=!limitedMode(); loadPrevious.disabled=!limitedMode(); loadPrevious.textContent=`Load previous ${Math.max(4,Math.min(500,Number(limit.value)||32))}`; }
+async function currentTab(){ const tabs=await chrome.tabs.query({active:true,currentWindow:true}); return tabs[0]; }
+async function save(){ await chrome.storage.local.set({enabled:enabled.checked,mode:mode.value,maxDisplayMessages:Math.max(4,Math.min(500,Number(limit.value)||32)),showGuardNotice:showNotice.checked}); }
+async function reload(){ await save(); const tab=await currentTab(); if(tab&&tab.id!=null) await chrome.tabs.reload(tab.id); window.close(); }
+function setFeedback(text){ feedback.textContent=text||""; }
+function renderTotals(t){ t={...EMPTY_TOTALS,...(t||{})}; document.getElementById("totalResponses").textContent=fmt(t.responsesTrimmed); document.getElementById("totalRemoved").textContent=fmt(t.nodesRemoved); document.getElementById("totalBytes").textContent=fmtBytes(t.bytesRemoved); }
+function setStatus(text,kind=""){ const el=document.getElementById("statusPill"); el.textContent=text; el.className=`status${kind?` ${kind}`:""}`; }
+function renderStats(s){
+  if(!s){setStatus("Waiting");return;}
+  if(s.mode==="trimmed"){
+    const before=Math.max(0,Number(s.mappingNodesBefore)||0), after=Math.max(0,Number(s.mappingNodesAfter)||0), removed=Math.max(0,Number(s.discardedNodes)||(before-after));
+    const pct=before?Math.max(0,Math.min(100,(removed/before)*100)):0;
+    document.getElementById("savedPct").textContent=`${pct>=99.5?pct.toFixed(1):Math.round(pct)}%`;
+    document.getElementById("summaryText").textContent=`${fmt(before)} → ${fmt(after)} nodes`;
+    document.getElementById("summarySub").textContent=`${fmt(Number(s.displayAfter)||0)} visible turns kept in ChatGPT`;
+    document.getElementById("removedNodes").textContent=fmt(removed);
+    if(Number.isFinite(Number(s.originalBytes))&&Number.isFinite(Number(s.outputBytes))) document.getElementById("bytesSaved").textContent=fmtBytes(Math.max(0,Number(s.originalBytes)-Number(s.outputBytes)));
+    else document.getElementById("bytesSaved").textContent="not measured";
+    document.getElementById("processing").textContent=Number.isFinite(Number(s.processingMs))?`${s.processingMs} ms`:"—";
+    setStatus("Active","active");
+  } else if(s.mode==="error") { setStatus("Error","error"); document.getElementById("summaryText").textContent="Original response kept"; }
+  else { setStatus("Ready","active"); document.getElementById("savedPct").textContent="0%"; document.getElementById("summaryText").textContent="No trimming needed"; }
 }
 
-function fmtBytes(n) {
-  let value = Math.max(0, Number(n) || 0);
-  const units = ["B", "KB", "MB", "GB"];
-  let i = 0;
-  while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
-  return `${value >= 10 || i === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[i]}`;
-}
+chrome.storage.local.get({enabled:true,mode:"visible-history",maxDisplayMessages:32,showGuardNotice:true,cgTotals:EMPTY_TOTALS}).then((s)=>{enabled.checked=s.enabled;mode.value=s.mode;limit.value=s.maxDisplayMessages;showNotice.checked=s.showGuardNotice!==false;renderTotals(s.cgTotals);updateControls();});
 
-function selectedMode() {
-  const selected = modeInputs.find((x) => x.checked);
-  return selected ? selected.value : "visible-history";
-}
-
-function updateLimitState() {
-  limit.disabled = selectedMode() === "visible-history";
-}
-
-async function currentTab() {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tabs[0];
-}
-
-async function save() {
-  await chrome.storage.local.set({
-    enabled: enabled.checked,
-    mode: selectedMode(),
-    maxDisplayMessages: Math.max(4, Math.min(500, Number(limit.value) || 32)),
-    showGuardNotice: showNotice ? showNotice.checked : true
-  });
-}
-
-async function reload() {
-  await save();
-  const tab = await currentTab();
-  if (tab && tab.id != null) await chrome.tabs.reload(tab.id);
-  window.close();
-}
-
-function renderTotals(totals) {
-  const t = { ...EMPTY_TOTALS, ...(totals || {}) };
-  document.getElementById("totalRemoved").textContent = fmt(t.nodesRemoved);
-  document.getElementById("totalResponses").textContent = fmt(t.responsesTrimmed);
-  document.getElementById("totalBytes").textContent = fmtBytes(t.bytesRemoved);
-}
-
-function setStatus(text, kind) {
-  const pill = document.getElementById("statusPill");
-  pill.textContent = text;
-  pill.className = `status-pill${kind ? ` ${kind}` : ""}`;
-}
-
-function renderStats(s) {
-  if (!s) {
-    setStatus("Waiting", "");
-    return;
-  }
-
-  if (s.mode === "trimmed") {
-    const before = Math.max(0, Number(s.mappingNodesBefore) || 0);
-    const after = Math.max(0, Number(s.mappingNodesAfter) || 0);
-    const removed = Math.max(0, Number(s.discardedNodes) || (before - after));
-    const saved = before ? Math.max(0, Math.min(100, (removed / before) * 100)) : 0;
-    const visible = Math.max(0, Number(s.displayAfter) || 0);
-
-    document.getElementById("savedPct").textContent = saved >= 99.5 ? saved.toFixed(1) : Math.round(saved);
-    document.getElementById("savedBar").style.width = `${saved}%`;
-    document.getElementById("nodeFlow").textContent = `${fmt(before)} → ${fmt(after)}`;
-    document.getElementById("removedNodes").textContent = fmt(removed);
-    document.getElementById("visibleKept").textContent = fmt(visible);
-
-    if (Number.isFinite(Number(s.originalBytes)) && Number.isFinite(Number(s.outputBytes))) {
-      const byteRemoved = Math.max(0, Number(s.originalBytes) - Number(s.outputBytes));
-      const bytePct = Number(s.originalBytes) > 0 ? (byteRemoved / Number(s.originalBytes)) * 100 : 0;
-      document.getElementById("bytesSaved").textContent = `${fmtBytes(byteRemoved)} (${Math.round(bytePct)}%)`;
-    } else {
-      document.getElementById("bytesSaved").textContent = "not measured";
-    }
-    document.getElementById("processing").textContent = Number.isFinite(Number(s.processingMs)) ? `${s.processingMs} ms` : "—";
-    setStatus("Active", "active");
-  } else if (s.mode === "error") {
-    document.getElementById("nodeFlow").textContent = "Original response kept";
-    document.getElementById("processing").textContent = "error";
-    setStatus("Error", "error");
-  } else {
-    document.getElementById("savedPct").textContent = "0";
-    document.getElementById("savedBar").style.width = "0%";
-    document.getElementById("nodeFlow").textContent = "No trimming needed";
-    setStatus("Ready", "active");
-  }
-}
-
-chrome.storage.local.get({ enabled: true, mode: "visible-history", maxDisplayMessages: 32, showGuardNotice: true, cgTotals: EMPTY_TOTALS }).then((s) => {
-  enabled.checked = s.enabled;
-  limit.value = s.maxDisplayMessages;
-  if (showNotice) showNotice.checked = s.showGuardNotice !== false;
-  const selected = modeInputs.find((x) => x.value === s.mode) || modeInputs[0];
-  selected.checked = true;
-  updateLimitState();
-  renderTotals(s.cgTotals);
-});
-
-document.getElementById("reload").addEventListener("click", reload);
-document.getElementById("full").addEventListener("click", async () => {
-  enabled.checked = false;
-  await reload();
-});
-document.getElementById("resetTotals").addEventListener("click", async () => {
-  const totals = await chrome.runtime.sendMessage({ type: "cg-reset-totals" });
-  renderTotals(totals);
-});
-
-enabled.addEventListener("change", save);
-if (showNotice) showNotice.addEventListener("change", save);
-limit.addEventListener("change", save);
-for (const input of modeInputs) input.addEventListener("change", () => { updateLimitState(); save(); });
-
-currentTab().then(async (tab) => {
-  if (!tab || tab.id == null) return;
-  try {
-    const s = await chrome.tabs.sendMessage(tab.id, { type: "cg-get-stats" });
-    renderStats(s);
-  } catch (_) {}
-});
+document.getElementById("reload").addEventListener("click",reload);
+document.getElementById("resetTotals").addEventListener("click",async()=>renderTotals(await chrome.runtime.sendMessage({type:"cg-reset-totals"})));
+loadPrevious.addEventListener("click",async()=>{ await save(); const tab=await currentTab(); if(!tab||tab.id==null)return; try{ const r=await chrome.tabs.sendMessage(tab.id,{type:"cg-open-window-history"}); if(r&&r.ok){window.close();return;} setFeedback(r&&r.reason==="no-history-archive"?"Reload this chat once to create its history archive.":"No older visible turns are available."); }catch(_){setFeedback("Open a ChatGPT conversation first.");} });
+enabled.addEventListener("change",save); showNotice.addEventListener("change",save); mode.addEventListener("change",()=>{updateControls();save();}); limit.addEventListener("change",()=>{updateControls();save();});
+currentTab().then(async(tab)=>{if(!tab||tab.id==null)return;try{renderStats(await chrome.tabs.sendMessage(tab.id,{type:"cg-get-stats"}));}catch(_){}});
