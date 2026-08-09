@@ -15,22 +15,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate manifests and JavaScript
+      - name: Validate manifests
         shell: bash
         run: |
           set -euo pipefail
           python -m json.tool firefox/manifest.json >/dev/null
           python -m json.tool chrome/manifest.json >/dev/null
-          node --check firefox/background.js
-          node --check firefox/content.js
-          node --check firefox/windowed.js
-          node --check firefox/popup.js
-          node --check chrome/background.js
-          node --check chrome/main.js
-          node --check chrome/content.js
-          node --check chrome/windowed.js
-          node --check chrome/popup.js
-          node tests/test-trim.js
+
+      - name: Syntax-check JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            firefox/background.js \
+            firefox/content.js \
+            firefox/trim.js \
+            firefox/history-overlay.js \
+            firefox/windowed.js \
+            firefox/popup.js \
+            chrome/background.js \
+            chrome/main.js \
+            chrome/content.js \
+            chrome/trim.js \
+            chrome/history-overlay.js \
+            chrome/windowed.js \
+            chrome/popup.js \
+            tests/test-trim.js
+          do
+            node --check "$file"
+          done
+
+      - name: Verify shared browser code stays in sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp firefox/trim.js chrome/trim.js
+          cmp firefox/history-overlay.js chrome/history-overlay.js
+          cmp firefox/windowed.js chrome/windowed.js
+          cmp firefox/popup.html chrome/popup.html
+          cmp firefox/popup.css chrome/popup.css
+
+      - name: Reject dynamic code execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -REn --include='*.js' '(^|[^[:alnum:]_])(eval|Function)[[:space:]]*\(' firefox chrome; then
+            echo "Dynamic code execution is not allowed in GPT AntiCurse." >&2
+            exit 1
+          fi
+
+      - name: Run graph transformation tests
+        run: node tests/test-trim.js
 
       - name: Build browser packages
         run: bash ./scripts/build.sh
