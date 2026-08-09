@@ -15,12 +15,17 @@
     },
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["content.js", "windowed.js"],
-      "css": ["content.css", "windowed.css"],
+      "js": ["content.js", "history-overlay.js", "windowed.js"],
+      "css": ["content.css"],
       "run_at": "document_start",
       "world": "ISOLATED"
     }
   ],
-  "action": { "default_title": "GPT AntiCurse", "default_popup": "popup.html" },
-  "background": { "service_worker": "background.js" }
+  "action": {
+    "default_title": "GPT AntiCurse",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
 }
