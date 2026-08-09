@@ -35,3 +35,5 @@ History paging, auto-scroll detection, and source-reviewability update.
 ## Privacy
 
 No telemetry or conversation data is transmitted. Trimming, older-history archives, paging, and counters remain local to the browser.
+
+This release supersedes v0.4.1.
