@@ -1,86 +1,80 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GPT AntiCurse</title>
-<style>
-  :root { color-scheme: dark; --bg:#101113; --panel:#181a1d; --border:#2b2e32; --text:#f2f4f5; --muted:#9299a1; --accent:#5eead4; }
-  * { box-sizing:border-box; }
-  body { width:332px; margin:0; background:var(--bg); color:var(--text); font:12px/1.4 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-  .app { padding:13px; }
-  header { display:flex; align-items:center; gap:9px; margin-bottom:11px; }
-  h1 { flex:1; margin:0; font-size:14px; font-weight:700; }
-  .status { color:var(--muted); font-size:10px; }
-  .status.active { color:var(--accent); }
-  .status.error { color:#fb7185; }
-  .summary { padding:10px 11px; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
-  .summary-main { display:flex; align-items:baseline; gap:8px; }
-  .pct { font-size:24px; line-height:1; font-weight:750; color:var(--accent); }
-  .summary-text { color:#d9dde1; font-size:11px; }
-  .summary-sub { margin-top:5px; color:var(--muted); font-size:10px; }
-  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-bottom:1px solid var(--border); }
-  .row:last-child { border-bottom:0; }
-  .label b { display:block; font-size:11px; font-weight:650; }
-  .label small { display:block; color:var(--muted); font-size:9.5px; margin-top:1px; }
-  select, input[type=number] { color:var(--text); background:#121417; border:1px solid var(--border); border-radius:7px; padding:5px 7px; font:11px system-ui,sans-serif; }
-  select { width:157px; }
-  input[type=number] { width:67px; }
-  input:disabled { opacity:.4; }
-  input[type=checkbox] { accent-color:#2dd4bf; }
-  .controls { margin-top:10px; padding:0 10px; border:1px solid var(--border); border-radius:10px; background:var(--panel); }
-  .buttons { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin-top:9px; }
-  button { border:1px solid var(--border); border-radius:8px; padding:7px 8px; background:#202327; color:var(--text); font:650 10.5px system-ui,sans-serif; cursor:pointer; }
-  button:hover { background:#282c30; }
-  button.primary { background:#5eead4; border-color:#5eead4; color:#07322d; }
-  button:disabled { opacity:.4; cursor:default; }
-  #feedback { min-height:15px; margin-top:6px; color:var(--muted); font-size:9.5px; text-align:center; }
-  details { margin-top:9px; padding-top:8px; border-top:1px solid var(--border); color:var(--muted); }
-  summary { cursor:pointer; color:#cbd0d5; font-size:10.5px; }
-  dl { display:grid; grid-template-columns:1fr auto; gap:5px 10px; margin:8px 0; font-size:10px; }
-  dt { color:var(--muted); } dd { margin:0; color:#d7dcdf; text-align:right; }
-  .details-actions { display:flex; justify-content:space-between; align-items:center; }
-  .link-button { border:0; background:none; color:var(--muted); padding:0; font-size:9.5px; }
-  .how { margin:8px 0 0; font-size:9.5px; }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GPT AntiCurse</title>
+  <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-<div class="app">
-  <header><h1>GPT AntiCurse</h1><span id="statusPill" class="status">Waiting</span></header>
-  <section class="summary">
-    <div class="summary-main"><span id="savedPct" class="pct">—</span><span id="summaryText" class="summary-text">No conversation stats yet</span></div>
-    <div id="summarySub" class="summary-sub">Reload a ChatGPT conversation to measure it.</div>
-  </section>
-  <section class="controls">
-    <label class="row"><span class="label"><b>Guard enabled</b></span><input id="enabled" type="checkbox"></label>
-    <label class="row"><span class="label"><b>Mode</b></span><select id="mode">
-      <option value="visible-history">All visible history</option>
-      <option value="latest-visible">Latest visible only</option>
-      <option value="windowed-visible">Auto windowed history</option>
-      <option value="recent">Recent safe window</option>
-    </select></label>
-    <label class="row"><span class="label"><b>Visible window</b><small>Messages per page/window</small></span><input id="limit" type="number" min="4" max="500" step="2"></label>
-    <label class="row"><span class="label"><b>On-page status</b></span><input id="showNotice" type="checkbox"></label>
-  </section>
-  <div class="buttons">
-    <button id="reload" class="primary">Save & reload</button>
-    <button id="loadPrevious">Load previous N</button>
+  <div class="app">
+    <header>
+      <h1>GPT AntiCurse</h1>
+      <span id="statusPill" class="status">Waiting</span>
+    </header>
+
+    <section class="summary">
+      <div class="summary-main">
+        <span id="savedPct" class="pct">—</span>
+        <span id="summaryText" class="summary-text">No conversation stats yet</span>
+      </div>
+      <div id="summarySub" class="summary-sub">Reload a ChatGPT conversation to measure it.</div>
+    </section>
+
+    <section class="controls">
+      <label class="row">
+        <span class="label"><b>Guard enabled</b></span>
+        <input id="enabled" type="checkbox">
+      </label>
+
+      <label class="row">
+        <span class="label"><b>Mode</b></span>
+        <select id="mode">
+          <option value="visible-history">All visible history</option>
+          <option value="latest-visible">Latest visible only</option>
+          <option value="windowed-visible">Auto windowed history</option>
+          <option value="recent">Recent safe window</option>
+        </select>
+      </label>
+
+      <label class="row">
+        <span class="label">
+          <b>Visible window</b>
+          <small>Messages per page/window</small>
+        </span>
+        <input id="limit" type="number" min="4" max="500" step="2">
+      </label>
+
+      <label class="row">
+        <span class="label"><b>On-page status</b></span>
+        <input id="showNotice" type="checkbox">
+      </label>
+    </section>
+
+    <div class="buttons">
+      <button id="reload" class="primary">Save &amp; reload</button>
+      <button id="loadPrevious">Load previous N</button>
+    </div>
+    <div id="feedback"></div>
+
+    <details>
+      <summary>Details</summary>
+      <dl>
+        <dt>Nodes removed</dt><dd id="removedNodes">—</dd>
+        <dt>Response data removed</dt><dd id="bytesSaved">—</dd>
+        <dt>Processing</dt><dd id="processing">—</dd>
+        <dt>Total optimized loads</dt><dd id="totalResponses">0</dd>
+        <dt>Total nodes skipped</dt><dd id="totalRemoved">0</dd>
+        <dt>Total data removed</dt><dd id="totalBytes">0 B</dd>
+      </dl>
+      <div class="details-actions">
+        <span>All counters are local.</span>
+        <button id="resetTotals" class="link-button">Reset counters</button>
+      </div>
+      <p class="how">AntiCurse reduces ChatGPT's conversation graph before the page processes it. Limited modes keep a local visible-message archive so older pages can be opened without restoring hidden/tool history to ChatGPT's React state.</p>
+    </details>
   </div>
-  <div id="feedback"></div>
-  <details>
-    <summary>Details</summary>
-    <dl>
-      <dt>Nodes removed</dt><dd id="removedNodes">—</dd>
-      <dt>Response data removed</dt><dd id="bytesSaved">—</dd>
-      <dt>Processing</dt><dd id="processing">—</dd>
-      <dt>Total optimized loads</dt><dd id="totalResponses">0</dd>
-      <dt>Total nodes skipped</dt><dd id="totalRemoved">0</dd>
-      <dt>Total data removed</dt><dd id="totalBytes">0 B</dd>
-    </dl>
-    <div class="details-actions"><span>All counters are local.</span><button id="resetTotals" class="link-button">Reset counters</button></div>
-    <p class="how">AntiCurse reduces ChatGPT's conversation graph before the page processes it. Limited modes keep a local visible-message archive so older pages can be opened without restoring hidden/tool history to ChatGPT's React state.</p>
-  </details>
-</div>
-<script src="popup.js"></script>
+
+  <script src="popup.js"></script>
 </body>
 </html>
