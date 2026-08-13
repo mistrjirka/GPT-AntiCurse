@@ -39,7 +39,7 @@ function formatBytes(value) {
 }
 
 function messageLimit() {
-  return Math.max(4, Math.min(500, Number(limitInput.value) || 32));
+  return Math.max(4, Math.min(500, Number(limitInput.value) || 64));
 }
 
 function isLimitedMode() {
@@ -159,7 +159,7 @@ async function initialize() {
   const saved = await chrome.storage.local.get({
     enabled: true,
     mode: "visible-history",
-    maxDisplayMessages: 32,
+    maxDisplayMessages: 64,
     showGuardNotice: true,
     cgTotals: EMPTY_TOTALS
   });
