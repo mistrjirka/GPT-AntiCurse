@@ -67,7 +67,7 @@
       ok: true,
       summary: CGArchive.archiveSummary(archive),
       filename: CGArchive.archiveFilename(archive),
-      markdown: CGArchive.archiveToMarkdown(archive)
+      markdown: CGArchive.archiveToMarkdown(archive, { level: message.exportLevel })
     };
   }
 
