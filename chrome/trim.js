@@ -16,7 +16,7 @@
 
   const DEFAULTS = Object.freeze({
     mode: "visible-history",
-    maxDisplayMessages: 32,
+    maxDisplayMessages: 64,
     maxPrefixNodes: 4
   });
 
