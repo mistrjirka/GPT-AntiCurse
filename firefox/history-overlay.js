@@ -1,15 +1,14 @@
 /*
- * Lightweight reader for older visible conversation turns.
+ * Inline reader for older visible conversation turns.
  *
- * This file deliberately owns all DOM that it creates. Nothing is inserted into
- * ChatGPT's React-managed conversation subtree; the reader is a top-level Shadow
- * DOM overlay. The controller in windowed.js decides when to open it.
+ * Archived turns are rendered as lightweight extension-owned DOM immediately
+ * before ChatGPT's native #thread, so they participate in the same scroll flow.
+ * ChatGPT's React-owned message nodes are never modified or replaced.
  */
 (function (global) {
   "use strict";
 
   const DEFAULT_PAGE_SIZE = 64;
-  const MAX_RENDERED_TURNS = 500;
 
   function clamp(value, min, max, fallback) {
     const number = Number(value);
@@ -21,122 +20,113 @@
     turn.className = `turn ${message.role === "user" ? "user" : "assistant"}`;
     turn.dataset.index = String(index);
 
-    const heading = document.createElement("div");
-    heading.className = "head";
-    heading.textContent = message.role === "user" ? "You" : "Assistant";
+    const inner = document.createElement("div");
+    inner.className = "inner";
 
     const body = document.createElement("div");
     body.className = "body";
     body.textContent = message.text || "[Non-text visible message]";
 
-    turn.append(heading, body);
+    inner.appendChild(body);
+    turn.appendChild(inner);
     return turn;
   }
 
-  class HistoryOverlay {
+  class InlineHistory {
     constructor(options = {}) {
-      this.onClose = typeof options.onClose === "function" ? options.onClose : () => {};
+      this.getScroller = typeof options.getScroller === "function" ? options.getScroller : () => null;
       this.history = null;
+      this.mode = "recent";
       this.host = null;
-      this.overlay = null;
-      this.viewport = null;
+      this.shadow = null;
       this.list = null;
-      this.marker = null;
+      this.control = null;
       this.previousButton = null;
-      this.opened = false;
+      this.marker = null;
       this.loadedStart = 0;
-      this.loadedEnd = 0;
       this.olderCount = 0;
-      this.scrollFramePending = false;
     }
 
     setHistory(history) {
       this.history = history && Array.isArray(history.messages) ? history : null;
-      if (!this.history) this.close();
+      this.olderCount = this._olderTurnCount();
+      this.loadedStart = this.olderCount;
+      this._ensureDom();
+      if (this.list) this.list.replaceChildren();
+      this._updateControl();
+    }
+
+    setMode(mode) {
+      this.mode = mode || "recent";
+      this._updateControl();
+    }
+
+    ensureAttached() {
+      return this._ensureDom();
     }
 
     hasOlderTurns() {
-      return this._olderTurnCount() > 0;
+      return this.olderCount > 0;
     }
 
-    isOpen() {
-      return this.opened;
+    hasMoreOlderTurns() {
+      return this.loadedStart > 0;
     }
 
-    open() {
-      if (this.opened || !this.hasOlderTurns()) return false;
-      this._ensureDom();
-      this._renderInitialPage();
-      this.opened = true;
-      this.overlay.classList.add("open");
-
-      requestAnimationFrame(() => {
-        this.viewport.scrollTop = this.viewport.scrollHeight;
-        try {
-          this.viewport.focus({ preventScroll: true });
-        } catch (_) {
-          this.viewport.focus();
-        }
-      });
-      return true;
+    loadedCount() {
+      return Math.max(0, this.olderCount - this.loadedStart);
     }
 
-    close() {
-      if (!this.opened) return;
-      this.opened = false;
-      if (this.overlay) this.overlay.classList.remove("open");
-      this.onClose();
+    loadPreviousPage(options = {}) {
+      if (!this.history || !this.hasMoreOlderTurns()) {
+        return { ok: false, reason: "start-reached", count: 0 };
+      }
+      if (!this._ensureDom() || !this.list) {
+        return { ok: false, reason: "thread-not-found", count: 0 };
+      }
+
+      const scroller = this.getScroller();
+      const preserveScroll = options.preserveScroll !== false;
+      const beforeTop = scroller ? Math.max(0, Number(scroller.scrollTop) || 0) : 0;
+      const beforeHeight = scroller ? Math.max(0, Number(scroller.scrollHeight) || 0) : 0;
+      const end = this.loadedStart;
+      const start = Math.max(0, end - this._pageSize());
+      const fragment = document.createDocumentFragment();
+
+      for (let index = start; index < end; index++) {
+        fragment.appendChild(makeTurn(this.history.messages[index], index));
+      }
+      this.list.insertBefore(fragment, this.list.firstChild);
+      this.loadedStart = start;
+      this._updateControl();
+
+      if (scroller && preserveScroll) {
+        requestAnimationFrame(() => {
+          if (!scroller.isConnected) return;
+          const added = Math.max(0, (Number(scroller.scrollHeight) || 0) - beforeHeight);
+          scroller.scrollTop = beforeTop + added;
+        });
+      }
+
+      return {
+        ok: true,
+        count: end - start,
+        loaded: this.loadedCount(),
+        remaining: this.loadedStart
+      };
     }
 
     destroy() {
-      this.close();
       if (this.host) this.host.remove();
       this.host = null;
-      this.overlay = null;
-      this.viewport = null;
+      this.shadow = null;
       this.list = null;
-      this.marker = null;
+      this.control = null;
       this.previousButton = null;
-    }
-
-    loadOlderPage() {
-      if (!this.history || !this.list || this.loadedStart <= 0) return false;
-
-      const nextStart = Math.max(0, this.loadedStart - this._pageSize());
-      const anchor = this.list.firstElementChild;
-      const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
-      const fragment = document.createDocumentFragment();
-
-      for (let index = nextStart; index < this.loadedStart; index++) {
-        fragment.appendChild(makeTurn(this.history.messages[index], index));
-      }
-
-      this.list.insertBefore(fragment, this.list.firstChild);
-      this.loadedStart = nextStart;
-      this._trimFromNewestEnd();
-      this._updateHeader();
-      this._preserveAnchor(anchor, anchorTop);
-      return true;
-    }
-
-    loadNewerPage() {
-      if (!this.history || !this.list || this.loadedEnd >= this.olderCount) return false;
-
-      const nextEnd = Math.min(this.olderCount, this.loadedEnd + this._pageSize());
-      const anchor = this.list.lastElementChild;
-      const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
-      const fragment = document.createDocumentFragment();
-
-      for (let index = this.loadedEnd; index < nextEnd; index++) {
-        fragment.appendChild(makeTurn(this.history.messages[index], index));
-      }
-
-      this.list.appendChild(fragment);
-      this.loadedEnd = nextEnd;
-      this._trimFromOldestEnd();
-      this._updateHeader();
-      this._preserveAnchor(anchor, anchorTop);
-      return true;
+      this.marker = null;
+      this.history = null;
+      this.loadedStart = 0;
+      this.olderCount = 0;
     }
 
     _olderTurnCount() {
@@ -149,143 +139,138 @@
       return clamp(this.history && this.history.pageSize, 4, 500, DEFAULT_PAGE_SIZE);
     }
 
-    _maxRendered() {
-      const fallback = Math.min(MAX_RENDERED_TURNS, this._pageSize() * 3);
-      return clamp(this.history && this.history.maxRendered, this._pageSize(), MAX_RENDERED_TURNS, fallback);
-    }
-
-    _renderInitialPage() {
-      this.olderCount = this._olderTurnCount();
-      this.loadedEnd = this.olderCount;
-      this.loadedStart = Math.max(0, this.loadedEnd - this._pageSize());
-      this.list.replaceChildren();
-
-      const fragment = document.createDocumentFragment();
-      for (let index = this.loadedStart; index < this.loadedEnd; index++) {
-        fragment.appendChild(makeTurn(this.history.messages[index], index));
-      }
-      this.list.appendChild(fragment);
-      this._updateHeader();
-    }
-
-    _trimFromNewestEnd() {
-      while (this.list.children.length > this._maxRendered()) {
-        this.list.lastElementChild.remove();
-        this.loadedEnd--;
-      }
-    }
-
-    _trimFromOldestEnd() {
-      while (this.list.children.length > this._maxRendered()) {
-        this.list.firstElementChild.remove();
-        this.loadedStart++;
-      }
-    }
-
-    _preserveAnchor(anchor, previousTop) {
-      if (!anchor || !this.viewport) return;
-      const delta = anchor.getBoundingClientRect().top - previousTop;
-      if (Math.abs(delta) > 0.5) this.viewport.scrollTop += delta;
-    }
-
-    _updateHeader() {
-      if (!this.marker || !this.previousButton) return;
-      const shown = Math.max(0, this.loadedEnd - this.loadedStart);
-      const firstShown = this.loadedStart + 1;
-
-      this.marker.textContent = `${shown.toLocaleString()} shown · ${firstShown.toLocaleString()}–${this.loadedEnd.toLocaleString()} of ${this.olderCount.toLocaleString()} older turns`;
-
-      const previousCount = Math.min(this._pageSize(), this.loadedStart);
-      this.previousButton.textContent = previousCount ? `Load previous ${previousCount}` : "Start reached";
-      this.previousButton.disabled = previousCount === 0;
-    }
-
-    _onScroll() {
-      if (!this.opened || this.scrollFramePending) return;
-      this.scrollFramePending = true;
-      requestAnimationFrame(() => {
-        this.scrollFramePending = false;
-        if (!this.opened) return;
-
-        if (this.viewport.scrollTop < 260) this.loadOlderPage();
-        const bottomGap = this.viewport.scrollHeight - this.viewport.clientHeight - this.viewport.scrollTop;
-        if (bottomGap < 260 && this.loadedEnd < this.olderCount) this.loadNewerPage();
-      });
-    }
-
-    _onWheel(event) {
-      if (!this.opened) return;
-      const bottomGap = this.viewport.scrollHeight - this.viewport.clientHeight - this.viewport.scrollTop;
-      if (event.deltaY > 0 && this.loadedEnd >= this.olderCount && bottomGap < 3) {
-        event.preventDefault();
-        this.close();
-      }
+    _findThread() {
+      return document.querySelector("#thread") ||
+        document.querySelector('[data-testid^="conversation-turn-"]')?.closest("#thread");
     }
 
     _ensureDom() {
-      if (this.host && this.host.isConnected) return;
+      const thread = this._findThread();
+      if (!thread || !thread.parentElement) return false;
 
-      this.host = document.createElement("div");
-      this.host.id = "cg-window-history-host";
-      this.host.style.cssText = "all:initial;position:fixed;inset:0;z-index:2147483646;pointer-events:none;";
-      document.documentElement.appendChild(this.host);
+      if (!this.host) {
+        this.host = document.createElement("div");
+        this.host.id = "cg-window-history-host";
+        this.host.style.cssText = "display:block;width:100%;min-width:0;flex:none;";
+        this.shadow = this.host.attachShadow({ mode: "closed" });
+        this.shadow.innerHTML = this._template();
+        this.list = this.shadow.querySelector(".list");
+        this.control = this.shadow.querySelector(".control");
+        this.previousButton = this.shadow.querySelector(".previous");
+        this.marker = this.shadow.querySelector(".marker");
+        this.previousButton.addEventListener("click", () => this.loadPreviousPage({ preserveScroll: true }));
+      }
 
-      const shadow = this.host.attachShadow({ mode: "closed" });
-      shadow.innerHTML = this._template();
-      this.overlay = shadow.querySelector(".overlay");
-      this.viewport = shadow.querySelector(".viewport");
-      this.list = shadow.querySelector(".list");
-      this.marker = shadow.querySelector(".marker");
-      this.previousButton = shadow.querySelector(".previous");
+      if (this.host.parentElement !== thread.parentElement || this.host.nextSibling !== thread) {
+        thread.parentElement.insertBefore(this.host, thread);
+      }
+      this._updateControl();
+      return true;
+    }
 
-      this.previousButton.addEventListener("click", () => this.loadOlderPage());
-      shadow.querySelector(".back").addEventListener("click", () => this.close());
-      this.viewport.addEventListener("scroll", () => this._onScroll(), { passive: true });
-      this.viewport.addEventListener("wheel", (event) => this._onWheel(event), { passive: false });
-      this.viewport.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") this.close();
-      });
+    _updateControl() {
+      if (!this.control || !this.previousButton || !this.marker) return;
+
+      const remaining = this.loadedStart;
+      const nextCount = Math.min(this._pageSize(), remaining);
+      const fixedMode = this.mode === "recent" || this.mode === "latest-visible";
+      const shouldShow = fixedMode && this.hasOlderTurns();
+      this.control.hidden = !shouldShow;
+
+      if (!shouldShow) return;
+      if (remaining > 0) {
+        this.previousButton.disabled = false;
+        this.previousButton.textContent = `Load previous ${nextCount}`;
+      } else {
+        this.previousButton.disabled = true;
+        this.previousButton.textContent = "Start reached";
+      }
+
+      const loaded = this.loadedCount();
+      this.marker.textContent = loaded
+        ? `${loaded.toLocaleString()} older turns loaded`
+        : `${this.olderCount.toLocaleString()} older turns available`;
     }
 
     _template() {
       return `
         <style>
-          :host { all: initial; }
-          .overlay { position: fixed; inset: 0; display: none; pointer-events: auto; background: #111113; color: #ececec; font: 14px/1.55 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-          .overlay.open { display: flex; flex-direction: column; }
-          .topbar { display: flex; align-items: center; gap: 8px; padding: 9px 14px; border-bottom: 1px solid rgba(255,255,255,.09); background: #171719; }
-          .brand { font-weight: 700; color: #67e8d3; }
-          .marker { flex: 1; min-width: 0; color: #92969e; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-          button { border: 1px solid rgba(255,255,255,.13); border-radius: 8px; background: #242427; color: #f3f4f6; padding: 6px 9px; font: 600 12px system-ui; cursor: pointer; }
-          button:hover { background: #303034; }
-          button:disabled { opacity: .4; cursor: default; }
-          .viewport { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
-          .list { width: min(52rem, calc(100% - 32px)); margin: auto; padding: 18px 0 54px; display: grid; gap: 16px; }
-          .turn { padding: 10px 14px; border-radius: 13px; overflow-wrap: anywhere; }
-          .turn.user { margin-left: min(14%,5rem); background: #2b2b2e; }
-          .turn.assistant { margin-right: min(8%,3rem); }
-          .head { color: #6ee7d2; font-size: 11px; font-weight: 700; margin-bottom: 5px; }
-          .body { white-space: pre-wrap; }
-          .hint { width: max-content; max-width: calc(100% - 32px); margin: 12px auto 0; color: #777f88; font-size: 11px; text-align: center; }
+          :host {
+            all: initial;
+            display: block;
+            width: 100%;
+            color: var(--text-primary, CanvasText);
+            color-scheme: light dark;
+            font-family: system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+          }
+          .history { width: 100%; }
+          .control {
+            width: min(48rem, calc(100% - 32px));
+            margin: 8px auto 10px;
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 9px;
+          }
+          .control[hidden] { display: none; }
+          .marker { color: var(--text-tertiary, #8e8e93); font-size: 11px; }
+          button {
+            min-height: 32px;
+            border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+            border-radius: 999px;
+            padding: 6px 11px;
+            background: var(--main-surface-secondary, color-mix(in srgb, CanvasText 7%, Canvas));
+            color: var(--text-primary, CanvasText);
+            font: 600 12px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+            cursor: pointer;
+          }
+          button:hover:not(:disabled) { background: color-mix(in srgb, CanvasText 11%, Canvas); }
+          button:focus-visible { outline: 2px solid #10a37f; outline-offset: 2px; }
+          button:disabled { opacity: .5; cursor: default; }
+          .list { display: flex; width: 100%; flex-direction: column; }
+          .turn {
+            width: 100%;
+            padding: 10px 0 14px;
+            content-visibility: auto;
+            contain-intrinsic-size: auto 120px;
+          }
+          .inner {
+            width: min(48rem, calc(100% - 32px));
+            margin: 0 auto;
+            padding: 0 16px;
+            box-sizing: border-box;
+          }
+          .body {
+            color: var(--text-primary, CanvasText);
+            font-size: 16px;
+            line-height: 1.55;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+          }
+          .user .inner { display: flex; justify-content: flex-end; }
+          .user .body {
+            width: fit-content;
+            max-width: 70%;
+            padding: 10px 16px;
+            border-radius: 22px;
+            background: var(--main-surface-secondary, color-mix(in srgb, CanvasText 8%, Canvas));
+          }
+          .assistant .body { width: 100%; }
         </style>
-        <section class="overlay" role="dialog" aria-label="Older visible ChatGPT history">
-          <div class="topbar">
-            <span class="brand">AntiCurse history</span>
-            <span class="marker"></span>
+        <section class="history" aria-label="Older ChatGPT history loaded by GPT AntiCurse">
+          <div class="control">
             <button class="previous" type="button"></button>
-            <button class="back" type="button">Back to recent</button>
+            <span class="marker"></span>
           </div>
-          <div class="viewport" tabindex="0">
-            <div class="hint">Visible user/assistant turns only. Scroll to page through older history.</div>
-            <div class="list"></div>
-          </div>
+          <div class="list"></div>
         </section>`;
     }
   }
 
   global.CGHistoryOverlay = {
     create(options) {
-      return new HistoryOverlay(options);
+      return new InlineHistory(options);
     }
   };
 })(globalThis);
