@@ -1,7 +1,8 @@
 /* Capture the full visible branch immediately before AntiCurse trims it. */
 (() => {
   "use strict";
-  let enabled = true;
+  // Fail private until storage explicitly confirms that backup is enabled.
+  let enabled = false;
   browser.storage.local.get({ archiveEnabled: true }).then((saved) => {
     enabled = saved.archiveEnabled !== false;
   }).catch(() => {});

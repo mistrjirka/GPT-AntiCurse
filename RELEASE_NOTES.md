@@ -1,15 +1,19 @@
-# GPT AntiCurse v0.5.0
+# GPT AntiCurse v0.5.1
 
-Persistent local conversation backup and Markdown continuation update.
+Windowed-history reliability and cross-browser correctness update.
+
+## Windowed history
+
+- Auto windowed history now follows ChatGPT's current `data-scroll-from-top` state and automatically reattaches if React replaces the conversation scroll root.
+- Fixed-window modes show an in-page **Load previous N** control when the user reaches the top of the native window.
+- The default visible window for new installations is now 64 turns instead of 32.
+
+## Chromium
+
+- The MAIN-world response interceptor now waits briefly for the isolated-world settings bridges before consuming a conversation response, avoiding a first-load settings race.
+- The backup hook defaults to disabled until its persisted setting has been delivered.
 
 ## Conversation backup
 
-- Saves the active visible user/assistant branch locally in extension IndexedDB before AntiCurse trims it.
-- Merges new and streaming turns while the conversation remains open.
-- Adds **Export Markdown** and **Export & new chat** actions.
-- Marks DOM-only recovery as partial if older unloaded history could not be captured.
-- Backup can be disabled independently.
-
-## Privacy
-
-All backup storage, merging, and Markdown export happen locally in the browser. No conversation data is sent to the developer or another service.
+- Persistent local IndexedDB backup and Markdown export from v0.5.0 remain unchanged.
+- Backups, history paging, and settings remain local to the browser; no conversation content is sent to the developer or another service.

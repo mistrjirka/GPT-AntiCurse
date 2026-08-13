@@ -2,7 +2,8 @@
 (() => {
   "use strict";
   const CHANNEL = "__gpt_anticurse_v1__";
-  let enabled = true;
+  // Fail private until the isolated-world storage bridge explicitly enables it.
+  let enabled = false;
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
