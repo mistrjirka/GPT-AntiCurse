@@ -1,5 +1,4 @@
 "use strict";
-
 (() => {
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const toggle = document.getElementById("archiveEnabled");
@@ -8,8 +7,8 @@
   const exportButton = document.getElementById("exportMarkdown");
   const continueButton = document.getElementById("continueChat");
   const feedback = document.getElementById("feedback");
-
   function buttons(on) { exportButton.disabled = !on; continueButton.disabled = !on; }
+  function setArchiveStatus(text, state) { status.textContent = text; status.dataset.state = state; }
   async function tab() { return (await ext.tabs.query({ active: true, currentWindow: true }))[0]; }
   async function conversationId(activeTab, flush = false) {
     if (!activeTab || activeTab.id == null) return null;
@@ -25,12 +24,12 @@
   }
   function render(value) {
     if (!value) {
-      status.textContent = toggle.checked ? "Not saved" : "Off";
+      setArchiveStatus(toggle.checked ? "Not saved" : "Off", toggle.checked ? "missing" : "off");
       summary.textContent = "Open or reload a ChatGPT conversation to create its local backup.";
       buttons(false);
       return;
     }
-    status.textContent = value.complete === false ? "Partial" : "Saved";
+    setArchiveStatus(value.complete === false ? "Partial" : "Saved", value.complete === false ? "partial" : "saved");
     const updated = value.updatedAt ? new Date(value.updatedAt).toLocaleString() : "unknown time";
     summary.textContent = `${value.messageCount} turns · ${value.characters} chars · ${updated}`;
     buttons(true);

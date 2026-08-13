@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GPT AntiCurse",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Makes very long ChatGPT conversations responsive by shrinking invisible conversation state before page JavaScript processes it.",
   "permissions": ["storage", "webRequest", "webRequestBlocking", "webRequestFilterResponse", "unlimitedStorage"],
   "host_permissions": ["https://chatgpt.com/*"],

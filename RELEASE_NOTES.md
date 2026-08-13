@@ -1,18 +1,19 @@
-# GPT AntiCurse v0.5.2
+# GPT AntiCurse v0.5.3
 
-Pre-AMO consistency update.
+Popup UX polish and archive-export validation update.
 
-## Windowed history
+## Popup UI
 
-- Auto windowed history uses ChatGPT's current `data-scroll-from-top` state and reattaches if React replaces the conversation scroll root.
-- Fixed-window modes provide an in-page **Load previous N** control at the top of the native window.
-- The default visible window is consistently 64 turns across popup, graph transformation, Firefox background, Chromium settings bridge, and history-reader fallback paths.
+- The popup now follows the browser light/dark preference instead of forcing a dark theme.
+- Increased typography and control sizes, simplified card hierarchy, and added strong keyboard focus indicators.
+- Backup state remains explicit in text and now also has distinct Saved / Partial / Off / Not saved styling.
+- Primary and secondary actions are visually clearer while keeping the popup compact and dependency-free.
 
-## Chromium correctness
+## Conversation backup verification
 
-- The MAIN-world response interceptor waits briefly for the isolated-world settings bridges before consuming a conversation response.
-- Authoritative backup capture occurs on the untouched response before graph trimming and also works when Guard trimming is disabled.
-- Backup capture defaults off until its persisted setting arrives.
+- Expanded archive regression tests to cover Markdown structure, Unicode and fenced code blocks, hidden-message exclusion, partial-backup warnings, safe filenames, streaming-prefix merges, network refresh with a newer local tail, summaries, and a 300-message export.
+- Verified the DOM tail extractor against current ChatGPT virtualized markup: completed user/assistant messages are identified by `data-message-author-role`, while virtualized placeholders and an active tool-progress assistant turn without a final message node are intentionally ignored.
+- Full-history backup continues to come from the untouched conversation response before graph trimming; DOM capture is only the incremental rendered tail.
 
 ## Privacy
 
