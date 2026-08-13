@@ -10,7 +10,7 @@
 const DEFAULT_SETTINGS = {
   enabled: true,
   mode: "visible-history",
-  maxDisplayMessages: 32,
+  maxDisplayMessages: 64,
   showGuardNotice: true
 };
 
@@ -45,7 +45,7 @@ function normalizeTotals(value) {
 
 function normalizeMessageLimit(value) {
   const number = Number(value);
-  return Math.max(4, Math.min(500, Number.isFinite(number) ? number : 32));
+  return Math.max(4, Math.min(500, Number.isFinite(number) ? number : 64));
 }
 
 function resolveMode(value) {
