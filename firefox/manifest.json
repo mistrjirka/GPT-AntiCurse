@@ -1,17 +1,17 @@
 {
   "manifest_version": 3,
   "name": "GPT AntiCurse",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "Makes very long ChatGPT conversations responsive by shrinking invisible conversation state before page JavaScript processes it.",
-  "permissions": ["storage", "webRequest", "webRequestBlocking", "webRequestFilterResponse"],
+  "permissions": ["storage", "webRequest", "webRequestBlocking", "webRequestFilterResponse", "unlimitedStorage"],
   "host_permissions": ["https://chatgpt.com/*"],
   "background": {
-    "scripts": ["trim.js", "background.js"]
+    "scripts": ["trim.js", "archive.js", "archive-store.js", "archive-background.js", "archive-firefox-hook.js", "background.js"]
   },
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["content.js", "history-overlay.js", "windowed.js"],
+      "js": ["archive.js", "content.js", "history-overlay.js", "windowed.js", "archive-capture.js"],
       "css": ["content.css"],
       "run_at": "document_start"
     }
@@ -24,9 +24,7 @@
     "gecko": {
       "id": "gpt-anticurse@mistrjirka",
       "strict_min_version": "128.0",
-      "data_collection_permissions": {
-        "required": ["none"]
-      }
+      "data_collection_permissions": {"required": ["none"]}
     }
   }
 }

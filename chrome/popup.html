@@ -8,73 +8,21 @@
 </head>
 <body>
   <div class="app">
-    <header>
-      <h1>GPT AntiCurse</h1>
-      <span id="statusPill" class="status">Waiting</span>
-    </header>
-
-    <section class="summary">
-      <div class="summary-main">
-        <span id="savedPct" class="pct">—</span>
-        <span id="summaryText" class="summary-text">No conversation stats yet</span>
-      </div>
-      <div id="summarySub" class="summary-sub">Reload a ChatGPT conversation to measure it.</div>
-    </section>
-
+    <header><h1>GPT AntiCurse</h1><span id="statusPill" class="status">Waiting</span></header>
+    <section class="summary"><div class="summary-main"><span id="savedPct" class="pct">—</span><span id="summaryText" class="summary-text">No conversation stats yet</span></div><div id="summarySub" class="summary-sub">Reload a ChatGPT conversation to measure it.</div></section>
     <section class="controls">
-      <label class="row">
-        <span class="label"><b>Guard enabled</b></span>
-        <input id="enabled" type="checkbox">
-      </label>
-
-      <label class="row">
-        <span class="label"><b>Mode</b></span>
-        <select id="mode">
-          <option value="visible-history">All visible history</option>
-          <option value="latest-visible">Latest visible only</option>
-          <option value="windowed-visible">Auto windowed history</option>
-          <option value="recent">Recent safe window</option>
-        </select>
-      </label>
-
-      <label class="row">
-        <span class="label">
-          <b>Visible window</b>
-          <small>Messages per page/window</small>
-        </span>
-        <input id="limit" type="number" min="4" max="500" step="2">
-      </label>
-
-      <label class="row">
-        <span class="label"><b>On-page status</b></span>
-        <input id="showNotice" type="checkbox">
-      </label>
+      <label class="row"><span class="label"><b>Guard enabled</b></span><input id="enabled" type="checkbox"></label>
+      <label class="row"><span class="label"><b>Mode</b></span><select id="mode"><option value="visible-history">All visible history</option><option value="latest-visible">Latest visible only</option><option value="windowed-visible">Auto windowed history</option><option value="recent">Recent safe window</option></select></label>
+      <label class="row"><span class="label"><b>Visible window</b><small>Messages per page/window</small></span><input id="limit" type="number" min="4" max="500" step="2"></label>
+      <label class="row"><span class="label"><b>On-page status</b></span><input id="showNotice" type="checkbox"></label>
+      <label class="row"><span class="label"><b>Conversation backup</b><small>Keep a local Markdown-ready copy</small></span><input id="archiveEnabled" type="checkbox"></label>
     </section>
-
-    <div class="buttons">
-      <button id="reload" class="primary">Save &amp; reload</button>
-      <button id="loadPrevious">Load previous N</button>
-    </div>
+    <div class="buttons"><button id="reload" class="primary">Save &amp; reload</button><button id="loadPrevious">Load previous N</button></div>
     <div id="feedback"></div>
-
-    <details>
-      <summary>Details</summary>
-      <dl>
-        <dt>Nodes removed</dt><dd id="removedNodes">—</dd>
-        <dt>Response data removed</dt><dd id="bytesSaved">—</dd>
-        <dt>Processing</dt><dd id="processing">—</dd>
-        <dt>Total optimized loads</dt><dd id="totalResponses">0</dd>
-        <dt>Total nodes skipped</dt><dd id="totalRemoved">0</dd>
-        <dt>Total data removed</dt><dd id="totalBytes">0 B</dd>
-      </dl>
-      <div class="details-actions">
-        <span>All counters are local.</span>
-        <button id="resetTotals" class="link-button">Reset counters</button>
-      </div>
-      <p class="how">AntiCurse reduces ChatGPT's conversation graph before the page processes it. Limited modes keep a local visible-message archive so older pages can be opened without restoring hidden/tool history to ChatGPT's React state.</p>
-    </details>
+    <section class="backup"><div class="backup-head"><b>Current chat backup</b><span id="archiveStatus">Checking…</span></div><div id="archiveSummary" class="backup-summary">Open a ChatGPT conversation to create a backup.</div><div class="backup-buttons"><button id="exportMarkdown">Export Markdown</button><button id="continueChat">Export &amp; new chat</button></div></section>
+    <details><summary>Details</summary><dl><dt>Nodes removed</dt><dd id="removedNodes">—</dd><dt>Response data removed</dt><dd id="bytesSaved">—</dd><dt>Processing</dt><dd id="processing">—</dd><dt>Total optimized loads</dt><dd id="totalResponses">0</dd><dt>Total nodes skipped</dt><dd id="totalRemoved">0</dd><dt>Total data removed</dt><dd id="totalBytes">0 B</dd></dl><div class="details-actions"><span>All counters are local.</span><button id="resetTotals" class="link-button">Reset counters</button></div></details>
   </div>
-
   <script src="popup.js"></script>
+  <script src="backup-popup.js"></script>
 </body>
 </html>

@@ -149,6 +149,40 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   text-align: center;
 }
 
+.backup {
+  margin-top: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.backup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+}
+
+#archiveStatus {
+  color: var(--accent);
+  font-size: 9.5px;
+}
+
+.backup-summary {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9.5px;
+}
+
+.backup-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 8px;
+}
+
 details {
   margin-top: 9px;
   padding-top: 8px;
