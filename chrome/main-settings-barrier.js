@@ -1,5 +1,5 @@
 /*
- * Chromium MAIN-world startup barrier.
+ * Chromium MAIN-world startup barrier and authoritative pre-transform backup.
  *
  * The MAIN world cannot read chrome.storage directly. Delay consumption of the
  * conversation response for a short bounded period until the isolated-world
@@ -12,6 +12,7 @@
   const WAIT_MS = 300;
   let trimSettingsReady = false;
   let archiveSettingsReady = false;
+  let archiveEnabled = false;
   let resolveReady;
   const ready = new Promise((resolve) => { resolveReady = resolve; });
 
@@ -24,7 +25,10 @@
     const message = event.data;
     if (!message || message.channel !== CHANNEL) return;
     if (message.type === "settings") trimSettingsReady = true;
-    if (message.type === "archive-settings") archiveSettingsReady = true;
+    if (message.type === "archive-settings") {
+      archiveSettingsReady = true;
+      archiveEnabled = message.archiveEnabled !== false;
+    }
     maybeResolve();
   });
 
@@ -45,13 +49,24 @@
     ]);
   }
 
+  function publishArchive(data) {
+    if (!archiveEnabled) return;
+    try {
+      const archive = CGArchive.createArchive(data, { sourceUrl: location.href });
+      if (archive) window.postMessage({ channel: CHANNEL, type: "archive", archive }, location.origin);
+    } catch (_) {}
+  }
+
   const nativeJson = Response.prototype.json;
   Object.defineProperty(Response.prototype, "json", {
     configurable: true,
     writable: true,
     value: async function antiCurseSettingsBarrierJson() {
-      if (isConversationDocument(this.url)) await waitForSettings();
-      return nativeJson.call(this);
+      if (!isConversationDocument(this.url)) return nativeJson.call(this);
+      await waitForSettings();
+      const data = await nativeJson.call(this);
+      publishArchive(data);
+      return data;
     }
   });
 
@@ -60,8 +75,17 @@
     configurable: true,
     writable: true,
     value: async function antiCurseSettingsBarrierText() {
-      if (isConversationDocument(this.url)) await waitForSettings();
-      return nativeText.call(this);
+      if (!isConversationDocument(this.url)) return nativeText.call(this);
+      await waitForSettings();
+      const text = await nativeText.call(this);
+      if (archiveEnabled) {
+        try {
+          let body = text;
+          if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
+          publishArchive(JSON.parse(body));
+        } catch (_) {}
+      }
+      return text;
     }
   });
 })();

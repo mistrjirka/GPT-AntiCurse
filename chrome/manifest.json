@@ -9,7 +9,7 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["trim.js", "archive.js", "main-settings-barrier.js", "archive-main-hook.js", "main.js"],
+      "js": ["trim.js", "archive.js", "main-settings-barrier.js", "main.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },

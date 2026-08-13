@@ -11,7 +11,8 @@ Windowed-history reliability and cross-browser correctness update.
 ## Chromium
 
 - The MAIN-world response interceptor now waits briefly for the isolated-world settings bridges before consuming a conversation response, avoiding a first-load settings race.
-- The backup hook defaults to disabled until its persisted setting has been delivered.
+- Authoritative backup capture happens in the pre-transform response barrier, so it also works when graph trimming is disabled and never needs access to extension APIs from the MAIN world.
+- Backup capture defaults to off until the persisted backup setting has arrived.
 
 ## Conversation backup
 
