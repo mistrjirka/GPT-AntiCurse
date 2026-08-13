@@ -5,6 +5,7 @@
   const A = global.CGArchive;
   if (!A) return;
 
+  const DEFAULT_EXPORT_LEVEL = "progress";
   const EXPORT_LEVELS = new Set(["clean", "progress", "full"]);
   const TOOL_JSON_KEYS = new Set([
     "search_query", "image_query", "open", "click", "find", "screenshot",
@@ -23,7 +24,7 @@
 
   function levelOf(options) {
     const value = typeof options === "string" ? options : options && options.level;
-    return EXPORT_LEVELS.has(value) ? value : "clean";
+    return EXPORT_LEVELS.has(value) ? value : DEFAULT_EXPORT_LEVEL;
   }
 
   function parseJson(value) {
@@ -99,8 +100,12 @@
     return `${marker}${language}\n${raw}\n${marker}`;
   }
 
-  function addPlan(lines, plan, heading) {
-    lines.push(`### ${heading}`, "");
+  function addLabel(lines, label) {
+    lines.push(`**${label}**`, "");
+  }
+
+  function addPlan(lines, plan, label) {
+    addLabel(lines, label);
     if (plan.explanation) lines.push(plan.explanation, "");
     for (const item of plan.steps) {
       if (["completed", "complete", "done"].includes(item.status)) {
@@ -137,7 +142,7 @@
     return {
       entries,
       narratives,
-      final: narratives.length ? narratives[narratives.length - 1] : null,
+      response: narratives.length ? narratives[narratives.length - 1] : null,
       plan: plans.length ? plans[plans.length - 1].classification.plan : null
     };
   }
@@ -145,7 +150,7 @@
   function clean(lines, group) {
     const info = analyze(group);
     lines.push("## User", "", group.user, "");
-    if (info.final) lines.push("## Assistant", "", info.final.message.text, "");
+    if (info.response) lines.push("## Assistant", "", info.response.message.text, "");
   }
 
   function progress(lines, group) {
@@ -153,15 +158,15 @@
     lines.push("## User", "", group.user, "");
     if (!info.narratives.length && !info.plan) return;
     lines.push("## Assistant", "");
-    const updates = info.final ? info.narratives.slice(0, -1) : info.narratives;
+    const updates = info.response ? info.narratives.slice(0, -1) : info.narratives;
     if (updates.length) {
-      lines.push("### Progress", "");
+      addLabel(lines, "Progress");
       for (const entry of updates) lines.push(entry.message.text, "");
     }
     if (info.plan) addPlan(lines, info.plan, "Plan");
-    if (info.final) {
-      if (updates.length || info.plan) lines.push("### Final answer", "");
-      lines.push(info.final.message.text, "");
+    if (info.response) {
+      if (updates.length || info.plan) addLabel(lines, "Response");
+      lines.push(info.response.message.text, "");
     }
   }
 
@@ -174,12 +179,12 @@
     for (const entry of info.entries) {
       const { message, classification } = entry;
       if (classification.kind === "narrative") {
-        if (entry === info.final) {
-          if (info.entries.length > 1) lines.push("### Final answer", "");
+        if (entry === info.response) {
+          if (info.entries.length > 1) addLabel(lines, "Response");
           lines.push(message.text, "");
           progressOpen = false;
         } else {
-          if (!progressOpen) lines.push("### Progress", "");
+          if (!progressOpen) addLabel(lines, "Progress");
           lines.push(message.text, "");
           progressOpen = true;
         }
@@ -189,7 +194,8 @@
         lines.push("<details>", "<summary>Raw plan payload</summary>", "", fence(message.text), "", "</details>", "");
       } else {
         progressOpen = false;
-        lines.push(`### Tool call — ${toolLabel(message, classification)}`, "", fence(message.text), "");
+        addLabel(lines, `Tool call — ${toolLabel(message, classification)}`);
+        lines.push(fence(message.text), "");
       }
     }
   }
@@ -198,7 +204,7 @@
     if (!archive) return "";
     const level = levelOf(options);
     const description = level === "clean"
-      ? "Clean — user tasks and final assistant answers"
+      ? "Clean — user tasks and final visible assistant responses"
       : level === "progress"
         ? "Progress — visible assistant progress and consolidated plans; tool calls omitted"
         : "Full — all non-empty assistant records, plans, and tool calls";
@@ -221,6 +227,7 @@
     return `${lines.join("\n").trimEnd()}\n`;
   }
 
+  A.DEFAULT_EXPORT_LEVEL = DEFAULT_EXPORT_LEVEL;
   A.EXPORT_LEVELS = EXPORT_LEVELS;
   A.archiveToMarkdown = archiveToMarkdown;
   A.classifyAssistantMessage = classify;
