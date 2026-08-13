@@ -8,7 +8,7 @@
 (function (global) {
   "use strict";
 
-  const DEFAULT_PAGE_SIZE = 32;
+  const DEFAULT_PAGE_SIZE = 64;
   const MAX_RENDERED_TURNS = 500;
 
   function clamp(value, min, max, fallback) {
