@@ -1,26 +1,22 @@
-# GPT AntiCurse v0.5.5
+# GPT AntiCurse v0.5.6
 
-Markdown export detail controls and plan formatting.
+Markdown export hierarchy and default-detail correction.
 
-## Markdown export levels
+## Export formatting
 
-- **Clean** (new default): exports user tasks and only the final visible assistant answer for each task.
-- **Progress**: also keeps visible assistant progress/commentary and renders the latest plan for each user task as a Markdown checklist, while omitting raw tool calls.
-- **Full**: keeps every non-empty assistant record, including exact tool-call payloads and every plan update.
-- Empty assistant records no longer create empty `## Assistant` headings in any mode.
+- **Progress is now the default Markdown export level.** Existing explicit Clean/Full choices remain preserved.
+- Progress, Plan, Response, and Full-mode tool labels use bold inline labels instead of artificial `###` headings.
+- `Final answer` was renamed to the more accurate **Response**, because archived records do not always contain a reliable explicit final-channel marker.
+- Original Markdown headings inside assistant responses are preserved at their original hierarchy.
+- Empty assistant records continue to be omitted.
 
-## Plan rendering
+## Regression coverage
 
-- Plan JSON is rendered as a readable checklist (`[x]` completed, unchecked pending/in-progress).
-- Progress export consolidates repeated plan snapshots to the latest state for that user task.
-- Full export keeps each plan update and includes the exact raw plan payload in a collapsible details block.
-
-## Compatibility
-
-- Existing local conversation archives remain compatible; export classification also recognizes the raw tool-call forms already present in older backups.
-- The setting is local to the browser and defaults to Clean.
-- Firefox and Chromium use the same formatter and popup controls.
+- Added tests for Progress-as-default behavior.
+- Added a hierarchy regression that verifies an original `##` response heading is not nested under an extension-generated heading.
+- Added checks that Progress omits raw shell/tool payloads while Full retains them.
+- Firefox and Chromium continue to share the same export formatter and defaults.
 
 ## Privacy
 
-Conversation backup and all three Markdown export modes remain local to the browser. No conversation content is sent to the developer or another service.
+Conversation backup and all Markdown export modes remain local to the browser. No conversation content is sent to the developer or another service.
