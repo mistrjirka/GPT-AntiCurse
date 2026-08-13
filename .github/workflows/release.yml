@@ -3,6 +3,7 @@ name: Test and release
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -10,7 +11,7 @@ permissions:
 
 jobs:
   test-and-release:
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Release ')
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Release ')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +59,7 @@ jobs:
       - name: Build browser packages
         run: bash ./scripts/build.sh
       - name: Create GitHub Release if missing
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
