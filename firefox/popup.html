@@ -6,6 +6,7 @@
   <title>GPT AntiCurse</title>
   <link rel="stylesheet" href="popup.css">
   <link rel="stylesheet" href="popup-sizing.css">
+  <link rel="stylesheet" href="archive-export.css">
 </head>
 <body>
   <div class="app">
@@ -23,7 +24,19 @@
     </section>
     <div class="buttons"><button id="reload" class="primary">Save &amp; reload</button><button id="loadPrevious">Load previous N</button></div>
     <div id="feedback" role="status" aria-live="polite"></div>
-    <section class="backup card" aria-labelledby="backupTitle"><div class="backup-head"><b id="backupTitle">Current chat backup</b><span id="archiveStatus" data-state="checking" role="status" aria-live="polite">Checking…</span></div><div id="archiveSummary" class="backup-summary">Open a ChatGPT conversation to create a backup.</div><div class="backup-buttons"><button id="exportMarkdown">Export Markdown</button><button id="continueChat">Export &amp; new chat</button></div></section>
+    <section class="backup card" aria-labelledby="backupTitle">
+      <div class="backup-head"><b id="backupTitle">Current chat backup</b><span id="archiveStatus" data-state="checking" role="status" aria-live="polite">Checking…</span></div>
+      <div id="archiveSummary" class="backup-summary">Open a ChatGPT conversation to create a backup.</div>
+      <label class="archive-export-row">
+        <span class="archive-export-label"><b>Markdown detail</b><small id="archiveExportHelp">Tasks and final answers only</small></span>
+        <select id="archiveExportLevel" aria-describedby="archiveExportHelp">
+          <option value="clean">Clean</option>
+          <option value="progress">Progress</option>
+          <option value="full">Full</option>
+        </select>
+      </label>
+      <div class="backup-buttons"><button id="exportMarkdown">Export Markdown</button><button id="continueChat">Export &amp; new chat</button></div>
+    </section>
     <details><summary>Details</summary><dl><dt>Nodes removed</dt><dd id="removedNodes">—</dd><dt>Response data removed</dt><dd id="bytesSaved">—</dd><dt>Processing</dt><dd id="processing">—</dd><dt>Total optimized loads</dt><dd id="totalResponses">0</dd><dt>Total nodes skipped</dt><dd id="totalRemoved">0</dd><dt>Total data removed</dt><dd id="totalBytes">0 B</dd></dl><div class="details-actions"><span>All counters are local.</span><button id="resetTotals" class="link-button">Reset counters</button></div></details>
   </div>
   <script src="popup.js"></script>

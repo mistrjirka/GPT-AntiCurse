@@ -4,11 +4,20 @@
   const toggle = document.getElementById("archiveEnabled");
   const status = document.getElementById("archiveStatus");
   const summary = document.getElementById("archiveSummary");
+  const exportLevel = document.getElementById("archiveExportLevel");
+  const exportHelp = document.getElementById("archiveExportHelp");
   const exportButton = document.getElementById("exportMarkdown");
   const continueButton = document.getElementById("continueChat");
   const feedback = document.getElementById("feedback");
+  const EXPORT_HELP = {
+    clean: "Tasks and final answers only",
+    progress: "Also visible progress and a checklist",
+    full: "Also exact tool calls and plan payloads"
+  };
+
   function buttons(on) { exportButton.disabled = !on; continueButton.disabled = !on; }
   function setArchiveStatus(text, state) { status.textContent = text; status.dataset.state = state; }
+  function updateExportHelp() { exportHelp.textContent = EXPORT_HELP[exportLevel.value] || EXPORT_HELP.clean; }
   async function tab() { return (await ext.tabs.query({ active: true, currentWindow: true }))[0]; }
   async function conversationId(activeTab, flush = false) {
     if (!activeTab || activeTab.id == null) return null;
@@ -54,24 +63,34 @@
     const activeTab = await tab();
     const id = await conversationId(activeTab, true);
     if (!id) { feedback.textContent = "Open a ChatGPT conversation first."; return; }
-    const result = await ext.runtime.sendMessage({ type: "cg-export-archive", conversationId: id });
+    const result = await ext.runtime.sendMessage({
+      type: "cg-export-archive",
+      conversationId: id,
+      exportLevel: exportLevel.value
+    });
     if (!result?.ok || !result.markdown) {
       feedback.textContent = "No local backup is available yet. Reload this chat once and try again.";
       return;
     }
     download(result.markdown, result.filename);
     render(result.summary);
-    feedback.textContent = "Markdown exported locally.";
+    feedback.textContent = `${exportLevel.options[exportLevel.selectedIndex].text} Markdown exported locally.`;
     if (openNew) { await ext.tabs.create({ url: "https://chatgpt.com/" }); window.close(); }
   }
-  ext.storage.local.get({ archiveEnabled: true }).then((saved) => {
+  ext.storage.local.get({ archiveEnabled: true, archiveExportLevel: "clean" }).then((saved) => {
     toggle.checked = saved.archiveEnabled !== false;
+    exportLevel.value = ["clean", "progress", "full"].includes(saved.archiveExportLevel) ? saved.archiveExportLevel : "clean";
+    updateExportHelp();
     refresh().catch(() => render(null));
   });
   toggle.addEventListener("change", async () => {
     await ext.storage.local.set({ archiveEnabled: toggle.checked });
     if (toggle.checked) await conversationId(await tab(), true);
     await refresh();
+  });
+  exportLevel.addEventListener("change", async () => {
+    updateExportHelp();
+    await ext.storage.local.set({ archiveExportLevel: exportLevel.value });
   });
   exportButton.addEventListener("click", () => exportChat(false).catch(() => { feedback.textContent = "Export failed."; }));
   continueButton.addEventListener("click", () => exportChat(true).catch(() => { feedback.textContent = "Export failed."; }));
