@@ -1,16 +1,20 @@
 "use strict";
 const assert = require("assert");
 const fs = require("fs");
-
-const history = fs.readFileSync(require.resolve("../firefox/history-overlay.js"), "utf8");
-const windowed = fs.readFileSync(require.resolve("../firefox/windowed.js"), "utf8");
-
+const path = require("path");
+function source(relative) { return fs.readFileSync(path.join(__dirname, "..", relative), "utf8"); }
+const history = source("firefox/history-overlay.js");
+const windowed = source("firefox/windowed.js");
+const sizing = source("firefox/popup-sizing.css");
 assert(!history.includes("position: fixed; inset: 0"), "history must not use a full-screen overlay");
 assert(history.includes('document.querySelector("#thread")'), "inline history must anchor to ChatGPT #thread");
-assert(history.includes('insertBefore(this.host, thread)'), "inline history must render immediately before native #thread");
+assert(history.includes("insertBefore(this.host, thread)"), "inline history must render immediately before native #thread");
 assert(history.includes("Load previous ${nextCount}"), "fixed modes need an inline Load previous button");
 assert(history.includes("content-visibility: auto"), "archived turns should stay lightweight off-screen");
 assert(windowed.includes('settings.mode === "windowed-visible"'), "auto mode must remain explicit");
-assert(windowed.includes("loadPreviousPage(true)"), "auto mode must load inline pages instead of opening an overlay");
+assert(windowed.includes("loadPreviousPage(true)"), "auto mode must prepend inline history");
 assert(!windowed.includes("reader.open()"), "windowed controller must not open the old overlay");
-console.log("inline history tests: PASS");
+assert(sizing.includes("width:360px") || sizing.includes("width: 360px"), "popup must have an explicit body width");
+assert(sizing.includes("min-width:360px") || sizing.includes("min-width: 360px"), "popup must have a Firefox-safe minimum width");
+assert(!sizing.includes("100vw"), "popup sizing override must not depend on an unresolved viewport width");
+console.log("inline history/UI tests: PASS");

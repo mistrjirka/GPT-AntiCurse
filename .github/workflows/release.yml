@@ -14,18 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Validate manifests
         run: |
           python -m json.tool firefox/manifest.json >/dev/null
           python -m json.tool chrome/manifest.json >/dev/null
-
       - name: Syntax-check JavaScript
         shell: bash
         run: |
           set -euo pipefail
           for file in firefox/*.js chrome/*.js tests/*.js; do node --check "$file"; done
-
       - name: Verify shared browser code stays in sync
         shell: bash
         run: |
@@ -39,7 +36,7 @@ jobs:
           cmp firefox/windowed.js chrome/windowed.js
           cmp firefox/popup.html chrome/popup.html
           cmp firefox/popup.css chrome/popup.css
-
+          cmp firefox/popup-sizing.css chrome/popup-sizing.css
       - name: Reject dynamic code execution
         shell: bash
         run: |
@@ -48,15 +45,13 @@ jobs:
             echo "Dynamic code execution is not allowed in GPT AntiCurse." >&2
             exit 1
           fi
-
       - name: Run unit tests
         run: |
           node tests/test-trim.js
           node tests/test-archive.js
-
+          node tests/test-history-inline.js
       - name: Build browser packages
         run: bash ./scripts/build.sh
-
       - name: Create GitHub Release if missing
         env:
           GH_TOKEN: ${{ github.token }}
