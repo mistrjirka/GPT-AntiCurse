@@ -82,7 +82,7 @@ function renderTrimmedStats(stats) {
   const before = Math.max(0, Number(stats.mappingNodesBefore) || 0);
   const after = Math.max(0, Number(stats.mappingNodesAfter) || 0);
   const removed = Math.max(0, Number(stats.discardedNodes) || before - after);
-  const percentage = before ? Math.max(0, Math.min(100, (removed / before) * 100) : 0);
+  const percentage = before ? Math.max(0, Math.min(100, (removed / before) * 100)) : 0;
   document.getElementById("savedPct").textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}%`;
   document.getElementById("summaryText").textContent = `${formatNumber(before)} → ${formatNumber(after)} nodes`;
   const logical = Number(stats.logicalDisplayAfter);
