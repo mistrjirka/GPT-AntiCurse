@@ -70,6 +70,7 @@ jobs:
           node tests/test-history-fidelity.js
           node tests/test-packaging.js
           node tests/test-no-silent-catches.js
+          node tests/test-chrome-host-access.js
       - name: Build browser packages
         run: bash ./scripts/build.sh
       - name: Install browser E2E runtimes
