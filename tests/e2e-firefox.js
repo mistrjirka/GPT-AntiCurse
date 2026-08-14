@@ -180,6 +180,7 @@ async function waitForValue(driver, script, timeout = 12000) {
       hasRecentTool: !!window.__receivedConversation.mapping['tool-18'],
       hasRecentHidden: !!window.__receivedConversation.mapping['hidden-18']
     }`);
+    console.log("Firefox trim state", JSON.stringify({ addonId, ...state }));
 
     // Default N=64 logical units = the last 32 complete user/assistant exchanges.
     assert.equal(state.visible, 160, "Firefox should receive 32 exchanges = 160 raw visible records");
