@@ -50,8 +50,13 @@
     }
   };
 
+  function conversationIdFromPage() {
+    const match = String(location.pathname || "").match(/(?:^|\/)c\/([^/?#]+)/);
+    return match ? match[1] : null;
+  }
+
   function conversationId() {
-    const fromPage = CGArchive.conversationIdFromUrl(location.href);
+    const fromPage = conversationIdFromPage();
     if (fromPage) currentConversationId = fromPage;
     return currentConversationId;
   }
