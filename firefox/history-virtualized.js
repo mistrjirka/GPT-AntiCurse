@@ -63,6 +63,20 @@
     return result;
   }
 
+  function estimatePageHeight(groups) {
+    let height = 0;
+    for (const message of groups) {
+      const text = String(message && message.text || "");
+      const explicitLines = Math.max(1, text.split("\n").length);
+      const wrapWidth = message && message.role === "user" ? 68 : 88;
+      const wrappedLines = Math.max(1, Math.ceil(text.length / wrapWidth));
+      const contentLines = Math.max(explicitLines, wrappedLines);
+      const verticalChrome = message && message.role === "user" ? 78 : 64;
+      height += verticalChrome + contentLines * 24;
+    }
+    return Math.max(140, height);
+  }
+
   function createTurn(message) {
     const section = document.createElement("section");
     section.className = "cg-history-turn text-token-text-primary w-full";
@@ -182,11 +196,13 @@
       const start = previousLogicalStart(this.history.messages, end, this.pageSize());
       if (start >= end) return { ok: false, reason: "start-reached", count: 0 };
 
+      const units = logicalUnitCount(this.history.messages, start, end);
       const page = {
         start,
         end,
-        units: logicalUnitCount(this.history.messages, start, end),
+        units,
         height: 0,
+        estimatedHeight: Math.max(140, units * 116),
         element: null
       };
       this.pages.unshift(page);
@@ -218,26 +234,71 @@
       element.className = "cg-history-page";
       element.dataset.cgStart = String(page.start);
       element.dataset.cgEnd = String(page.end);
+      const groups = grouped(this.history.messages, page.start, page.end);
+      page.estimatedHeight = estimatePageHeight(groups);
       const fragment = document.createDocumentFragment();
-      for (const message of grouped(this.history.messages, page.start, page.end)) fragment.append(createTurn(message));
+      for (const message of groups) fragment.append(createTurn(message));
       element.append(fragment);
       page.element = element;
       return element;
     }
 
+    measurePage(page) {
+      const element = page && page.element;
+      if (!element || !element.isConnected) return 0;
+
+      let observed = Math.max(
+        Number(element.getBoundingClientRect().height) || 0,
+        Number(element.offsetHeight) || 0,
+        Number(element.scrollHeight) || 0
+      );
+
+      // content-visibility:auto is intentionally used for archived turns. Some
+      // browser/layout states report a zero wrapper height for an offscreen page.
+      // Force layout only for the <= maxPages mounted archive pages, then restore
+      // the normal lightweight behavior. This never touches ChatGPT-owned nodes.
+      if (!(observed > 0)) {
+        const turns = Array.from(element.querySelectorAll(".cg-history-turn"));
+        const previous = turns.map((turn) => turn.style.contentVisibility);
+        turns.forEach((turn) => { turn.style.contentVisibility = "visible"; });
+        observed = Math.max(
+          Number(element.getBoundingClientRect().height) || 0,
+          Number(element.offsetHeight) || 0,
+          Number(element.scrollHeight) || 0
+        );
+        turns.forEach((turn, index) => {
+          if (previous[index]) turn.style.contentVisibility = previous[index];
+          else turn.style.removeProperty("content-visibility");
+        });
+      }
+
+      if (Number.isFinite(observed) && observed > 0) {
+        page.height = observed;
+        page.estimatedHeight = observed;
+        return observed;
+      }
+      return 0;
+    }
+
+    pageSpace(page) {
+      if (!page) return 0;
+      if (Number(page.height) > 0) return page.height;
+      const measured = this.measurePage(page);
+      if (measured > 0) return measured;
+      return Math.max(140, Number(page.estimatedHeight) || Number(page.units) * 116 || 140);
+    }
+
     measureMountedPages() {
       for (const page of this.pages) {
-        if (!page.element || !page.element.isConnected) continue;
-        const height = page.element.getBoundingClientRect().height;
-        if (Number.isFinite(height) && height > 0) page.height = height;
+        if (page.element && page.element.isConnected) this.measurePage(page);
       }
     }
 
     updateSpacers() {
       if (!this.topSpacer || !this.bottomSpacer) return;
       const end = Math.min(this.pages.length, this.renderStart + this.maxPages());
-      const topHeight = this.pages.slice(0, this.renderStart).reduce((sum, page) => sum + Math.max(0, page.height || 0), 0);
-      const bottomHeight = this.pages.slice(end).reduce((sum, page) => sum + Math.max(0, page.height || 0), 0);
+      const topHeight = this.pages.slice(0, this.renderStart).reduce((sum, page) => sum + this.pageSpace(page), 0);
+      const bottomHeight = this.pages.slice(end).reduce((sum, page) => sum + this.pageSpace(page), 0);
       this.topSpacer.style.height = `${topHeight}px`;
       this.bottomSpacer.style.height = `${bottomHeight}px`;
       this.topSpacer.hidden = topHeight <= 0;
