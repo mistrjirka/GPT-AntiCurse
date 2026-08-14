@@ -217,16 +217,36 @@ async function recentPagingTest(context, worker) {
     await page.waitForTimeout(40);
   }
 
-  const bounded = await page.evaluate(() => ({
-    pages: document.querySelectorAll("#cg-window-history-host .cg-history-page").length,
-    turns: document.querySelectorAll("#cg-window-history-host .cg-history-turn").length,
-    topSpacer: parseFloat(getComputedStyle(document.querySelector("#cg-window-history-host .cg-history-spacer-top")).height) || 0,
-    bottomSpacer: parseFloat(getComputedStyle(document.querySelector("#cg-window-history-host .cg-history-spacer-bottom")).height) || 0,
-    nativeSyntheticAttrs: document.querySelectorAll("#cg-window-history-host [data-message-author-role], #cg-window-history-host [data-turn-id]").length
-  }));
+  const markerAfter = await marker.textContent();
+  const bounded = await page.evaluate(() => {
+    const top = document.querySelector("#cg-window-history-host .cg-history-spacer-top");
+    const bottom = document.querySelector("#cg-window-history-host .cg-history-spacer-bottom");
+    const root = document.querySelector('[data-scroll-root]');
+    return {
+      pages: document.querySelectorAll("#cg-window-history-host .cg-history-page").length,
+      turns: document.querySelectorAll("#cg-window-history-host .cg-history-turn").length,
+      starts: Array.from(document.querySelectorAll("#cg-window-history-host .cg-history-page")).map((element) => element.getAttribute("data-cg-start")),
+      topInline: parseFloat(top.style.height) || 0,
+      bottomInline: parseFloat(bottom.style.height) || 0,
+      topComputed: parseFloat(getComputedStyle(top).height) || 0,
+      bottomComputed: parseFloat(getComputedStyle(bottom).height) || 0,
+      topHidden: top.hidden,
+      bottomHidden: bottom.hidden,
+      scrollHeight: root.scrollHeight,
+      clientHeight: root.clientHeight,
+      nativeSyntheticAttrs: document.querySelectorAll("#cg-window-history-host [data-message-author-role], #cg-window-history-host [data-turn-id]").length
+    };
+  });
+  console.log("recent virtualization state", JSON.stringify({ markerAfter, ...bounded }));
+
+  assert(markerAfter.includes("64 older turns loaded"), `eight clicks should load 64 logical turns; marker=${markerAfter}`);
   assert(bounded.pages <= 3, `only ~3 archived pages should stay mounted, got ${bounded.pages}`);
   assert(bounded.turns <= 24, `logical page grouping should bound synthetic turn DOM, got ${bounded.turns}`);
-  assert(bounded.topSpacer + bounded.bottomSpacer > 0, "evicted loaded pages should be represented by measured spacer height");
+  assert(bounded.topInline + bounded.bottomInline > 0, `evicted pages need inline spacer geometry: ${JSON.stringify(bounded)}`);
+  assert(
+    (bounded.topInline > 0 && !bounded.topHidden) || (bounded.bottomInline > 0 && !bounded.bottomHidden),
+    `non-empty spacer must be visible: ${JSON.stringify(bounded)}`
+  );
   assert.equal(bounded.nativeSyntheticAttrs, 0, "synthetic history must never impersonate React-owned native turns");
 
   const firstStart = await page.locator("#cg-window-history-host .cg-history-page").first().getAttribute("data-cg-start");
@@ -234,7 +254,7 @@ async function recentPagingTest(context, worker) {
     const root = document.querySelector('[data-scroll-root]');
     root.scrollTop = useBottom ? root.scrollHeight : 0;
     root.dispatchEvent(new Event('scroll', { bubbles: true }));
-  }, { useBottom: bounded.bottomSpacer > 0 });
+  }, { useBottom: bounded.bottomInline > 0 });
   await page.waitForFunction((start) => {
     const mounted = document.querySelector("#cg-window-history-host .cg-history-page");
     return mounted && mounted.getAttribute("data-cg-start") !== start;
