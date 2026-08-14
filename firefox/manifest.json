@@ -12,7 +12,7 @@
     {
       "matches": ["https://chatgpt.com/*"],
       "js": ["archive.js", "content.js", "history-overlay.js", "history-native.js", "history-virtualized.js", "windowed.js", "archive-capture.js"],
-      "css": ["content.css"],
+      "css": ["content.css", "history-virtualized.css"],
       "run_at": "document_start"
     }
   ],
