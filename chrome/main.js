@@ -1,17 +1,36 @@
 /*
- * Chromium MAIN-world response interceptor.
+ * Chromium MAIN-world conversation interceptor.
  *
  * Manifest V3 Chromium does not expose Firefox's filterResponseData() API to
- * normal extensions. This packaged MAIN-world script therefore wraps
- * Response.json()/text() only for ChatGPT's conversation-document endpoint.
+ * ordinary extensions. AntiCurse therefore installs one document-start wrapper
+ * around Response.json()/text(), scoped strictly to ChatGPT's conversation GET.
+ *
+ * The wrapper has a single ordered pipeline:
+ *   1. wait for authoritative settings and the initial hydration boundary;
+ *   2. read the untouched conversation;
+ *   3. publish one minimal visible-history archive to the isolated world;
+ *   4. trim a copy for ChatGPT, or fail open with an explicit diagnostic.
  */
 (function () {
   "use strict";
 
   const CHANNEL = "__gpt_anticurse_v1__";
+  const STARTUP_WAIT_MS = 8000;
   const VALID_MODES = new Set(["recent", "windowed-visible"]);
   const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
+
   let settings = { ...DEFAULT_SETTINGS };
+  let settingsSettled = false;
+  let hydrationSettled = false;
+  let resolveSettingsReady;
+  let resolveHydrationReady;
+
+  const settingsReady = new Promise((resolve) => { resolveSettingsReady = resolve; });
+  const hydrationReady = new Promise((resolve) => { resolveHydrationReady = resolve; });
+
+  function errorText(error) {
+    return String(error && error.message ? error.message : error || "Unknown error");
+  }
 
   function normalizeMessageLimit(value) {
     const number = Number(value);
@@ -22,11 +41,21 @@
     return VALID_MODES.has(value) ? value : "recent";
   }
 
+  function applySettings(next) {
+    if (!next || typeof next !== "object") return;
+    if (typeof next.enabled === "boolean") settings.enabled = next.enabled;
+    settings.mode = resolveMode(next.mode);
+    if (Number.isFinite(Number(next.maxDisplayMessages))) {
+      settings.maxDisplayMessages = normalizeMessageLimit(next.maxDisplayMessages);
+    }
+  }
+
   function isConversationDocument(urlString) {
     try {
       const url = new URL(urlString, location.href);
       return url.origin === location.origin && /^\/backend-api\/conversation\/[^/]+\/?$/.test(url.pathname);
-    } catch (_) {
+    } catch (error) {
+      // A Response without a parseable URL cannot be the scoped endpoint.
       return false;
     }
   }
@@ -39,35 +68,85 @@
     publish("stats", { stats });
   }
 
-  function publishDiagnostic(code, message) {
+  function publishDiagnostic(code, error, extra = {}) {
     publish("diagnostic", {
-      diagnostic: { scope: "chromium-main", code, message: String(message || code) }
+      diagnostic: {
+        scope: "chromium-main",
+        code,
+        message: errorText(error),
+        extra
+      }
     });
   }
 
-  function applySettings(next) {
-    if (!next || typeof next !== "object") return;
-    if (typeof next.enabled === "boolean") settings.enabled = next.enabled;
-    settings.mode = resolveMode(next.mode);
-    if (Number.isFinite(Number(next.maxDisplayMessages))) settings.maxDisplayMessages = normalizeMessageLimit(next.maxDisplayMessages);
+  function finishHydration() {
+    if (hydrationSettled) return;
+    hydrationSettled = true;
+    resolveHydrationReady();
   }
 
-  function canTransform(response) {
-    const gate = globalThis.CGAntiCurseResponseGate;
-    return !gate || typeof gate.canTransform !== "function" || gate.canTransform(response);
+  function settleAfterLoad() {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (typeof requestIdleCallback === "function") {
+        requestIdleCallback(finishHydration, { timeout: 1000 });
+      } else {
+        setTimeout(finishHydration, 0);
+      }
+    }));
   }
 
-  function reportStartupPassthrough(transport) {
-    publishStats({ mode: "passthrough", transport, reason: "startup-barrier-timeout", trimMode: resolveMode(settings.mode) });
+  if (document.readyState === "complete") settleAfterLoad();
+  else window.addEventListener("load", settleAfterLoad, { once: true });
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const message = event.data;
+    if (!message || message.channel !== CHANNEL || message.type !== "settings") return;
+    applySettings(message.settings);
+    if (!settingsSettled) {
+      settingsSettled = true;
+      resolveSettingsReady();
+    }
+  });
+
+  async function waitForTransformSafety() {
+    if (settingsSettled && (!settings.enabled || hydrationSettled)) return settings.enabled ? hydrationSettled : false;
+
+    let timedOut = false;
+    await Promise.race([
+      Promise.all([settingsReady, hydrationReady]),
+      new Promise((resolve) => setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, STARTUP_WAIT_MS))
+    ]);
+
+    if (settingsSettled && !settings.enabled) return false;
+    if (settingsSettled && hydrationSettled) return true;
+
+    if (timedOut) {
+      publishDiagnostic(
+        "startup-barrier-timeout",
+        "Conversation response was left unmodified because startup did not settle in time.",
+        { settingsSettled, hydrationSettled, waitMs: STARTUP_WAIT_MS }
+      );
+    }
+    return false;
   }
 
-  function transformConversation(data, originalBytes) {
-    const started = performance.now();
-    const mode = resolveMode(settings.mode);
-    const limit = normalizeMessageLimit(settings.maxDisplayMessages);
-    const transformed = CGTrim.trimConversation(data, { mode, maxDisplayMessages: limit });
-    publishTransformStats(transformed, originalBytes, started);
-    return transformed.changed ? transformed.data : data;
+  function publishArchive(data) {
+    try {
+      const archive = CGArchive.createArchive(data, { sourceUrl: location.href });
+      if (!archive) {
+        publishDiagnostic("archive-build-empty", "The conversation response could not be converted to an archive.");
+        return false;
+      }
+      publish("archive", { archive });
+      return true;
+    } catch (error) {
+      publishDiagnostic("archive-build-failed", error);
+      return false;
+    }
   }
 
   function publishTransformStats(transformed, originalBytes, started) {
@@ -100,7 +179,7 @@
     try {
       outputBytes = new TextEncoder().encode(JSON.stringify(transformed.data)).byteLength;
     } catch (error) {
-      // Size accounting is optional; transformation itself remains valid.
+      // Byte accounting is cosmetic; the graph transformation remains valid.
       console.debug("[GPT AntiCurse] Could not measure transformed response size", error);
       outputBytes = undefined;
     }
@@ -115,69 +194,92 @@
     });
   }
 
-  function reportError(transport, error) {
-    const text = String(error && error.message ? error.message : error);
+  function transformConversation(data, originalBytes) {
+    const started = performance.now();
+    const transformed = CGTrim.trimConversation(data, {
+      mode: resolveMode(settings.mode),
+      maxDisplayMessages: normalizeMessageLimit(settings.maxDisplayMessages)
+    });
+    publishTransformStats(transformed, originalBytes, started);
+    return transformed.changed ? transformed.data : data;
+  }
+
+  function reportTransformError(transport, error) {
+    const text = errorText(error);
     publishDiagnostic("conversation-transform-failed", text);
     publishStats({ mode: "error", transport, error: text });
   }
 
-  function installResponseJsonWrapper() {
-    const nativeJson = Response.prototype.json;
-    Object.defineProperty(Response.prototype, "json", {
-      configurable: true,
-      writable: true,
-      value: async function antiCurseJson() {
-        const data = await nativeJson.call(this);
-        if (!settings.enabled || !isConversationDocument(this.url)) return data;
-        if (!canTransform(this)) {
-          reportStartupPassthrough("chromium-response-json");
-          return data;
-        }
-        try {
-          return transformConversation(data, undefined);
-        } catch (error) {
-          reportError("chromium-response-json", error);
-          return data;
-        }
-      }
+  function reportStartupPassthrough(transport) {
+    publishStats({
+      mode: "passthrough",
+      transport,
+      reason: settingsSettled && !settings.enabled ? "disabled" : "startup-barrier-timeout",
+      trimMode: resolveMode(settings.mode)
     });
   }
 
-  function installResponseTextWrapper() {
-    const nativeText = Response.prototype.text;
-    Object.defineProperty(Response.prototype, "text", {
-      configurable: true,
-      writable: true,
-      value: async function antiCurseText() {
-        const text = await nativeText.call(this);
-        if (!settings.enabled || !isConversationDocument(this.url)) return text;
-        if (!canTransform(this)) {
-          reportStartupPassthrough("chromium-response-text");
-          return text;
-        }
-        try {
-          let body = text;
-          if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
-          const data = JSON.parse(body);
-          const transformed = transformConversation(data, new TextEncoder().encode(text).byteLength);
-          return transformed === data ? text : JSON.stringify(transformed);
-        } catch (error) {
-          reportError("chromium-response-text", error);
-          return text;
-        }
-      }
-    });
-  }
+  const nativeJson = Response.prototype.json;
+  Object.defineProperty(Response.prototype, "json", {
+    configurable: true,
+    writable: true,
+    value: async function antiCurseJson() {
+      if (!isConversationDocument(this.url)) return nativeJson.call(this);
 
-  window.addEventListener("message", (event) => {
-    if (event.source !== window || event.origin !== location.origin) return;
-    const message = event.data;
-    if (!message || message.channel !== CHANNEL || message.type !== "settings") return;
-    applySettings(message.settings);
+      const safeToTransform = await waitForTransformSafety();
+      const data = await nativeJson.call(this);
+      publishArchive(data);
+
+      if (!settings.enabled || !safeToTransform) {
+        reportStartupPassthrough("chromium-response-json");
+        return data;
+      }
+
+      try {
+        return transformConversation(data, undefined);
+      } catch (error) {
+        reportTransformError("chromium-response-json", error);
+        return data;
+      }
+    }
   });
 
-  installResponseJsonWrapper();
-  installResponseTextWrapper();
-  // The isolated bridge also publishes settings when storage resolves, so polling is unnecessary.
+  const nativeText = Response.prototype.text;
+  Object.defineProperty(Response.prototype, "text", {
+    configurable: true,
+    writable: true,
+    value: async function antiCurseText() {
+      if (!isConversationDocument(this.url)) return nativeText.call(this);
+
+      const safeToTransform = await waitForTransformSafety();
+      const text = await nativeText.call(this);
+      let data;
+      try {
+        let body = text;
+        if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
+        data = JSON.parse(body);
+      } catch (error) {
+        publishDiagnostic("conversation-json-parse-failed", error);
+        return text;
+      }
+
+      publishArchive(data);
+      if (!settings.enabled || !safeToTransform) {
+        reportStartupPassthrough("chromium-response-text");
+        return text;
+      }
+
+      try {
+        const transformed = transformConversation(data, new TextEncoder().encode(text).byteLength);
+        return transformed === data ? text : JSON.stringify(transformed);
+      } catch (error) {
+        reportTransformError("chromium-response-text", error);
+        return text;
+      }
+    }
+  });
+
+  // The isolated settings bridge also publishes proactively after storage loads;
+  // this request only handles the case where it was already ready first.
   publish("settings-request", {});
 })();
