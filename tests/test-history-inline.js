@@ -60,7 +60,8 @@ assert(windowed.includes("userInteracted"), "initial scroll correction must not 
 assert(windowed.includes("missing-after-trim"), "trim-without-history must become a visible diagnostic rather than a silent missing button");
 
 assert.equal(firefoxArchiveCapture, chromeArchiveCapture, "archive tail capture logic must stay byte-identical across browsers");
-assert(firefoxArchiveCapture.includes("function conversationIdFromPage"), "tail capture must derive its conversation id locally from the current page");
+assert(firefoxArchiveCapture.includes("function conversationId()"), "tail capture must derive its conversation id locally from the current page");
+assert(/location\.pathname\.match\(\/\(\?:\^\|\\\/\)c\\\/\(\[\^\/?#\]\+\)\//.test(firefoxArchiveCapture), "tail capture must parse the current /c/<id> pathname itself");
 assert(!/\bCGArchive\b/.test(firefoxArchiveCapture), "tail capture must not depend on a free archive helper global");
 assert(firefoxArchiveCapture.includes('type: "cg-merge-rendered-archive"'), "tail capture must still merge rendered updates through the background archive service");
 
@@ -91,11 +92,13 @@ assert(chromeUi.js.indexOf("diagnostics.js") < chromeUi.js.indexOf("content.js")
 assert(chromeUi.js.indexOf("history-native.js") < chromeUi.js.indexOf("history-virtualized.js"), "Markdown helper must load before the virtualized renderer");
 assert(chromeUi.js.indexOf("history-fidelity.js") < chromeUi.js.indexOf("history-hydration-safe.js"), "Chromium hydration wrapper must wrap the final history renderer");
 assert(chromeUi.js.indexOf("history-hydration-safe.js") < chromeUi.js.indexOf("windowed.js"), "Chromium hydration wrapper must load before the history controller");
+assert(chromeUi.js.indexOf("windowed.js") < chromeUi.js.indexOf("debug-state.js"), "Chromium debug state must observe the final history controller stack");
 assert(firefoxUi.js.indexOf("diagnostics.js") < firefoxUi.js.indexOf("content.js"), "Firefox diagnostics must exist before code can report failures");
 assert(!firefoxUi.js.includes("history-overlay.js"), "Firefox must not package the superseded history layer");
 assert(firefoxUi.js.indexOf("history-native.js") < firefoxUi.js.indexOf("history-virtualized.js"), "Firefox Markdown helper must load before virtualized history");
 assert(firefoxUi.js.indexOf("history-fidelity.js") < firefoxUi.js.indexOf("history-hydration-safe.js"), "Firefox hydration wrapper must wrap the final history renderer");
 assert(firefoxUi.js.indexOf("history-hydration-safe.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox hydration wrapper must load before the history controller");
+assert(firefoxUi.js.indexOf("windowed.js") < firefoxUi.js.indexOf("debug-state.js"), "Firefox debug state must observe the final history controller stack");
 assert(!firefoxManifest.background.scripts.includes("archive-firefox-hook.js"), "Firefox must have one authoritative network archive path, not a duplicate trim wrapper");
 
 // Defaults are supplied at each read site; never run a read-then-write defaults
