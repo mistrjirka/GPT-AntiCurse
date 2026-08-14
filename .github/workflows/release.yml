@@ -79,6 +79,8 @@ jobs:
           echo '127.0.0.1 chatgpt.com' | sudo tee -a /etc/hosts >/dev/null
       - name: Run Chromium extension E2E
         run: node tests/e2e-chromium.js
+      - name: Run Chromium native-fidelity E2E
+        run: node tests/e2e-fidelity-chromium.js
       - name: Run Firefox extension E2E
         run: node tests/e2e-firefox.js
       - name: Create GitHub Release if missing
