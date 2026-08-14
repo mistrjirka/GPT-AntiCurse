@@ -151,6 +151,7 @@ async function waitForValue(driver, script, timeout = 12000) {
 
   const options = new firefox.Options()
     .addArguments("-headless")
+    .setAcceptInsecureCerts(true)
     .setPreference("browser.cache.disk.enable", false)
     .setPreference("browser.cache.memory.enable", false)
     .setPreference("network.dns.localDomains", "chatgpt.com");
