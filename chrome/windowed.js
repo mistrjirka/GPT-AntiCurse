@@ -3,10 +3,13 @@
   "use strict";
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
-  // Chrome 148+ also exposes `browser`, so namespace presence is not browser identity.
-  // This code runs in a page-backed content-script realm where the browser UA is a
-  // direct, synchronous description of the actual host browser.
-  const IS_FIREFOX = /Firefox\//.test(String(navigator.userAgent || ""));
+  // Package identity decides which AntiCurse history architecture is available.
+  // Runtime browser is recorded separately for diagnostics because Chrome 148+
+  // also exposes the `browser` namespace.
+  const extensionManifest = ext.runtime.getManifest();
+  const IS_FIREFOX = !!(extensionManifest.browser_specific_settings && extensionManifest.browser_specific_settings.gecko);
+  const PACKAGE_TARGET = IS_FIREFOX ? "firefox" : "chromium";
+  const RUNTIME_BROWSER = /Firefox\//.test(String(navigator.userAgent || "")) ? "firefox" : "chromium";
   const NETWORK_ARCHIVE_EVENT = "__gpt_anticurse_archive_ready__";
   const STATS_EVENT = "__gpt_anticurse_stats_ready__";
   const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
@@ -409,7 +412,8 @@
   globalThis.CGAntiCurseHistoryDebug = {
     debug() {
       return {
-        browserPath: IS_FIREFOX ? "firefox" : "chromium",
+        packageTarget: PACKAGE_TARGET,
+        runtimeBrowser: RUNTIME_BROWSER,
         historyPresent: !!history,
         historySource: history && history.source ? history.source : null,
         requestInFlight: !!historyRequestPromise,
