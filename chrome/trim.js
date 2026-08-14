@@ -1,21 +1,16 @@
 /*
  * Pure conversation-graph transformation logic.
  *
- * This module has no browser API dependencies and is loaded by the unit tests.
- * It operates only on the conversation document returned by ChatGPT.
+ * Production has exactly two history modes: Recent N and Auto window. Both use
+ * the same bounded graph semantics; Auto only changes how archived pages are
+ * presented by the UI. This module deliberately contains no legacy full/latest
+ * selection branches.
  */
 (function (global) {
   "use strict";
 
-  const VALID_MODES = new Set([
-    "visible-history",
-    "recent",
-    "latest-visible",
-    "windowed-visible"
-  ]);
-
   const DEFAULTS = Object.freeze({
-    mode: "visible-history",
+    mode: "recent",
     maxDisplayMessages: 64,
     maxPrefixNodes: 4
   });
@@ -103,22 +98,6 @@
     return result;
   }
 
-  function selectVisibleHistory(mapping, chain, config) {
-    const prefix = leadingPrefix(mapping, chain, config.maxPrefixNodes);
-    const display = chain.filter((id) => isDisplayCandidate(mapping[id]));
-    return uniqueInOrder(prefix.concat(display, chain[chain.length - 1]));
-  }
-
-  function selectLatestVisible(mapping, chain, config) {
-    const display = chain.filter((id) => isDisplayCandidate(mapping[id]));
-    const latest = display.slice(-config.maxDisplayMessages);
-    const currentId = chain[chain.length - 1];
-
-    // Keep a technical terminal current node if it is not itself displayable.
-    if (currentId && !latest.includes(currentId)) latest.push(currentId);
-    return uniqueInOrder(latest);
-  }
-
   function findRecentCutoff(mapping, chain, displayLimit) {
     let seenDisplay = 0;
 
@@ -128,7 +107,7 @@
       if (seenDisplay >= displayLimit) return index;
     }
 
-    // Fewer visible messages than the limit: keep the whole active chain.
+    // Fewer visible records than the requested budget: keep the active chain.
     return 0;
   }
 
@@ -194,41 +173,21 @@
     }
 
     const result = Object.assign({}, data, { mapping: newMapping });
-    if (Object.prototype.hasOwnProperty.call(data, "root")) {
-      result.root = keptChain[0] || data.current_node;
-    }
-    if (!newMapping[result.current_node] && keptChain.length) {
-      result.current_node = keptChain[keptChain.length - 1];
-    }
+    if (Object.prototype.hasOwnProperty.call(data, "root")) result.root = keptChain[0] || data.current_node;
+    if (!newMapping[result.current_node] && keptChain.length) result.current_node = keptChain[keptChain.length - 1];
     return result;
   }
 
   function normalizeConfig(options) {
     const config = Object.assign({}, DEFAULTS, options || {});
-    if (!VALID_MODES.has(config.mode)) config.mode = DEFAULTS.mode;
+    config.mode = config.mode === "windowed-visible" ? "windowed-visible" : "recent";
     config.maxDisplayMessages = Math.max(4, Math.min(500, Number(config.maxDisplayMessages) || DEFAULTS.maxDisplayMessages));
     config.maxPrefixNodes = Math.max(0, Math.min(32, Number(config.maxPrefixNodes) || DEFAULTS.maxPrefixNodes));
     return config;
   }
 
-  function selectKeptChain(mapping, chain, config) {
-    switch (config.mode) {
-      case "visible-history":
-        return selectVisibleHistory(mapping, chain, config);
-      case "latest-visible":
-        return selectLatestVisible(mapping, chain, config);
-      case "recent":
-      case "windowed-visible":
-        return selectRecent(mapping, chain, config);
-      default:
-        return selectVisibleHistory(mapping, chain, config);
-    }
-  }
-
-  function canPassThroughRecent(data, chain, before, config) {
-    return config.mode === "recent" &&
-      before.displayCandidates <= config.maxDisplayMessages &&
-      Object.keys(data.mapping).length === chain.length;
+  function canPassThrough(data, chain, before, config) {
+    return before.displayCandidates <= config.maxDisplayMessages && Object.keys(data.mapping).length === chain.length;
   }
 
   function makeStats(config, mappingNodeCount, chain, before, keptChain, after, currentPreserved) {
@@ -258,7 +217,7 @@
     const before = countActivePath(mapping, chain);
     const mappingNodeCount = Object.keys(mapping).length;
 
-    if (canPassThroughRecent(data, chain, before, config)) {
+    if (canPassThrough(data, chain, before, config)) {
       return {
         changed: false,
         data,
@@ -267,7 +226,7 @@
       };
     }
 
-    let keptChain = selectKeptChain(mapping, chain, config);
+    let keptChain = selectRecent(mapping, chain, config);
     if (!keptChain.length) keptChain = [currentId];
 
     const result = rebuildLinearMapping(data, keptChain);
@@ -297,7 +256,5 @@
     isExplicitlyHidden
   };
 
-  if (typeof module !== "undefined" && module.exports) {
-    module.exports = global.CGTrim;
-  }
+  if (typeof module !== "undefined" && module.exports) module.exports = global.CGTrim;
 })(typeof globalThis !== "undefined" ? globalThis : this);
