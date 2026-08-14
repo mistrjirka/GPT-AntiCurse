@@ -29,7 +29,6 @@ jobs:
         run: |
           set -euo pipefail
           cmp firefox/diagnostics.js chrome/diagnostics.js
-          cmp firefox/defaults.js chrome/defaults.js
           cmp firefox/trim.js chrome/trim.js
           cmp firefox/trim-logical.js chrome/trim-logical.js
           cmp firefox/archive.js chrome/archive.js

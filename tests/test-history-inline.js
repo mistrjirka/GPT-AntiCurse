@@ -3,6 +3,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 function source(relative) { return fs.readFileSync(path.join(__dirname, "..", relative), "utf8"); }
+
 const markdown = source("firefox/history-native.js");
 const virtualized = source("firefox/history-virtualized.js");
 const windowed = source("firefox/windowed.js");
@@ -11,9 +12,11 @@ const historyHydration = source("firefox/history-hydration-safe.js");
 const firefoxContent = source("firefox/content.js");
 const chromeContent = source("chrome/content.js");
 const chromeBackground = source("chrome/background.js");
+const chromeBackgroundEntry = source("chrome/background-entry.js");
 const chromeMain = source("chrome/main.js");
-const popup = source("firefox/popup.html");
-const defaults = source("firefox/defaults.js");
+const popupHtml = source("firefox/popup.html");
+const firefoxPopup = source("firefox/popup.js");
+const chromePopup = source("chrome/popup.js");
 const contentCss = source("firefox/content.css");
 const sizing = source("firefox/popup-sizing.css");
 const chromeManifest = JSON.parse(source("chrome/manifest.json"));
@@ -88,12 +91,19 @@ assert(firefoxUi.js.indexOf("history-fidelity.js") < firefoxUi.js.indexOf("histo
 assert(firefoxUi.js.indexOf("history-hydration-safe.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox hydration wrapper must load before the history controller");
 assert(!firefoxManifest.background.scripts.includes("archive-firefox-hook.js"), "Firefox must have one authoritative network archive path, not a duplicate trim wrapper");
 
-const modeOptions = popup.match(/<option value="(?:recent|windowed-visible)">/g) || [];
+// Defaults are supplied at each read site; never run a read-then-write defaults
+// initializer at extension startup because it can overwrite a concurrent user/test write.
+assert(!chromeBackgroundEntry.includes("defaults.js"), "Chromium service worker must not run an eager defaults writer");
+assert(!firefoxManifest.background.scripts.includes("defaults.js"), "Firefox background must not run an eager defaults writer");
+assert(chromePopup.includes('normalizeMode(value)'), "Chromium popup must normalize legacy/unknown modes when consumed");
+assert(firefoxPopup.includes('normalizeMode(value)'), "Firefox popup must normalize legacy/unknown modes when consumed");
+assert(chromeMain.includes('return VALID_MODES.has(value) ? value : "recent"'), "Chromium interceptor must default unknown modes to Recent without mutating storage");
+
+const modeOptions = popupHtml.match(/<option value="(?:recent|windowed-visible)">/g) || [];
 assert.equal(modeOptions.length, 2, "popup must expose exactly two history modes");
-assert(!popup.includes("visible-history"), "All visible history must not remain user-facing");
-assert(!popup.includes("latest-visible"), "Latest visible only must not remain user-facing");
-assert(!popup.includes('id="loadPrevious"'), "popup should not duplicate the on-page Load previous control");
-assert(defaults.includes('updates.mode = "recent"'), "legacy/unknown modes must migrate to Recent N");
+assert(!popupHtml.includes("visible-history"), "All visible history must not remain user-facing");
+assert(!popupHtml.includes("latest-visible"), "Latest visible only must not remain user-facing");
+assert(!popupHtml.includes('id="loadPrevious"'), "popup should not duplicate the on-page Load previous control");
 
 assert(sizing.includes("width:360px") || sizing.includes("width: 360px"), "popup must have an explicit body width");
 assert(sizing.includes("min-width:360px") || sizing.includes("min-width: 360px"), "popup must have a Firefox-safe minimum width");
