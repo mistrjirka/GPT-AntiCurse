@@ -1,40 +1,24 @@
-# GPT AntiCurse v0.5.8
+# GPT AntiCurse v0.5.9
 
-Bounded archived-history DOM, logical Recent-N budgeting, and real Chromium + Firefox WebExtension testing.
+Native-looking archived history fidelity correction.
 
-## Bounded archived history
+## Native thread geometry
 
-- Loaded older history is now virtualized instead of growing the DOM without limit.
-- AntiCurse keeps only a small contiguous window of archived pages mounted (normally about three pages / `3×N` logical turns).
-- Off-screen loaded pages are measured, removed, and replaced with equal-height spacers.
-- Approaching a spacer reconstructs the corresponding page and evicts an opposite off-screen page.
-- The complete archive remains available; only presentation DOM is bounded.
-- Synthetic archived turns still never use ChatGPT's native `data-message-author-role` / `data-turn-id` identity attributes.
+- Archived turns now derive their visual shell from the live native ChatGPT user/assistant turns already present in `#thread`.
+- AntiCurse copies only class names: it does not clone React nodes, event handlers, IDs, `data-message-author-role`, or `data-turn-id`.
+- Thread width, responsive side margins, side-pane behavior, user-bubble width, assistant Markdown layout, and `agent-turn` geometry therefore follow the current ChatGPT UI instead of AntiCurse's old hard-coded approximation.
+- A fallback shell uses ChatGPT's current `--thread-content-max-width`, `--thread-content-margin`, and `--user-chat-width` variables when a native template is temporarily unavailable.
 
-## Logical Recent N
+## Tool/activity presentation
 
-- Consecutive visible assistant progress records now count as one user-facing assistant unit for the Recent-N budget.
-- Every user message remains its own unit.
-- The existing graph-preserving trimmer still chooses the final cutoff and retains all technical/tool/hidden nodes inside the retained recent slice.
-- This prevents long agent progress streams from consuming most of the Recent-N window without flattening or simplifying React-owned recent state.
-- Archived paging uses the same logical-unit boundaries so a page never splits one consecutive assistant response group.
+- Legacy `[Non-text visible message]` placeholders are removed from the visible archived transcript.
+- Serialized Development Sandbox calls, shell commands, web searches, plans, and other recognizable internal tool payloads are collapsed into compact tertiary activity rows instead of being rendered as giant Markdown paragraphs.
+- The raw serialized payload remains available in the activity row tooltip for debugging.
+- Older archives cannot always reproduce ChatGPT's exact generated tool-summary wording because v0.5.8 stored flattened visible text rather than the full private React/tool presentation model; v0.5.9 prioritizes matching the native visual hierarchy without pretending synthetic history is React-owned.
 
-## Real Chromium extension E2E
+## Performance and safety
 
-- CI launches the actual unpacked Chromium extension using Playwright's persistent Chromium context.
-- A mocked `chatgpt.com` fixture fetches a large tool-heavy conversation through the real MAIN-world response interceptor.
-- The test verifies that page/React-side code receives only the bounded graph while AntiCurse retains older history off-React.
-- It verifies recent tool/hidden nodes survive the cutoff, Recent N exposes older pages, Auto window loads at the top, synthetic turns do not impersonate native turns, and repeated paging keeps the mounted archive DOM bounded.
-- The browser test caught and fixed a duplicate retained-history replay that could reset pages already loaded by the user.
-
-## Real Firefox extension E2E
-
-- CI also launches a real official Firefox build through Selenium/Geckodriver and installs the Firefox package as a temporary WebExtension.
-- Firefox loads a local HTTPS fixture under the real `chatgpt.com` hostname, so the production `webRequest.filterResponseData()` transport handles the conversation response.
-- The test verifies the logical cutoff before page code sees the graph, preservation of recent tool/hidden nodes, the on-page Recent-N button, archived loading, and absence of native React identity attributes on synthetic history.
-- Static/unit tests remain as faster fail-first gates before the real-browser runs.
-
-## Browser parity
-
-- Firefox and Chromium share the logical-window module, virtualized history implementation, and spacer styling byte-for-byte.
-- Firefox keeps its `filterResponseData` transport; Chromium keeps the retained/replayed MAIN-world history bridge.
+- The v0.5.8 bounded virtual page window remains unchanged: normally only about three archived pages are mounted.
+- Native-fidelity transformation happens while an AntiCurse page is still detached, before it enters the conversation DOM.
+- Synthetic archived turns still never use native React identity attributes.
+- Firefox and Chromium use byte-identical fidelity JS/CSS and remain gated by the real-browser E2E suite.
