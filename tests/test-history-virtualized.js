@@ -30,6 +30,10 @@ assert(virtualSource.includes("cg-history-spacer-top"), "virtualized history nee
 assert(virtualSource.includes("cg-history-spacer-bottom"), "virtualized history needs a bottom height spacer");
 assert(virtualSource.includes("this.pages.length <= this.maxPages()"), "virtualization must stop doing work while within the bound");
 assert(virtualSource.includes("page.height"), "evicted pages must preserve measured height");
+assert(virtualSource.includes("estimatedHeight"), "evicted pages need a non-zero geometry fallback when the browser defers layout");
+assert(virtualSource.includes('turn.style.contentVisibility = "visible"'), "mounted offscreen pages must be force-measurable before eviction");
+assert(virtualSource.includes("element.offsetHeight"), "page measurement should not depend on one layout API");
+assert(virtualSource.includes("element.scrollHeight"), "page measurement should have a second real-layout fallback");
 assert(!virtualSource.includes("data-message-author-role"), "synthetic turns must not impersonate ChatGPT native messages");
 
 const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
