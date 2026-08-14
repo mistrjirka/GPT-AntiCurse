@@ -6,7 +6,7 @@
  * around Response.json()/text(), scoped strictly to ChatGPT's conversation GET.
  *
  * The wrapper has a single ordered pipeline:
- *   1. wait for authoritative settings and the initial hydration boundary;
+ *   1. wait for authoritative settings and, when enabled, the hydration boundary;
  *   2. read the untouched conversation;
  *   3. publish one minimal visible-history archive to the isolated world;
  *   4. trim a copy for ChatGPT, or fail open with an explicit diagnostic.
@@ -15,7 +15,8 @@
   "use strict";
 
   const CHANNEL = "__gpt_anticurse_v1__";
-  const STARTUP_WAIT_MS = 8000;
+  const SETTINGS_WAIT_MS = 2500;
+  const HYDRATION_WAIT_MS = 8000;
   const VALID_MODES = new Set(["recent", "windowed-visible"]);
   const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
 
@@ -56,6 +57,7 @@
       return url.origin === location.origin && /^\/backend-api\/conversation\/[^/]+\/?$/.test(url.pathname);
     } catch (error) {
       // A Response without a parseable URL cannot be the scoped endpoint.
+      void error;
       return false;
     }
   }
@@ -110,25 +112,43 @@
   });
 
   async function waitForTransformSafety() {
-    if (settingsSettled && (!settings.enabled || hydrationSettled)) return settings.enabled ? hydrationSettled : false;
+    if (!settingsSettled) {
+      let timedOut = false;
+      await Promise.race([
+        settingsReady,
+        new Promise((resolve) => setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, SETTINGS_WAIT_MS))
+      ]);
+      if (timedOut && !settingsSettled) {
+        publishDiagnostic(
+          "startup-barrier-timeout",
+          "Authoritative extension settings did not arrive before the conversation timeout.",
+          { phase: "settings", waitMs: SETTINGS_WAIT_MS }
+        );
+        return false;
+      }
+    }
+
+    if (!settings.enabled) return false;
+    if (hydrationSettled) return true;
 
     let timedOut = false;
     await Promise.race([
-      Promise.all([settingsReady, hydrationReady]),
+      hydrationReady,
       new Promise((resolve) => setTimeout(() => {
         timedOut = true;
         resolve();
-      }, STARTUP_WAIT_MS))
+      }, HYDRATION_WAIT_MS))
     ]);
 
-    if (settingsSettled && !settings.enabled) return false;
-    if (settingsSettled && hydrationSettled) return true;
-
+    if (hydrationSettled) return true;
     if (timedOut) {
       publishDiagnostic(
         "startup-barrier-timeout",
-        "Conversation response was left unmodified because startup did not settle in time.",
-        { settingsSettled, hydrationSettled, waitMs: STARTUP_WAIT_MS }
+        "ChatGPT hydration did not settle before the conversation timeout; original response kept.",
+        { phase: "hydration", waitMs: HYDRATION_WAIT_MS }
       );
     }
     return false;
