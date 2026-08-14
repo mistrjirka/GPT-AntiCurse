@@ -37,12 +37,14 @@ jobs:
           cmp firefox/archive-store.js chrome/archive-store.js
           cmp firefox/archive-background.js chrome/archive-background.js
           cmp firefox/archive-capture.js chrome/archive-capture.js
+          cmp firefox/dom-ready.js chrome/dom-ready.js
           cmp firefox/history-overlay.js chrome/history-overlay.js
           cmp firefox/history-native.js chrome/history-native.js
           cmp firefox/history-virtualized.js chrome/history-virtualized.js
           cmp firefox/history-virtualized.css chrome/history-virtualized.css
           cmp firefox/history-fidelity.js chrome/history-fidelity.js
           cmp firefox/history-fidelity.css chrome/history-fidelity.css
+          cmp firefox/history-hydration-safe.js chrome/history-hydration-safe.js
           cmp firefox/windowed.js chrome/windowed.js
           cmp firefox/content.css chrome/content.css
           cmp firefox/popup.html chrome/popup.html
@@ -79,6 +81,8 @@ jobs:
           echo '127.0.0.1 chatgpt.com' | sudo tee -a /etc/hosts >/dev/null
       - name: Run Chromium extension E2E
         run: node tests/e2e-chromium.js
+      - name: Run Chromium hydration-boundary E2E
+        run: node tests/e2e-hydration-chromium.js
       - name: Run Chromium native-fidelity E2E
         run: node tests/e2e-fidelity-chromium.js
       - name: Run Firefox extension E2E
