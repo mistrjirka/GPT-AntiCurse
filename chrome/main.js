@@ -1,9 +1,11 @@
 /*
  * Chromium MAIN-world response interceptor.
  *
- * Normal Manifest V3 extensions do not have Firefox's filterResponseData() API.
- * This packaged script therefore wraps Response.json()/text() only for the exact
- * ChatGPT conversation-document endpoint. It never loads remote code.
+ * Manifest V3 Chromium does not expose Firefox's filterResponseData() API to
+ * normal extensions. This packaged MAIN-world script therefore wraps
+ * Response.json()/text() only for ChatGPT's conversation-document endpoint.
+ * Full history is not retained here; the untrimmed archive is persisted in the
+ * extension origin and the isolated UI retrieves it through runtime messaging.
  */
 (function () {
   "use strict";
@@ -13,8 +15,6 @@
   const VALID_MODES = new Set(["visible-history", ...LIMITED_MODES]);
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
-    // Match the user-facing product default even before the isolated-world
-    // storage bridge has had a chance to publish authoritative settings.
     mode: "recent",
     maxDisplayMessages: 64
   });
@@ -47,10 +47,6 @@
     publish("stats", { stats });
   }
 
-  function publishHistory(history) {
-    publish("history", { history });
-  }
-
   function applySettings(next) {
     if (!next || typeof next !== "object") return;
     if (typeof next.enabled === "boolean") settings.enabled = next.enabled;
@@ -58,23 +54,6 @@
     if (Number.isFinite(Number(next.maxDisplayMessages))) {
       settings.maxDisplayMessages = normalizeMessageLimit(next.maxDisplayMessages);
     }
-  }
-
-  function buildHistoryArchive(data, transformed, mode, limit) {
-    if (!LIMITED_MODES.has(mode)) return null;
-
-    const messages = CGTrim.extractVisibleHistory(data);
-    const fallbackNativeCount = Math.min(messages.length, limit);
-    const nativeVisibleCount = transformed.stats && Number.isFinite(Number(transformed.stats.displayAfter))
-      ? Math.max(0, Number(transformed.stats.displayAfter))
-      : fallbackNativeCount;
-
-    return {
-      messages,
-      nativeVisibleCount,
-      pageSize: limit,
-      maxRendered: Math.max(limit, Math.min(500, limit * 3))
-    };
   }
 
   function transformConversation(data, originalBytes) {
@@ -86,9 +65,7 @@
       maxDisplayMessages: limit
     });
 
-    publishHistory(buildHistoryArchive(data, transformed, mode, limit));
     publishTransformStats(transformed, originalBytes, started);
-
     return transformed.changed ? transformed.data : data;
   }
 
