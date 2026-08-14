@@ -78,10 +78,17 @@ jobs:
           )
           for test in "${tests[@]}"; do
             echo "==> $test"
-            if ! node "$test"; then
-              echo "::error file=$test::Unit/code-quality test failed: $test"
-              exit 1
+            output_file="$(mktemp)"
+            if node "$test" >"$output_file" 2>&1; then
+              cat "$output_file"
+              rm -f "$output_file"
+              continue
             fi
+            cat "$output_file"
+            summary="$(tail -n 12 "$output_file" | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
+            rm -f "$output_file"
+            echo "::error file=$test::${summary:-Unit/code-quality test failed}"
+            exit 1
           done
       - name: Build browser packages
         run: bash ./scripts/build.sh
