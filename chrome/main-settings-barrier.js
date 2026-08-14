@@ -1,33 +1,26 @@
 /*
- * Chromium MAIN-world startup barrier and authoritative pre-transform backup.
+ * Chromium MAIN-world startup barrier and authoritative transient archive.
  *
- * Two things must be true before ChatGPT receives a transformed conversation:
- *  1. the isolated-world bridge has delivered authoritative extension settings;
- *  2. the initial server-rendered page has crossed its hydration boundary.
+ * The interceptor is installed at document_start, but a transformed conversation
+ * is not delivered to ChatGPT until authoritative trim settings are known and
+ * the initial server-rendered page has crossed its hydration boundary.
  *
- * The interceptor itself is installed at document_start, so ChatGPT can never
- * consume the untrimmed response first. On a hard SSR load the response promise
- * is simply held until load + two animation frames + an idle slice. This avoids
- * giving React a client graph that disagrees with its server HTML mid-hydration.
+ * The full visible archive is published once to the isolated world for current-
+ * page history. Persistence is an isolated-world concern; MAIN world deliberately
+ * does not read or retain the user's backup preference.
  */
 (() => {
   "use strict";
 
   const CHANNEL = "__gpt_anticurse_v1__";
   const WAIT_MS = 8000;
-  let trimSettingsReady = false;
-  let archiveSettingsReady = false;
-  let archiveEnabled = false;
-  let resolveSettingsReady;
+  let settingsSettled = false;
   let hydrationSettled = false;
+  let resolveSettingsReady;
   let resolveHydrationReady;
 
   const settingsReady = new Promise((resolve) => { resolveSettingsReady = resolve; });
   const hydrationReady = new Promise((resolve) => { resolveHydrationReady = resolve; });
-
-  function maybeResolveSettings() {
-    if (trimSettingsReady && archiveSettingsReady) resolveSettingsReady();
-  }
 
   function finishHydration() {
     if (hydrationSettled) return;
@@ -48,13 +41,9 @@
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
     const message = event.data;
-    if (!message || message.channel !== CHANNEL) return;
-    if (message.type === "settings") trimSettingsReady = true;
-    if (message.type === "archive-settings") {
-      archiveSettingsReady = true;
-      archiveEnabled = message.archiveEnabled !== false;
-    }
-    maybeResolveSettings();
+    if (!message || message.channel !== CHANNEL || message.type !== "settings" || settingsSettled) return;
+    settingsSettled = true;
+    resolveSettingsReady();
   });
 
   function isConversationDocument(urlString) {
@@ -67,7 +56,7 @@
   }
 
   async function waitForSafeDelivery() {
-    if (trimSettingsReady && archiveSettingsReady && hydrationSettled) return;
+    if (settingsSettled && hydrationSettled) return;
     await Promise.race([
       Promise.all([settingsReady, hydrationReady]),
       new Promise((resolve) => setTimeout(resolve, WAIT_MS))
@@ -75,7 +64,6 @@
   }
 
   function publishArchive(data) {
-    if (!archiveEnabled) return;
     try {
       const archive = CGArchive.createArchive(data, { sourceUrl: location.href });
       if (archive) window.postMessage({ channel: CHANNEL, type: "archive", archive }, location.origin);
@@ -103,13 +91,11 @@
       if (!isConversationDocument(this.url)) return nativeText.call(this);
       await waitForSafeDelivery();
       const text = await nativeText.call(this);
-      if (archiveEnabled) {
-        try {
-          let body = text;
-          if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
-          publishArchive(JSON.parse(body));
-        } catch (_) {}
-      }
+      try {
+        let body = text;
+        if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
+        publishArchive(JSON.parse(body));
+      } catch (_) {}
       return text;
     }
   });
