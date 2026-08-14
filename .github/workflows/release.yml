@@ -38,7 +38,6 @@ jobs:
           cmp firefox/archive-background.js chrome/archive-background.js
           cmp firefox/archive-capture.js chrome/archive-capture.js
           cmp firefox/dom-ready.js chrome/dom-ready.js
-          cmp firefox/history-overlay.js chrome/history-overlay.js
           cmp firefox/history-native.js chrome/history-native.js
           cmp firefox/history-virtualized.js chrome/history-virtualized.js
           cmp firefox/history-virtualized.css chrome/history-virtualized.css
@@ -68,6 +67,7 @@ jobs:
           node tests/test-history-inline.js
           node tests/test-history-virtualized.js
           node tests/test-history-fidelity.js
+          node tests/test-packaging.js
       - name: Build browser packages
         run: bash ./scripts/build.sh
       - name: Install browser E2E runtimes
