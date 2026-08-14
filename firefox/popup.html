@@ -17,18 +17,18 @@
     <section class="summary card" aria-label="Current optimization"><div class="summary-main"><span id="savedPct" class="pct">—</span><span id="summaryText" class="summary-text">No conversation stats yet</span></div><div id="summarySub" class="summary-sub">Reload a ChatGPT conversation to measure it.</div></section>
     <section class="controls card" aria-label="AntiCurse settings">
       <label class="row"><span class="label"><b>Performance guard</b><small>Reduce heavy conversation state</small></span><input id="enabled" type="checkbox"></label>
-      <label class="row"><span class="label"><b>Mode</b></span><select id="mode"><option value="visible-history">All visible history</option><option value="latest-visible">Latest visible only</option><option value="windowed-visible">Auto windowed history</option><option value="recent">Recent safe window</option></select></label>
-      <label class="row"><span class="label"><b>Visible window</b><small>Turns per page/window</small></span><input id="limit" type="number" min="4" max="500" step="2"></label>
+      <label class="row"><span class="label"><b>History mode</b><small id="modeHelp">Keep the latest window and load older turns with a button.</small></span><select id="mode" aria-describedby="modeHelp"><option value="recent">Recent N + button</option><option value="windowed-visible">Auto window</option></select></label>
+      <label class="row"><span class="label"><b>Window size</b><small>Recent turns kept natively by ChatGPT</small></span><input id="limit" type="number" min="4" max="500" step="2"></label>
       <label class="row"><span class="label"><b>On-page status</b></span><input id="showNotice" type="checkbox"></label>
       <label class="row"><span class="label"><b>Conversation backup</b><small>Local Markdown-ready copy</small></span><input id="archiveEnabled" type="checkbox"></label>
     </section>
-    <div class="buttons"><button id="reload" class="primary">Save &amp; reload</button><button id="loadPrevious">Load previous N</button></div>
+    <div class="buttons" style="grid-template-columns:1fr"><button id="reload" class="primary">Save &amp; reload</button></div>
     <div id="feedback" role="status" aria-live="polite"></div>
     <section class="backup card" aria-labelledby="backupTitle">
       <div class="backup-head"><b id="backupTitle">Current chat backup</b><span id="archiveStatus" data-state="checking" role="status" aria-live="polite">Checking…</span></div>
       <div id="archiveSummary" class="backup-summary">Open a ChatGPT conversation to create a backup.</div>
       <label class="archive-export-row">
-        <span class="archive-export-label"><b>Markdown detail</b><small id="archiveExportHelp">Tasks and final answers only</small></span>
+        <span class="archive-export-label"><b>Markdown detail</b><small id="archiveExportHelp">Also visible progress and a checklist</small></span>
         <select id="archiveExportLevel" aria-describedby="archiveExportHelp">
           <option value="clean">Clean</option>
           <option value="progress">Progress</option>
