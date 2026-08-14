@@ -15,7 +15,10 @@ assert(manifest.host_permissions.includes("https://chatgpt.com/*"), "Chromium mu
 assert(popup.includes("chrome.permissions.contains"), "popup must detect withheld runtime host access");
 assert(popup.includes("chrome.permissions.request"), "Save & reload must be able to request a withheld required host permission");
 assert(popup.includes('addEventListener("click", saveAndReloadFromUserGesture)'), "host permission request must originate directly from the Save & reload user gesture");
-assert(popup.indexOf("chrome.permissions.request") < popup.indexOf("chrome.tabs.reload"), "host access must be acquired before the document_start reload");
+assert(popup.includes('.then((granted) => finishSaveAndReload(granted))'), "reload path must continue only after the host permission request resolves");
+assert(popup.includes("async function finishSaveAndReload(granted)"), "post-permission reload path must receive the grant result explicitly");
+assert(popup.includes("if (isChatGPTTab(tab) && !granted)"), "a denied host request must stop before reload");
+assert(popup.includes("await chrome.tabs.reload(tab.id)"), "successful host access must reload the tab for document_start scripts");
 assert(popup.includes('setStatus("Needs access"'), "withheld host access needs a distinct user-visible state");
 assert(popup.includes('setStatus("Reload required"'), "a granted host with no content script must be diagnosed as a stale/missing bridge");
 assert(popup.includes('diagnostics.record("bridge", "content-script-missing"'), "missing page receiver must be a bridge diagnostic, not an archive diagnostic");
