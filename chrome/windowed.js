@@ -10,6 +10,7 @@
   const REATTACH_INTERVAL_MS = 750;
   let settings = { ...DEFAULT_SETTINGS };
   let history = null;
+  let historyKey = "none";
   let nativeScroller = null;
   let nativeEventTarget = null;
   let rootStateObserver = null;
@@ -145,9 +146,42 @@
       if (canAutoLoad() && loadPreviousPage(true).ok && event.cancelable) event.preventDefault();
     }
   }
+  function snapshotKey(value) {
+    if (!value || !Array.isArray(value.messages)) return "none";
+    const messages = value.messages;
+    const first = messages[0] || {};
+    const last = messages[messages.length - 1] || {};
+    return [
+      messages.length,
+      Number(value.nativeVisibleCount) || 0,
+      Number(value.pageSize) || 0,
+      first.id || "",
+      first.role || "",
+      last.id || "",
+      last.role || "",
+      String(last.text || "")
+    ].join("\u001f");
+  }
   function applyHistory(value) {
-    history = value && Array.isArray(value.messages) ? value : null;
+    const nextHistory = value && Array.isArray(value.messages) ? value : null;
+    const nextKey = snapshotKey(nextHistory);
     reader.setMode(settings.mode);
+
+    // Chromium may receive both the original publication and a retained replay;
+    // Firefox may answer a settings-triggered history request with the same
+    // snapshot. Equivalent snapshots must be idempotent: resetting the reader
+    // here would erase pages the user already loaded.
+    if (history && nextHistory && historyKey === nextKey) {
+      history = nextHistory;
+      if (settings.enabled && isLimitedMode(settings.mode)) {
+        startReattachWatch();
+        refreshNativeWatch();
+      }
+      return;
+    }
+
+    history = nextHistory;
+    historyKey = nextKey;
     reader.setHistory(history);
     if (!history || !settings.enabled || !isLimitedMode(settings.mode)) {
       detachNativeWatch();
@@ -161,6 +195,7 @@
     detachNativeWatch();
     reader.destroy();
     history = null;
+    historyKey = "none";
   }
   async function requestFirefoxHistory() {
     if (!IS_FIREFOX || !settings.enabled || !isLimitedMode(settings.mode)) return;
