@@ -13,7 +13,9 @@
   const VALID_MODES = new Set(["visible-history", ...LIMITED_MODES]);
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
-    mode: "visible-history",
+    // Match the user-facing product default even before the isolated-world
+    // storage bridge has had a chance to publish authoritative settings.
+    mode: "recent",
     maxDisplayMessages: 64
   });
 
@@ -25,7 +27,7 @@
   }
 
   function resolveMode(value) {
-    return VALID_MODES.has(value) ? value : "visible-history";
+    return VALID_MODES.has(value) ? value : "recent";
   }
 
   function isConversationDocument(urlString) {
