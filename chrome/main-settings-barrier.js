@@ -14,6 +14,7 @@
 
   const CHANNEL = "__gpt_anticurse_v1__";
   const WAIT_MS = 8000;
+  const unsafeResponses = new WeakSet();
   let settingsSettled = false;
   let hydrationSettled = false;
   let resolveSettingsReady;
@@ -21,6 +22,23 @@
 
   const settingsReady = new Promise((resolve) => { resolveSettingsReady = resolve; });
   const hydrationReady = new Promise((resolve) => { resolveHydrationReady = resolve; });
+
+  function errorText(error) {
+    return String(error && error.message ? error.message : error || "Unknown error");
+  }
+
+  function publishDiagnostic(code, error, extra = {}) {
+    window.postMessage({
+      channel: CHANNEL,
+      type: "diagnostic",
+      diagnostic: {
+        scope: "chromium-main",
+        code,
+        message: errorText(error),
+        extra
+      }
+    }, location.origin);
+  }
 
   function finishHydration() {
     if (hydrationSettled) return;
@@ -55,20 +73,43 @@
     }
   }
 
-  async function waitForSafeDelivery() {
-    if (settingsSettled && hydrationSettled) return;
-    await Promise.race([
-      Promise.all([settingsReady, hydrationReady]),
-      new Promise((resolve) => setTimeout(resolve, WAIT_MS))
-    ]);
+  async function waitForSafeDelivery(response) {
+    if (!(settingsSettled && hydrationSettled)) {
+      let timedOut = false;
+      await Promise.race([
+        Promise.all([settingsReady, hydrationReady]),
+        new Promise((resolve) => setTimeout(() => { timedOut = true; resolve(); }, WAIT_MS))
+      ]);
+
+      if (timedOut && !(settingsSettled && hydrationSettled)) {
+        unsafeResponses.add(response);
+        publishDiagnostic(
+          "startup-barrier-timeout",
+          "Conversation response was left unmodified because startup did not settle in time.",
+          { settingsSettled, hydrationSettled, waitMs: WAIT_MS }
+        );
+      }
+    }
   }
 
   function publishArchive(data) {
     try {
       const archive = CGArchive.createArchive(data, { sourceUrl: location.href });
-      if (archive) window.postMessage({ channel: CHANNEL, type: "archive", archive }, location.origin);
-    } catch (_) {}
+      if (!archive) {
+        publishDiagnostic("archive-build-empty", "The conversation response could not be converted to an archive.");
+        return false;
+      }
+      window.postMessage({ channel: CHANNEL, type: "archive", archive }, location.origin);
+      return true;
+    } catch (error) {
+      publishDiagnostic("archive-build-failed", error);
+      return false;
+    }
   }
+
+  globalThis.CGAntiCurseResponseGate = {
+    canTransform(response) { return !unsafeResponses.has(response); }
+  };
 
   const nativeJson = Response.prototype.json;
   Object.defineProperty(Response.prototype, "json", {
@@ -76,7 +117,7 @@
     writable: true,
     value: async function antiCurseSettingsBarrierJson() {
       if (!isConversationDocument(this.url)) return nativeJson.call(this);
-      await waitForSafeDelivery();
+      await waitForSafeDelivery(this);
       const data = await nativeJson.call(this);
       publishArchive(data);
       return data;
@@ -89,13 +130,15 @@
     writable: true,
     value: async function antiCurseSettingsBarrierText() {
       if (!isConversationDocument(this.url)) return nativeText.call(this);
-      await waitForSafeDelivery();
+      await waitForSafeDelivery(this);
       const text = await nativeText.call(this);
       try {
         let body = text;
         if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
         publishArchive(JSON.parse(body));
-      } catch (_) {}
+      } catch (error) {
+        publishDiagnostic("archive-json-parse-failed", error);
+      }
       return text;
     }
   });
