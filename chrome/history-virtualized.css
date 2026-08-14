@@ -1,0 +1,17 @@
+/* Bounded archived-history page window. */
+#cg-window-history-host .cg-history-page {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+#cg-window-history-host .cg-history-spacer {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  flex: 0 0 auto;
+  pointer-events: none;
+  contain: size layout style;
+}
+#cg-window-history-host .cg-history-spacer[hidden] {
+  display: none;
+}
