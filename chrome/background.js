@@ -1,11 +1,9 @@
 /*
  * Chromium service worker.
  *
- * Durable conversation history lives in the extension-origin IndexedDB archive.
- * The MAIN-world interceptor never owns history state; it only transforms the
- * page response and publishes the authoritative untrimmed archive once through
- * the isolated bridge. This worker serves history back to the isolated UI using
- * normal Manifest V3 extension messaging.
+ * Durable conversation history lives in extension-origin IndexedDB. The service
+ * worker is deliberately stateless: every history request reads durable storage,
+ * so MV3 worker suspension/restart cannot erase history state.
  */
 "use strict";
 
@@ -18,13 +16,12 @@ const EMPTY_TOTALS = Object.freeze({
   outputBytes: 0,
   bytesRemoved: 0
 });
-
+const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 let updateQueue = Promise.resolve();
 
 function normalizeTotals(value) {
   const result = { ...EMPTY_TOTALS };
   if (!value || typeof value !== "object") return result;
-
   for (const key of Object.keys(result)) {
     const number = Number(value[key]);
     if (Number.isFinite(number) && number >= 0) result[key] = number;
@@ -39,14 +36,12 @@ function normalizeMessageLimit(value) {
 
 function addStats(totals, stats) {
   if (!stats || stats.mode !== "trimmed") return totals;
-
   const before = Math.max(0, Number(stats.mappingNodesBefore) || 0);
   const after = Math.max(0, Number(stats.mappingNodesAfter) || 0);
   const removed = Math.max(0, Number(stats.discardedNodes) || before - after);
   const inputBytes = Math.max(0, Number(stats.originalBytes) || 0);
   const outputBytes = Math.max(0, Number(stats.outputBytes) || 0);
   const bytesRemoved = inputBytes && outputBytes ? Math.max(0, inputBytes - outputBytes) : 0;
-
   return {
     responsesTrimmed: totals.responsesTrimmed + 1,
     nodesRemoved: totals.nodesRemoved + removed,
@@ -56,6 +51,12 @@ function addStats(totals, stats) {
     outputBytes: totals.outputBytes + outputBytes,
     bytesRemoved: totals.bytesRemoved + bytesRemoved
   };
+}
+
+function recordIssue(scope, code, error, extra) {
+  if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record(scope, code, error, extra);
+  console.warn(`[GPT AntiCurse] ${scope}/${code}`, error, extra || "");
+  return Promise.resolve(null);
 }
 
 function recordStats(stats) {
@@ -88,7 +89,6 @@ function conversationIdFromMessage(message, sender) {
 function rawVisibleWindowCount(messages, requestedLimit) {
   const limit = normalizeMessageLimit(requestedLimit);
   if (!Array.isArray(messages) || !messages.length) return 0;
-
   const units = [];
   let unit = -1;
   let previousRole = null;
@@ -98,7 +98,6 @@ function rawVisibleWindowCount(messages, requestedLimit) {
     units.push(unit);
     previousRole = role;
   }
-
   const totalUnits = unit + 1;
   if (totalUnits <= limit) return messages.length;
   const cutoff = totalUnits - limit;
@@ -108,16 +107,14 @@ function rawVisibleWindowCount(messages, requestedLimit) {
 
 async function getWindowHistory(message, sender) {
   const conversationId = conversationIdFromMessage(message, sender);
-  if (!conversationId) return null;
+  if (!conversationId) return { ok: false, reason: "missing-conversation-id" };
 
   const archive = await CGArchiveStore.get(conversationId);
-  if (!archive || !Array.isArray(archive.messages)) return null;
+  if (!archive || !Array.isArray(archive.messages)) return { ok: false, reason: "archive-not-found" };
 
   const saved = await chrome.storage.local.get({ maxDisplayMessages: 64 });
   const limit = normalizeMessageLimit(
-    Number.isFinite(Number(message && message.maxDisplayMessages))
-      ? message.maxDisplayMessages
-      : saved.maxDisplayMessages
+    Number.isFinite(Number(message && message.maxDisplayMessages)) ? message.maxDisplayMessages : saved.maxDisplayMessages
   );
   const messages = archive.messages.map((entry) => ({
     id: entry.id,
@@ -127,6 +124,7 @@ async function getWindowHistory(message, sender) {
   }));
 
   return {
+    ok: true,
     messages,
     nativeVisibleCount: rawVisibleWindowCount(messages, limit),
     pageSize: limit,
@@ -139,21 +137,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message) return false;
 
   if (message.type === "cg-record-stats") {
-    recordStats(message.stats)
-      .then(sendResponse)
-      .catch(() => sendResponse({ ...EMPTY_TOTALS }));
+    recordStats(message.stats).then(sendResponse).catch((error) => {
+      recordIssue("counters", "update-failed", error);
+      sendResponse({ ...EMPTY_TOTALS });
+    });
     return true;
   }
 
   if (message.type === "cg-reset-totals") {
-    resetTotals().then(sendResponse);
+    resetTotals().then(sendResponse).catch((error) => {
+      recordIssue("counters", "reset-failed", error);
+      sendResponse({ ...EMPTY_TOTALS });
+    });
     return true;
   }
 
   if (message.type === "cg-get-window-history") {
-    getWindowHistory(message, sender)
-      .then(sendResponse)
-      .catch(() => sendResponse(null));
+    getWindowHistory(message, sender).then(sendResponse).catch((error) => {
+      recordIssue("history", "indexeddb-read-failed", error);
+      sendResponse({
+        ok: false,
+        reason: "history-read-failed",
+        error: String(error && error.message ? error.message : error)
+      });
+    });
     return true;
   }
 
