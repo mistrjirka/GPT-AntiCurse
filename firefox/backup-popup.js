@@ -165,11 +165,17 @@
     });
 
     let page = null;
+    let pageStats = null;
     if (activeTab && activeTab.id != null) {
       try {
         page = await ext.tabs.sendMessage(activeTab.id, { type: "cg-get-debug-state" });
       } catch (error) {
         page = { ok: false, error: errorText(error) };
+      }
+      try {
+        pageStats = await ext.tabs.sendMessage(activeTab.id, { type: "cg-get-stats" });
+      } catch (error) {
+        pageStats = { ok: false, error: errorText(error) };
       }
     }
 
@@ -213,6 +219,7 @@
       totals: stored.cgTotals || null,
       lastIssue: stored.cgLastIssue || null,
       issueHistory,
+      pageStats,
       page,
       archiveSummary: archive
     };
