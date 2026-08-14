@@ -65,12 +65,19 @@ jobs:
           node tests/test-history-virtualized.js
       - name: Build browser packages
         run: bash ./scripts/build.sh
-      - name: Install Chromium extension test runtime
+      - name: Install browser E2E runtimes
         run: |
-          npm install --no-save --no-package-lock playwright@1.55.0
+          npm install --no-save --no-package-lock playwright@1.55.0 selenium-webdriver@4.46.0
           npx playwright install --with-deps --no-shell chromium
+          curl -L --fail --retry 3 -o /tmp/firefox.tar.xz 'https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US'
+          mkdir -p /tmp/anticurse-firefox
+          tar -xf /tmp/firefox.tar.xz -C /tmp/anticurse-firefox --strip-components=1
+          echo "FIREFOX_BIN=/tmp/anticurse-firefox/firefox" >> "$GITHUB_ENV"
+          echo '127.0.0.1 chatgpt.com' | sudo tee -a /etc/hosts >/dev/null
       - name: Run Chromium extension E2E
         run: node tests/e2e-chromium.js
+      - name: Run Firefox extension E2E
+        run: node tests/e2e-firefox.js
       - name: Create GitHub Release if missing
         if: github.event_name != 'pull_request'
         env:
