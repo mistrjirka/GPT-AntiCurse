@@ -1,31 +1,40 @@
-# GPT AntiCurse v0.5.7
+# GPT AntiCurse v0.5.8
 
-History-mode simplification, Chromium reliability fix, and native-looking inline history.
+Bounded archived-history DOM, logical Recent-N budgeting, and real Chromium + Firefox WebExtension testing.
 
-## Two history modes
+## Bounded archived history
 
-- The popup now exposes only **Recent N + button** and **Auto window**.
-- Legacy `All visible history` / `Latest visible only` settings migrate to Recent N.
-- Recent N keeps the latest bounded window and shows **Load previous N** at the top of the ChatGPT page.
-- Auto window loads the previous archived page automatically when the user reaches the top.
-- The duplicate popup-level Load previous button was removed.
+- Loaded older history is now virtualized instead of growing the DOM without limit.
+- AntiCurse keeps only a small contiguous window of archived pages mounted (normally about three pages / `3×N` logical turns).
+- Off-screen loaded pages are measured, removed, and replaced with equal-height spacers.
+- Approaching a spacer reconstructs the corresponding page and evicts an opposite off-screen page.
+- The complete archive remains available; only presentation DOM is bounded.
+- Synthetic archived turns still never use ChatGPT's native `data-message-author-role` / `data-turn-id` identity attributes.
 
-## Chromium fix
+## Logical Recent N
 
-- Chromium no longer relies on a one-shot `window.postMessage` for archived history.
-- The MAIN-world bridge retains the latest history payload and answers explicit replay requests from the isolated window controller.
-- This fixes the shared failure mode where both Auto window and the inline Load previous button could disappear when the first history message was missed.
+- Consecutive visible assistant progress records now count as one user-facing assistant unit for the Recent-N budget.
+- Every user message remains its own unit.
+- The existing graph-preserving trimmer still chooses the final cutoff and retains all technical/tool/hidden nodes inside the retained recent slice.
+- This prevents long agent progress streams from consuming most of the Recent-N window without flattening or simplifying React-owned recent state.
+- Archived paging uses the same logical-unit boundaries so a page never splits one consecutive assistant response group.
 
-## Older-message rendering
+## Real Chromium extension E2E
 
-- The runtime history reader now supersedes the closed Shadow DOM/plain-text renderer with a light-DOM renderer.
-- Older turns now live in extension-owned light DOM immediately before ChatGPT's native `#thread`, so they inherit ChatGPT token colors and typography.
-- User turns reuse ChatGPT's bubble surface class; assistant turns reuse the site's `markdown prose` styling.
-- A safe local Markdown renderer covers paragraphs, headings, lists, blockquotes, tables, links, inline formatting, and fenced code.
-- Consecutive archived assistant records are visually grouped, closer to ChatGPT's current turn presentation.
-- React-owned native thread nodes are still never modified.
+- CI launches the actual unpacked Chromium extension using Playwright's persistent Chromium context.
+- A mocked `chatgpt.com` fixture fetches a large tool-heavy conversation through the real MAIN-world response interceptor.
+- The test verifies that page/React-side code receives only the bounded graph while AntiCurse retains older history off-React.
+- It verifies recent tool/hidden nodes survive the cutoff, Recent N exposes older pages, Auto window loads at the top, synthetic turns do not impersonate native turns, and repeated paging keeps the mounted archive DOM bounded.
+- The browser test caught and fixed a duplicate retained-history replay that could reset pages already loaded by the user.
 
-## Validation
+## Real Firefox extension E2E
 
-- Added regression checks for exactly two user-facing history modes, Chromium history replay, light-DOM/native-style history rendering, and the on-page Recent N button.
-- Firefox and Chromium continue to share the inline history implementation byte-for-byte.
+- CI also launches a real official Firefox build through Selenium/Geckodriver and installs the Firefox package as a temporary WebExtension.
+- Firefox loads a local HTTPS fixture under the real `chatgpt.com` hostname, so the production `webRequest.filterResponseData()` transport handles the conversation response.
+- The test verifies the logical cutoff before page code sees the graph, preservation of recent tool/hidden nodes, the on-page Recent-N button, archived loading, and absence of native React identity attributes on synthetic history.
+- Static/unit tests remain as faster fail-first gates before the real-browser runs.
+
+## Browser parity
+
+- Firefox and Chromium share the logical-window module, virtualized history implementation, and spacer styling byte-for-byte.
+- Firefox keeps its `filterResponseData` transport; Chromium keeps the retained/replayed MAIN-world history bridge.
