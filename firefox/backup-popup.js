@@ -1,7 +1,9 @@
 "use strict";
 (() => {
-  const ext = typeof browser !== "undefined" ? browser : chrome;
+  const IS_FIREFOX = typeof browser !== "undefined";
+  const ext = IS_FIREFOX ? browser : chrome;
   const diagnostics = globalThis.CGAntiCurseDiagnostics;
+  const CHATGPT_ORIGIN = "https://chatgpt.com/*";
   const toggle = document.getElementById("archiveEnabled");
   const status = document.getElementById("archiveStatus");
   const summary = document.getElementById("archiveSummary");
@@ -20,26 +22,50 @@
   function setArchiveStatus(text, state) { status.textContent = text; status.dataset.state = state; }
   function updateExportHelp() { exportHelp.textContent = EXPORT_HELP[exportLevel.value] || EXPORT_HELP.progress; }
   function errorText(error) { return String(error && error.message ? error.message : error || "Unknown error"); }
-  function recordIssue(code, error, extra) {
-    if (diagnostics && typeof diagnostics.record === "function") return diagnostics.record("archive", code, error, extra);
-    console.warn(`[GPT AntiCurse] archive/${code}`, error, extra || "");
+  function recordIssue(scope, code, error, extra) {
+    if (diagnostics && typeof diagnostics.record === "function") return diagnostics.record(scope, code, error, extra);
+    console.warn(`[GPT AntiCurse] ${scope}/${code}`, error, extra || "");
     return Promise.resolve(null);
+  }
+  async function clearPageBridgeIssue() {
+    if (!diagnostics || typeof diagnostics.clear !== "function") return;
+    await diagnostics.clear("bridge");
+    // v0.5.12 incorrectly classified this bridge problem as an archive problem.
+    await diagnostics.clear("archive", "popup-page-bridge-failed");
   }
   async function tab() { return (await ext.tabs.query({ active: true, currentWindow: true }))[0]; }
   function isChatGPTTab(activeTab) { return !!(activeTab && typeof activeTab.url === "string" && /^https:\/\/chatgpt\.com\//.test(activeTab.url)); }
+  async function hasChromeHostAccess(activeTab) {
+    if (IS_FIREFOX || !isChatGPTTab(activeTab)) return true;
+    try {
+      return await chrome.permissions.contains({ origins: [CHATGPT_ORIGIN] });
+    } catch (error) {
+      await recordIssue("bridge", "host-access-check-failed", error);
+      return false;
+    }
+  }
 
   async function conversationId(activeTab, flush = false) {
     if (!activeTab || activeTab.id == null) return null;
     try {
       if (flush) {
         const saved = await ext.tabs.sendMessage(activeTab.id, { type: "cg-flush-archive" });
+        await clearPageBridgeIssue();
         if (saved?.conversationId) return saved.conversationId;
         if (saved?.summary?.id) return saved.summary.id;
       }
       const result = await ext.tabs.sendMessage(activeTab.id, { type: "cg-get-conversation-id" });
+      await clearPageBridgeIssue();
       return result?.conversationId || null;
     } catch (error) {
-      if (isChatGPTTab(activeTab)) await recordIssue("popup-page-bridge-failed", error, { flush });
+      if (isChatGPTTab(activeTab)) {
+        if (!IS_FIREFOX && !(await hasChromeHostAccess(activeTab))) {
+          feedback.textContent = "Chrome has not granted GPT AntiCurse access to chatgpt.com. Use Save & reload to grant access and reload the page.";
+          return null;
+        }
+        await recordIssue("bridge", "popup-page-bridge-failed", error, { flush });
+        feedback.textContent = `ChatGPT page bridge is not running: ${errorText(error)}. Reload this tab after installing or updating AntiCurse.`;
+      }
       return null;
     }
   }
@@ -65,7 +91,7 @@
     if (!id) return render(null);
     const result = await ext.runtime.sendMessage({ type: "cg-get-archive-summary", conversationId: id });
     if (result?.ok) return render(result.summary);
-    if (result?.reason !== "archive-not-found") await recordIssue("popup-summary-failed", result?.reason || "Archive summary failed");
+    if (result?.reason !== "archive-not-found") await recordIssue("archive", "popup-summary-failed", result?.reason || "Archive summary failed");
     render(null);
   }
 
@@ -83,17 +109,13 @@
     const activeTab = await tab();
     const id = await conversationId(activeTab, true);
     if (!id) {
-      feedback.textContent = "Could not reach a ChatGPT conversation in this tab.";
+      if (!feedback.textContent) feedback.textContent = "Could not reach a ChatGPT conversation in this tab.";
       return;
     }
-    const result = await ext.runtime.sendMessage({
-      type: "cg-export-archive",
-      conversationId: id,
-      exportLevel: exportLevel.value
-    });
+    const result = await ext.runtime.sendMessage({ type: "cg-export-archive", conversationId: id, exportLevel: exportLevel.value });
     if (!result?.ok || !result.markdown) {
       const reason = result?.reason || "No Markdown returned";
-      if (reason !== "archive-not-found") await recordIssue("export-failed", reason);
+      if (reason !== "archive-not-found") await recordIssue("archive", "export-failed", reason);
       feedback.textContent = reason === "archive-not-found"
         ? "No persistent backup is available yet. Enable backup and reload this chat once."
         : `Export failed: ${reason}`;
@@ -111,7 +133,7 @@
   function runAction(label, action) {
     Promise.resolve().then(action).catch(async (error) => {
       console.error(`[GPT AntiCurse] ${label}`, error);
-      await recordIssue("popup-action-failed", error, { action: label });
+      await recordIssue("archive", "popup-action-failed", error, { action: label });
       feedback.textContent = `${label}: ${errorText(error)}`;
     });
   }
@@ -125,7 +147,7 @@
     toggle.checked = false;
     exportLevel.value = "progress";
     updateExportHelp();
-    recordIssue("popup-settings-read-failed", error);
+    recordIssue("archive", "popup-settings-read-failed", error);
     feedback.textContent = `Backup settings could not be read: ${errorText(error)}`;
     render(null);
   });
