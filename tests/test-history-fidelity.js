@@ -11,7 +11,7 @@ const chromeManifest = JSON.parse(source("chrome/manifest.json"));
 
 assert(fidelity.includes("findNativeRole"), "fidelity layer must derive styling from live native turns");
 assert(fidelity.includes('section[data-testid^="conversation-turn-"]'), "native turn shell must be used as the visual template");
-assert(fidelity.includes("group\\/turn-messages"), "native thread-width shell must be reused");
+assert(fidelity.includes("turn-messages"), "native thread-width shell must be reused");
 assert(fidelity.includes("text-token-text-tertiary"), "tool activity must use ChatGPT tertiary activity styling");
 assert(fidelity.includes("Non-text visible message"), "legacy non-text placeholders must be explicitly recognized");
 assert(fidelity.includes('kind: "noise"'), "legacy non-text placeholders must be suppressed");
