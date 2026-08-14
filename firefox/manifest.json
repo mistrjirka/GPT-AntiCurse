@@ -11,7 +11,7 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["dom-ready.js", "archive.js", "content.js", "history-overlay.js", "history-native.js", "history-virtualized.js", "history-fidelity.js", "history-hydration-safe.js", "windowed.js", "archive-capture.js"],
+      "js": ["dom-ready.js", "archive.js", "content.js", "history-native.js", "history-virtualized.js", "history-fidelity.js", "history-hydration-safe.js", "windowed.js", "archive-capture.js"],
       "css": ["content.css", "history-virtualized.css", "history-fidelity.css"],
       "run_at": "document_start"
     }
