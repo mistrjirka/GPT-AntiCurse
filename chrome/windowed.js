@@ -1,30 +1,47 @@
-/* Controller for limited-history modes. Older archived turns render inline above ChatGPT's native #thread. */
+/* Limited-history controller. Old turns stay outside ChatGPT's React-owned graph. */
 (() => {
   "use strict";
+
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const IS_FIREFOX = typeof browser !== "undefined";
-  const LIMITED_MODES = new Set(["recent", "latest-visible", "windowed-visible"]);
-  const DEFAULT_SETTINGS = { enabled: true, mode: "recent", maxDisplayMessages: 64 };
+  const NETWORK_ARCHIVE_EVENT = "__gpt_anticurse_archive_ready__";
+  const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
   const TOP_EPSILON = 16;
-  const REATTACH_INTERVAL_MS = 750;
-  const CHROME_HISTORY_RETRY_MS = [0, 250, 1000, 3000, 7000];
+
   let settings = { ...DEFAULT_SETTINGS };
   let history = null;
   let historyKey = "none";
   let nativeScroller = null;
   let nativeEventTarget = null;
   let rootStateObserver = null;
-  let reattachTimer = null;
+  let shellObserver = null;
+  let shellRefreshRaf = 0;
   let lastNativeTop = 0;
   let lastFromTop = null;
   let autoArmed = false;
   let suppressAutoUntil = 0;
-  let historyRequestGeneration = 0;
   let initialPositionSettled = false;
   let userInteracted = false;
+
   const reader = CGHistoryOverlay.create({ getScroller: () => nativeScroller });
 
-  function isLimitedMode(mode) { return LIMITED_MODES.has(mode); }
+  function normalizeLimit(value) {
+    const number = Number(value);
+    return Math.max(4, Math.min(500, Number.isFinite(number) ? number : 64));
+  }
+
+  function normalizeMode(value) {
+    return value === "windowed-visible" ? "windowed-visible" : "recent";
+  }
+
+  function applySavedSettings(saved) {
+    settings = {
+      enabled: saved && typeof saved.enabled === "boolean" ? saved.enabled : true,
+      mode: normalizeMode(saved && saved.mode),
+      maxDisplayMessages: normalizeLimit(saved && saved.maxDisplayMessages)
+    };
+  }
+
   function conversationId() {
     if (globalThis.CGArchive && typeof CGArchive.conversationIdFromUrl === "function") {
       return CGArchive.conversationIdFromUrl(location.href);
@@ -32,10 +49,59 @@
     const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/);
     return match ? decodeURIComponent(match[1]) : null;
   }
+
+  function rawVisibleWindowCount(messages, requestedLimit) {
+    const limit = normalizeLimit(requestedLimit);
+    if (!Array.isArray(messages) || !messages.length) return 0;
+
+    const units = [];
+    let unit = -1;
+    let previousRole = null;
+    for (const message of messages) {
+      const role = message && message.role === "user" ? "user" : "assistant";
+      if (role === "user" || previousRole !== "assistant") unit++;
+      units.push(unit);
+      previousRole = role;
+    }
+
+    const totalUnits = unit + 1;
+    if (totalUnits <= limit) return messages.length;
+    const cutoff = totalUnits - limit;
+    const first = units.findIndex((value) => value >= cutoff);
+    return first < 0 ? messages.length : messages.length - first;
+  }
+
+  function historyFromArchive(archive) {
+    if (!archive || !Array.isArray(archive.messages)) return null;
+    const pageSize = normalizeLimit(settings.maxDisplayMessages);
+    const messages = archive.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      createTime: message.createTime == null ? null : message.createTime
+    }));
+    return {
+      messages,
+      nativeVisibleCount: rawVisibleWindowCount(messages, pageSize),
+      pageSize,
+      maxRendered: Math.max(pageSize, Math.min(500, pageSize * 3)),
+      source: "isolated-transient"
+    };
+  }
+
+  function transientHistory() {
+    if (IS_FIREFOX) return null;
+    const bridge = globalThis.CGAntiCurseArchiveBridge;
+    const id = conversationId();
+    if (!bridge || typeof bridge.get !== "function" || !id) return null;
+    return historyFromArchive(bridge.get(id));
+  }
+
   function firstNativeTurn() {
     return document.querySelector('[data-testid^="conversation-turn-"]') ||
       document.querySelector("[data-message-author-role]")?.closest("section, article, [data-turn-id-container]") || null;
   }
+
   function findFallbackScroller(element) {
     let node = element && element.parentElement;
     while (node && node !== document.body && node !== document.documentElement) {
@@ -45,36 +111,44 @@
     }
     return document.scrollingElement || document.documentElement;
   }
+
   function findNativeScroller() {
     const marked = document.querySelector("[data-scroll-root]");
     if (marked && (marked.querySelector('[data-testid^="conversation-turn-"]') || marked.querySelector("#thread"))) return marked;
     return findFallbackScroller(firstNativeTurn());
   }
-  function nativeTop() { return nativeScroller ? Math.max(0, Number(nativeScroller.scrollTop) || 0) : 0; }
+
+  function nativeTop() {
+    return nativeScroller ? Math.max(0, Number(nativeScroller.scrollTop) || 0) : 0;
+  }
+
   function isAtTop() {
     if (!nativeScroller) return false;
     if (nativeScroller.hasAttribute("data-scroll-from-top")) return false;
     return nativeTop() <= TOP_EPSILON;
   }
+
   function eventTargetForScroller(scroller) {
     return scroller === document.scrollingElement || scroller === document.documentElement ? window : scroller;
   }
+
   function markUserInteraction(event) {
     if (!initialPositionSettled && event && event.isTrusted) userInteracted = true;
   }
+
   function settleInitialPosition() {
     if (initialPositionSettled || userInteracted || !nativeScroller) return;
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (initialPositionSettled || userInteracted || !nativeScroller || !nativeScroller.isConnected) return;
-      const atTop = !nativeScroller.hasAttribute("data-scroll-from-top") && nativeTop() <= TOP_EPSILON;
-      const awayFromEnd = nativeScroller.hasAttribute("data-scroll-from-end");
-      if (atTop && awayFromEnd) {
+      if (nativeScroller.hasAttribute("data-scroll-from-end")) {
         nativeScroller.scrollTop = Math.max(0, nativeScroller.scrollHeight - nativeScroller.clientHeight);
         lastNativeTop = nativeTop();
+        autoArmed = lastNativeTop > 64 || nativeScroller.hasAttribute("data-scroll-from-top");
       }
       initialPositionSettled = true;
     }));
   }
+
   function detachNativeWatch() {
     if (rootStateObserver) rootStateObserver.disconnect();
     rootStateObserver = null;
@@ -83,15 +157,17 @@
     nativeScroller = null;
     lastFromTop = null;
   }
+
   function canAutoLoad() {
     return settings.mode === "windowed-visible" && settings.enabled && !!history &&
       reader.hasMoreOlderTurns() && performance.now() >= suppressAutoUntil;
   }
+
   function loadPreviousPage(auto = false) {
     if (!settings.enabled) return { ok: false, reason: "guard-disabled" };
-    if (!isLimitedMode(settings.mode)) return { ok: false, reason: "mode-has-full-history" };
     if (!history) return { ok: false, reason: "no-history-archive" };
     if (!reader.hasMoreOlderTurns()) return { ok: false, reason: "no-older-visible-turns" };
+
     const result = reader.loadPreviousPage({ preserveScroll: true });
     if (result.ok && auto) {
       suppressAutoUntil = performance.now() + 180;
@@ -99,10 +175,12 @@
     }
     return result;
   }
+
   function handleTopReached() {
     if (!autoArmed || !canAutoLoad()) return false;
     return loadPreviousPage(true).ok;
   }
+
   function onRootStateMutation() {
     if (!nativeScroller) return;
     const fromTop = nativeScroller.hasAttribute("data-scroll-from-top");
@@ -110,49 +188,57 @@
     lastFromTop = fromTop;
     if (fromTop) autoArmed = true;
   }
+
   function attachNativeWatch() {
-    if (!history || !settings.enabled || !isLimitedMode(settings.mode)) return false;
+    if (!history || !settings.enabled) return false;
     const nextScroller = findNativeScroller();
     if (!nextScroller) return false;
     const nextTarget = eventTargetForScroller(nextScroller);
-    if (nativeScroller === nextScroller && nativeScroller.isConnected && nativeEventTarget === nextTarget) {
-      reader.ensureAttached();
-      settleInitialPosition();
-      return true;
-    }
-    detachNativeWatch();
-    nativeScroller = nextScroller;
-    nativeEventTarget = nextTarget;
-    lastNativeTop = nativeTop();
-    lastFromTop = nativeScroller.hasAttribute("data-scroll-from-top");
-    autoArmed = lastFromTop || lastNativeTop > 64;
-    nextTarget.addEventListener("scroll", onNativeScroll, { passive: true, capture: true });
-    rootStateObserver = new MutationObserver(onRootStateMutation);
-    rootStateObserver.observe(nativeScroller, { attributes: true, attributeFilter: ["data-scroll-from-top"] });
-    reader.ensureAttached();
-    settleInitialPosition();
-    return true;
-  }
-  function refreshNativeWatch() {
-    if (!history || !settings.enabled || !isLimitedMode(settings.mode)) {
+
+    if (nativeScroller !== nextScroller || nativeEventTarget !== nextTarget || !nativeScroller.isConnected) {
       detachNativeWatch();
-      return false;
+      nativeScroller = nextScroller;
+      nativeEventTarget = nextTarget;
+      lastNativeTop = nativeTop();
+      lastFromTop = nativeScroller.hasAttribute("data-scroll-from-top");
+      autoArmed = lastFromTop || lastNativeTop > 64;
+      nextTarget.addEventListener("scroll", onNativeScroll, { passive: true, capture: true });
+      rootStateObserver = new MutationObserver(onRootStateMutation);
+      rootStateObserver.observe(nativeScroller, { attributes: true, attributeFilter: ["data-scroll-from-top"] });
     }
-    const current = findNativeScroller();
-    if (!nativeScroller || !nativeScroller.isConnected || current !== nativeScroller) return attachNativeWatch();
+
     reader.ensureAttached();
     settleInitialPosition();
     return true;
   }
-  function startReattachWatch() {
-    if (reattachTimer) return;
-    refreshNativeWatch();
-    reattachTimer = setInterval(refreshNativeWatch, REATTACH_INTERVAL_MS);
+
+  function scheduleShellRefresh() {
+    if (shellRefreshRaf) return;
+    shellRefreshRaf = requestAnimationFrame(() => {
+      shellRefreshRaf = 0;
+      attachNativeWatch();
+    });
   }
-  function stopReattachWatch() {
-    if (reattachTimer) clearInterval(reattachTimer);
-    reattachTimer = null;
+
+  function installShellObserver() {
+    if (shellObserver || !document.body) return;
+    const root = document.querySelector("#main") || document.body;
+    shellObserver = new MutationObserver(() => {
+      const thread = document.querySelector("#thread");
+      const host = document.querySelector("#cg-window-history-host");
+      const misplaced = !!thread && (!host || host.parentElement !== thread.parentElement || host.nextSibling !== thread);
+      if (!nativeScroller || !nativeScroller.isConnected || misplaced) scheduleShellRefresh();
+    });
+    shellObserver.observe(root, { childList: true, subtree: true });
   }
+
+  function stopShellObserver() {
+    if (shellObserver) shellObserver.disconnect();
+    shellObserver = null;
+    if (shellRefreshRaf) cancelAnimationFrame(shellRefreshRaf);
+    shellRefreshRaf = 0;
+  }
+
   function onNativeScroll() {
     if (!nativeScroller) return;
     const currentTop = nativeTop();
@@ -161,20 +247,23 @@
     if (movingUp && isAtTop()) handleTopReached();
     lastNativeTop = currentTop;
   }
+
   function eventBelongsToConversation(event) {
     if (!nativeScroller) return false;
     const path = typeof event.composedPath === "function" ? event.composedPath() : [];
     return path.includes(nativeScroller) || (event.target instanceof Node && nativeScroller.contains(event.target));
   }
+
   function onGlobalWheel(event) {
     if (!settings.enabled || !history || settings.mode !== "windowed-visible") return;
-    refreshNativeWatch();
+    if (!nativeScroller || !nativeScroller.isConnected) attachNativeWatch();
     if (!nativeScroller || !eventBelongsToConversation(event)) return;
     if (event.deltaY < 0 && isAtTop() && reader.hasMoreOlderTurns()) {
       autoArmed = true;
       if (canAutoLoad() && loadPreviousPage(true).ok && event.cancelable) event.preventDefault();
     }
   }
+
   function snapshotKey(value) {
     if (!value || !Array.isArray(value.messages)) return "none";
     const messages = value.messages;
@@ -191,6 +280,7 @@
       String(last.text || "")
     ].join("\u001f");
   }
+
   function applyHistory(value) {
     const nextHistory = value && Array.isArray(value.messages) ? value : null;
     const nextKey = snapshotKey(nextHistory);
@@ -198,10 +288,7 @@
 
     if (history && nextHistory && historyKey === nextKey) {
       history = nextHistory;
-      if (settings.enabled && isLimitedMode(settings.mode)) {
-        startReattachWatch();
-        refreshNativeWatch();
-      }
+      if (settings.enabled) attachNativeWatch();
       return;
     }
 
@@ -209,24 +296,35 @@
     historyKey = nextKey;
     initialPositionSettled = false;
     reader.setHistory(history);
-    if (!history || !settings.enabled || !isLimitedMode(settings.mode)) {
+
+    if (!history || !settings.enabled) {
       detachNativeWatch();
-      stopReattachWatch();
+      stopShellObserver();
       return;
     }
-    startReattachWatch();
+
+    attachNativeWatch();
+    installShellObserver();
   }
+
   function clear() {
-    historyRequestGeneration++;
-    stopReattachWatch();
     detachNativeWatch();
+    stopShellObserver();
     reader.destroy();
     history = null;
     historyKey = "none";
     initialPositionSettled = false;
   }
-  async function requestHistoryOnce() {
-    if (!settings.enabled || !isLimitedMode(settings.mode)) return false;
+
+  async function requestHistory() {
+    if (!settings.enabled) return false;
+
+    const transient = transientHistory();
+    if (transient) {
+      applyHistory(transient);
+      return true;
+    }
+
     const id = conversationId();
     if (!IS_FIREFOX && !id) return false;
     try {
@@ -242,40 +340,38 @@
       return false;
     }
   }
-  async function requestBackgroundHistory() {
-    const generation = ++historyRequestGeneration;
-    if (!settings.enabled || !isLimitedMode(settings.mode)) return;
-    if (IS_FIREFOX) {
-      await requestHistoryOnce();
-      return;
-    }
-
-    for (const delay of CHROME_HISTORY_RETRY_MS) {
-      if (generation !== historyRequestGeneration) return;
-      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-      if (generation !== historyRequestGeneration) return;
-      if (await requestHistoryOnce()) return;
-    }
-  }
 
   window.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });
   window.addEventListener("wheel", markUserInteraction, { passive: true, capture: true });
   window.addEventListener("pointerdown", markUserInteraction, { passive: true, capture: true });
   window.addEventListener("touchstart", markUserInteraction, { passive: true, capture: true });
   window.addEventListener("keydown", markUserInteraction, { capture: true });
+  window.addEventListener(NETWORK_ARCHIVE_EVENT, () => {
+    if (!IS_FIREFOX) requestHistory();
+  });
 
   ext.storage.local.get(DEFAULT_SETTINGS).then((saved) => {
-    settings = { ...DEFAULT_SETTINGS, ...saved };
+    applySavedSettings(saved);
     reader.setMode(settings.mode);
-    requestBackgroundHistory();
-  }).catch(() => {});
+    requestHistory();
+  }).catch(() => {
+    applySavedSettings(DEFAULT_SETTINGS);
+    reader.setMode(settings.mode);
+    requestHistory();
+  });
+
   ext.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    for (const key of Object.keys(DEFAULT_SETTINGS)) if (changes[key]) settings[key] = changes[key].newValue;
+    const next = { ...settings };
+    if (changes.enabled) next.enabled = changes.enabled.newValue;
+    if (changes.mode) next.mode = changes.mode.newValue;
+    if (changes.maxDisplayMessages) next.maxDisplayMessages = changes.maxDisplayMessages.newValue;
+    applySavedSettings(next);
     reader.setMode(settings.mode);
-    if (!settings.enabled || !isLimitedMode(settings.mode)) clear();
-    else requestBackgroundHistory();
+    if (!settings.enabled) clear();
+    else requestHistory();
   });
+
   ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message && message.type === "cg-open-window-history") {
       const result = loadPreviousPage(false);
