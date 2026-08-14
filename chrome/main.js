@@ -29,6 +29,10 @@
   const settingsReady = new Promise((resolve) => { resolveSettingsReady = resolve; });
   const hydrationReady = new Promise((resolve) => { resolveHydrationReady = resolve; });
 
+  function elapsed(started) {
+    return +(performance.now() - started).toFixed(2);
+  }
+
   function errorText(error) {
     return String(error && error.message ? error.message : error || "Unknown error");
   }
@@ -155,21 +159,30 @@
   }
 
   function publishArchive(data) {
+    const buildStarted = performance.now();
     try {
       const archive = CGArchive.createArchive(data, { sourceUrl: location.href });
+      const archiveBuildMs = elapsed(buildStarted);
       if (!archive) {
         publishDiagnostic("archive-build-empty", "The conversation response could not be converted to an archive.");
-        return false;
+        return { archiveOk: false, archiveBuildMs, archiveMessageCount: 0 };
       }
+      const postStarted = performance.now();
       publish("archive", { archive });
-      return true;
+      return {
+        archiveOk: true,
+        archiveBuildMs,
+        archivePostMs: elapsed(postStarted),
+        archiveMessageCount: Array.isArray(archive.messages) ? archive.messages.length : 0
+      };
     } catch (error) {
-      publishDiagnostic("archive-build-failed", error);
-      return false;
+      const archiveBuildMs = elapsed(buildStarted);
+      publishDiagnostic("archive-build-failed", error, { archiveBuildMs });
+      return { archiveOk: false, archiveBuildMs, archiveMessageCount: 0 };
     }
   }
 
-  function publishTransformStats(transformed, originalBytes, started) {
+  function publishTransformStats(transformed, originalBytes, started, trace = {}) {
     if (!transformed.changed) {
       if (transformed.reason === "unsupported-shape") {
         const message = "Unsupported ChatGPT conversation response shape; original response kept.";
@@ -180,7 +193,8 @@
           reason: transformed.reason,
           error: message,
           originalBytes,
-          processingMs: +(performance.now() - started).toFixed(2)
+          processingMs: elapsed(started),
+          ...trace
         });
         return;
       }
@@ -189,8 +203,9 @@
         transport: "chromium-response-body",
         reason: transformed.reason,
         originalBytes,
-        processingMs: +(performance.now() - started).toFixed(2),
-        ...(transformed.stats || {})
+        processingMs: elapsed(started),
+        ...(transformed.stats || {}),
+        ...trace
       });
       return;
     }
@@ -209,33 +224,35 @@
       transport: "chromium-response-body",
       originalBytes,
       outputBytes,
-      processingMs: +(performance.now() - started).toFixed(2),
-      ...transformed.stats
+      processingMs: elapsed(started),
+      ...transformed.stats,
+      ...trace
     });
   }
 
-  function transformConversation(data, originalBytes) {
+  function transformConversation(data, originalBytes, trace) {
     const started = performance.now();
     const transformed = CGTrim.trimConversation(data, {
       mode: resolveMode(settings.mode),
       maxDisplayMessages: normalizeMessageLimit(settings.maxDisplayMessages)
     });
-    publishTransformStats(transformed, originalBytes, started);
+    publishTransformStats(transformed, originalBytes, started, trace);
     return transformed.changed ? transformed.data : data;
   }
 
-  function reportTransformError(transport, error) {
+  function reportTransformError(transport, error, trace = {}) {
     const text = errorText(error);
-    publishDiagnostic("conversation-transform-failed", text);
-    publishStats({ mode: "error", transport, error: text });
+    publishDiagnostic("conversation-transform-failed", text, trace);
+    publishStats({ mode: "error", transport, error: text, ...trace });
   }
 
-  function reportStartupPassthrough(transport) {
+  function reportStartupPassthrough(transport, trace = {}) {
     publishStats({
       mode: "passthrough",
       transport,
       reason: settingsSettled && !settings.enabled ? "disabled" : "startup-barrier-timeout",
-      trimMode: resolveMode(settings.mode)
+      trimMode: resolveMode(settings.mode),
+      ...trace
     });
   }
 
@@ -246,19 +263,26 @@
     value: async function antiCurseJson() {
       if (!isConversationDocument(this.url)) return nativeJson.call(this);
 
+      const interceptStarted = performance.now();
       const safeToTransform = await waitForTransformSafety();
+      const safetyWaitMs = elapsed(interceptStarted);
+      const readStarted = performance.now();
       const data = await nativeJson.call(this);
-      publishArchive(data);
+      const trace = {
+        safetyWaitMs,
+        responseReadMs: elapsed(readStarted),
+        ...publishArchive(data)
+      };
 
       if (!settings.enabled || !safeToTransform) {
-        reportStartupPassthrough("chromium-response-json");
+        reportStartupPassthrough("chromium-response-json", trace);
         return data;
       }
 
       try {
-        return transformConversation(data, undefined);
+        return transformConversation(data, undefined, trace);
       } catch (error) {
-        reportTransformError("chromium-response-json", error);
+        reportTransformError("chromium-response-json", error, trace);
         return data;
       }
     }
@@ -271,29 +295,41 @@
     value: async function antiCurseText() {
       if (!isConversationDocument(this.url)) return nativeText.call(this);
 
+      const interceptStarted = performance.now();
       const safeToTransform = await waitForTransformSafety();
+      const safetyWaitMs = elapsed(interceptStarted);
+      const readStarted = performance.now();
       const text = await nativeText.call(this);
+      const responseReadMs = elapsed(readStarted);
       let data;
+      let jsonParseMs;
       try {
+        const parseStarted = performance.now();
         let body = text;
         if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
         data = JSON.parse(body);
+        jsonParseMs = elapsed(parseStarted);
       } catch (error) {
-        publishDiagnostic("conversation-json-parse-failed", error);
+        publishDiagnostic("conversation-json-parse-failed", error, { safetyWaitMs, responseReadMs });
         return text;
       }
 
-      publishArchive(data);
+      const trace = {
+        safetyWaitMs,
+        responseReadMs,
+        jsonParseMs,
+        ...publishArchive(data)
+      };
       if (!settings.enabled || !safeToTransform) {
-        reportStartupPassthrough("chromium-response-text");
+        reportStartupPassthrough("chromium-response-text", trace);
         return text;
       }
 
       try {
-        const transformed = transformConversation(data, new TextEncoder().encode(text).byteLength);
+        const transformed = transformConversation(data, new TextEncoder().encode(text).byteLength, trace);
         return transformed === data ? text : JSON.stringify(transformed);
       } catch (error) {
-        reportTransformError("chromium-response-text", error);
+        reportTransformError("chromium-response-text", error, trace);
         return text;
       }
     }
