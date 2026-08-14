@@ -5,8 +5,11 @@
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const IS_FIREFOX = typeof browser !== "undefined";
   const NETWORK_ARCHIVE_EVENT = "__gpt_anticurse_archive_ready__";
+  const STATS_EVENT = "__gpt_anticurse_stats_ready__";
   const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
   const TOP_EPSILON = 16;
+  const HISTORY_WATCHDOG_MS = 2000;
+  const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 
   let settings = { ...DEFAULT_SETTINGS };
   let history = null;
@@ -16,6 +19,7 @@
   let rootStateObserver = null;
   let shellObserver = null;
   let shellRefreshRaf = 0;
+  let historyWatchdog = 0;
   let lastNativeTop = 0;
   let lastFromTop = null;
   let autoArmed = false;
@@ -24,6 +28,17 @@
   let userInteracted = false;
 
   const reader = CGHistoryOverlay.create({ getScroller: () => nativeScroller });
+
+  function recordIssue(code, error, extra) {
+    if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record("history", code, error, extra);
+    console.warn(`[GPT AntiCurse] history/${code}`, error, extra || "");
+    return Promise.resolve(null);
+  }
+
+  function clearHistoryIssue() {
+    if (DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") return DIAGNOSTICS.clear("history");
+    return Promise.resolve(false);
+  }
 
   function normalizeLimit(value) {
     const number = Number(value);
@@ -43,9 +58,7 @@
   }
 
   function conversationId() {
-    if (globalThis.CGArchive && typeof CGArchive.conversationIdFromUrl === "function") {
-      return CGArchive.conversationIdFromUrl(location.href);
-    }
+    if (globalThis.CGArchive && typeof CGArchive.conversationIdFromUrl === "function") return CGArchive.conversationIdFromUrl(location.href);
     const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/);
     return match ? decodeURIComponent(match[1]) : null;
   }
@@ -53,7 +66,6 @@
   function rawVisibleWindowCount(messages, requestedLimit) {
     const limit = normalizeLimit(requestedLimit);
     if (!Array.isArray(messages) || !messages.length) return 0;
-
     const units = [];
     let unit = -1;
     let previousRole = null;
@@ -63,7 +75,6 @@
       units.push(unit);
       previousRole = role;
     }
-
     const totalUnits = unit + 1;
     if (totalUnits <= limit) return messages.length;
     const cutoff = totalUnits - limit;
@@ -81,6 +92,7 @@
       createTime: message.createTime == null ? null : message.createTime
     }));
     return {
+      ok: true,
       messages,
       nativeVisibleCount: rawVisibleWindowCount(messages, pageSize),
       pageSize,
@@ -159,15 +171,13 @@
   }
 
   function canAutoLoad() {
-    return settings.mode === "windowed-visible" && settings.enabled && !!history &&
-      reader.hasMoreOlderTurns() && performance.now() >= suppressAutoUntil;
+    return settings.mode === "windowed-visible" && settings.enabled && !!history && reader.hasMoreOlderTurns() && performance.now() >= suppressAutoUntil;
   }
 
   function loadPreviousPage(auto = false) {
     if (!settings.enabled) return { ok: false, reason: "guard-disabled" };
     if (!history) return { ok: false, reason: "no-history-archive" };
     if (!reader.hasMoreOlderTurns()) return { ok: false, reason: "no-older-visible-turns" };
-
     const result = reader.loadPreviousPage({ preserveScroll: true });
     if (result.ok && auto) {
       suppressAutoUntil = performance.now() + 180;
@@ -269,45 +279,44 @@
     const messages = value.messages;
     const first = messages[0] || {};
     const last = messages[messages.length - 1] || {};
-    return [
-      messages.length,
-      Number(value.nativeVisibleCount) || 0,
-      Number(value.pageSize) || 0,
-      first.id || "",
-      first.role || "",
-      last.id || "",
-      last.role || "",
-      String(last.text || "")
-    ].join("\u001f");
+    return [messages.length, Number(value.nativeVisibleCount) || 0, Number(value.pageSize) || 0,
+      first.id || "", first.role || "", last.id || "", last.role || "", String(last.text || "")].join("\u001f");
   }
 
   function applyHistory(value) {
     const nextHistory = value && Array.isArray(value.messages) ? value : null;
     const nextKey = snapshotKey(nextHistory);
     reader.setMode(settings.mode);
+    if (!nextHistory) return false;
 
-    if (history && nextHistory && historyKey === nextKey) {
+    if (history && historyKey === nextKey) {
       history = nextHistory;
       if (settings.enabled) attachNativeWatch();
-      return;
+      return true;
     }
 
     history = nextHistory;
     historyKey = nextKey;
     initialPositionSettled = false;
     reader.setHistory(history);
+    if (historyWatchdog) clearTimeout(historyWatchdog);
+    historyWatchdog = 0;
+    clearHistoryIssue();
 
-    if (!history || !settings.enabled) {
+    if (!settings.enabled) {
       detachNativeWatch();
       stopShellObserver();
-      return;
+      return true;
     }
 
     attachNativeWatch();
     installShellObserver();
+    return true;
   }
 
   function clear() {
+    if (historyWatchdog) clearTimeout(historyWatchdog);
+    historyWatchdog = 0;
     detachNativeWatch();
     stopShellObserver();
     reader.destroy();
@@ -320,25 +329,44 @@
     if (!settings.enabled) return false;
 
     const transient = transientHistory();
-    if (transient) {
-      applyHistory(transient);
-      return true;
-    }
+    if (transient) return applyHistory(transient);
 
     const id = conversationId();
     if (!IS_FIREFOX && !id) return false;
+
     try {
       const value = await ext.runtime.sendMessage({
         type: "cg-get-window-history",
         conversationId: id,
         maxDisplayMessages: settings.maxDisplayMessages
       });
+      if (value && value.ok === false) {
+        if (value.reason !== "archive-not-found" && value.reason !== "missing-conversation-id") {
+          recordIssue(value.reason || "background-history-failed", value.error || value.reason || "History request failed");
+        }
+        return false;
+      }
       if (!value || !Array.isArray(value.messages)) return false;
-      applyHistory(value);
-      return true;
-    } catch (_) {
+      return applyHistory(value);
+    } catch (error) {
+      recordIssue("runtime-request-failed", error);
       return false;
     }
+  }
+
+  function scheduleHistoryWatchdog(reason) {
+    if (history || !settings.enabled || !conversationId()) return;
+    if (historyWatchdog) clearTimeout(historyWatchdog);
+    historyWatchdog = setTimeout(() => {
+      historyWatchdog = 0;
+      if (!history && settings.enabled && conversationId()) {
+        recordIssue("missing-after-trim", "Conversation trimming succeeded but no archived history reached the UI.", {
+          mode: settings.mode,
+          limit: settings.maxDisplayMessages,
+          trigger: reason || "trimmed-stats"
+        });
+      }
+    }, HISTORY_WATCHDOG_MS);
   }
 
   window.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });
@@ -347,17 +375,24 @@
   window.addEventListener("touchstart", markUserInteraction, { passive: true, capture: true });
   window.addEventListener("keydown", markUserInteraction, { capture: true });
   window.addEventListener(NETWORK_ARCHIVE_EVENT, () => {
-    if (!IS_FIREFOX) requestHistory();
+    if (IS_FIREFOX) return;
+    requestHistory().then((ok) => {
+      if (!ok) recordIssue("transient-archive-unavailable", "The MAIN-world archive event fired, but the isolated archive was unavailable.");
+    });
+  });
+  window.addEventListener(STATS_EVENT, (event) => {
+    if (event && event.detail && event.detail.mode === "trimmed") scheduleHistoryWatchdog("trimmed-stats");
   });
 
   ext.storage.local.get(DEFAULT_SETTINGS).then((saved) => {
     applySavedSettings(saved);
     reader.setMode(settings.mode);
-    requestHistory();
-  }).catch(() => {
+    return requestHistory();
+  }).catch((error) => {
     applySavedSettings(DEFAULT_SETTINGS);
     reader.setMode(settings.mode);
-    requestHistory();
+    recordIssue("settings-read-failed", error);
+    return requestHistory();
   });
 
   ext.storage.onChanged.addListener((changes, area) => {
