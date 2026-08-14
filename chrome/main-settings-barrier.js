@@ -1,25 +1,49 @@
 /*
  * Chromium MAIN-world startup barrier and authoritative pre-transform backup.
  *
- * The MAIN world cannot read chrome.storage directly. Delay consumption of the
- * conversation response for a bounded period until the isolated-world bridges
- * have delivered both AntiCurse settings and the backup toggle. In normal page
- * loads this resolves immediately; the timeout is only a fail-safe.
+ * Two things must be true before ChatGPT receives a transformed conversation:
+ *  1. the isolated-world bridge has delivered authoritative extension settings;
+ *  2. the initial server-rendered page has crossed its hydration boundary.
+ *
+ * The interceptor itself is installed at document_start, so ChatGPT can never
+ * consume the untrimmed response first. On a hard SSR load the response promise
+ * is simply held until load + two animation frames + an idle slice. This avoids
+ * giving React a client graph that disagrees with its server HTML mid-hydration.
  */
 (() => {
   "use strict";
 
   const CHANNEL = "__gpt_anticurse_v1__";
-  const WAIT_MS = 2000;
+  const WAIT_MS = 8000;
   let trimSettingsReady = false;
   let archiveSettingsReady = false;
   let archiveEnabled = false;
-  let resolveReady;
-  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  let resolveSettingsReady;
+  let hydrationSettled = false;
+  let resolveHydrationReady;
 
-  function maybeResolve() {
-    if (trimSettingsReady && archiveSettingsReady) resolveReady();
+  const settingsReady = new Promise((resolve) => { resolveSettingsReady = resolve; });
+  const hydrationReady = new Promise((resolve) => { resolveHydrationReady = resolve; });
+
+  function maybeResolveSettings() {
+    if (trimSettingsReady && archiveSettingsReady) resolveSettingsReady();
   }
+
+  function finishHydration() {
+    if (hydrationSettled) return;
+    hydrationSettled = true;
+    resolveHydrationReady();
+  }
+
+  function settleAfterLoad() {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (typeof requestIdleCallback === "function") requestIdleCallback(finishHydration, { timeout: 1000 });
+      else setTimeout(finishHydration, 0);
+    }));
+  }
+
+  if (document.readyState === "complete") settleAfterLoad();
+  else window.addEventListener("load", settleAfterLoad, { once: true });
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
@@ -30,7 +54,7 @@
       archiveSettingsReady = true;
       archiveEnabled = message.archiveEnabled !== false;
     }
-    maybeResolve();
+    maybeResolveSettings();
   });
 
   function isConversationDocument(urlString) {
@@ -42,10 +66,10 @@
     }
   }
 
-  async function waitForSettings() {
-    if (trimSettingsReady && archiveSettingsReady) return;
+  async function waitForSafeDelivery() {
+    if (trimSettingsReady && archiveSettingsReady && hydrationSettled) return;
     await Promise.race([
-      ready,
+      Promise.all([settingsReady, hydrationReady]),
       new Promise((resolve) => setTimeout(resolve, WAIT_MS))
     ]);
   }
@@ -64,7 +88,7 @@
     writable: true,
     value: async function antiCurseSettingsBarrierJson() {
       if (!isConversationDocument(this.url)) return nativeJson.call(this);
-      await waitForSettings();
+      await waitForSafeDelivery();
       const data = await nativeJson.call(this);
       publishArchive(data);
       return data;
@@ -77,7 +101,7 @@
     writable: true,
     value: async function antiCurseSettingsBarrierText() {
       if (!isConversationDocument(this.url)) return nativeText.call(this);
-      await waitForSettings();
+      await waitForSafeDelivery();
       const text = await nativeText.call(this);
       if (archiveEnabled) {
         try {
