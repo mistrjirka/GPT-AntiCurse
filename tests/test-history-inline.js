@@ -61,7 +61,7 @@ assert(windowed.includes("missing-after-trim"), "trim-without-history must becom
 
 assert.equal(firefoxArchiveCapture, chromeArchiveCapture, "archive tail capture logic must stay byte-identical across browsers");
 assert(firefoxArchiveCapture.includes("function conversationId()"), "tail capture must derive its conversation id locally from the current page");
-assert(/location\.pathname\.match\(\/\(\?:\^\|\\\/\)c\\\/\(\[\^\/?#\]\+\)\//.test(firefoxArchiveCapture), "tail capture must parse the current /c/<id> pathname itself");
+assert(firefoxArchiveCapture.includes('location.pathname.match(/(?:^|\\/)c\\/([^/?#]+)/)'), "tail capture must parse the current /c/<id> pathname itself");
 assert(!/\bCGArchive\b/.test(firefoxArchiveCapture), "tail capture must not depend on a free archive helper global");
 assert(firefoxArchiveCapture.includes('type: "cg-merge-rendered-archive"'), "tail capture must still merge rendered updates through the background archive service");
 
