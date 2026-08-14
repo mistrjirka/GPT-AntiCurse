@@ -1,33 +1,29 @@
-# GPT AntiCurse v0.5.13
+# GPT AntiCurse v0.5.14
 
-Chromium site-access, startup-settings, and stale-tab recovery.
+Chromium bridge recovery plus archive tail-capture reliability.
 
-## Chromium host access
+## Chromium page bridge
 
-- Distinguishes a withheld `chatgpt.com` host permission from a genuinely broken page/content-script bridge.
-- The popup checks Chrome's runtime host-access state before reporting a page bridge failure.
-- **Save & reload** requests the already-declared `https://chatgpt.com/*` permission directly from the user click when Chrome has withheld it, then reloads the tab so `document_start` AntiCurse scripts can run.
-- If site access is already granted but the tab has no receiver (for example, a tab that predates an extension update), the popup reports **Reload required** and includes Chrome's actual messaging error.
-- The old v0.5.12 `archive/popup-page-bridge-failed` diagnostic is migrated to the correct `bridge` scope and cleared after recovery.
-- Passive backup-status probing no longer overwrites the main popup's more specific bridge diagnosis.
+- Keeps the v0.5.13 fix for the Chrome-only state where the popup is alive but no ChatGPT content-script receiver exists.
+- Distinguishes Chrome withholding `chatgpt.com` site access from a genuinely missing/stale content-script bridge.
+- **Save & reload** can request the already-declared ChatGPT host access from the user gesture and reload the tab so `document_start` scripts are installed.
+- If access already exists but the current tab predates an extension install/update, the popup reports **Reload required** and includes Chrome's actual messaging error instead of the old generic `archive/popup-page-bridge-failed` state.
+- The startup defaults writer remains removed, preventing a stale asynchronous default write from overwriting a newly selected Recent-N limit.
 
-## Startup settings race
+## Archive tail capture
 
-- Removes the eager asynchronous `defaults.js` read-then-write initializer from both browser startup paths.
-- That initializer could read an empty/fresh storage snapshot, race a later user/test settings write, and then overwrite a newly selected Recent-N limit with the default value.
-- Defaults are now supplied at each read site and legacy/unknown modes are normalized when consumed, so startup never writes default values over newer settings.
-
-## Diagnostics
-
-- Last issue now includes the error message directly rather than showing only a scope/code pair.
-- Exact diagnostic clearing prevents a recovered bridge issue from accidentally clearing an unrelated archive/storage problem.
+- Fixes `archive/tail-merge-failed — CGArchive is not defined` seen in Firefox.
+- The hydrated DOM tail updater no longer depends on a free cross-script `CGArchive` global merely to identify the current conversation.
+- Conversation IDs are derived locally from the current `/c/<id>` page URL; the authoritative network archive and IndexedDB merge path are unchanged.
+- Chromium and Firefox use the same tail-capture implementation and a regression test now rejects reintroducing that global dependency.
 
 ## Regression coverage
 
-- Adds Chromium host-access checks and a permanent assertion that no eager defaults writer can re-enter either browser's background startup.
-- Existing real Chromium Recent/Auto, hydration, native-fidelity, Firefox E2E, dead-code, silent-catch, packaging-reachability, trim, archive, export, and virtualization tests remain release gates.
+- Existing real Chromium Recent/Auto, host-access, hydration and native-fidelity tests remain release gates.
+- Existing real Firefox interception/paging and native-fidelity tests remain release gates.
+- Dead packaged code, silent catches, packaging reachability, trim, archive, export, virtualization and cross-browser parity checks remain enabled.
 
 ## Privacy
 
 - No telemetry and no remote extension code.
-- Conversation processing, optional archive storage, diagnostics, counters, history rendering, and Markdown export remain local to the browser.
+- Conversation processing, optional archive storage, diagnostics, counters, history rendering and Markdown export remain local to the browser.
