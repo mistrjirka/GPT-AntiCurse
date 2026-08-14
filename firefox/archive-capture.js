@@ -2,8 +2,8 @@
  * Content-side incremental backup capture.
  *
  * The initial authoritative archive comes from the untrimmed conversation GET.
- * This observer only merges visible turns created/updated after that GET, so a
- * long chat remains current even if the page is never reloaded again.
+ * DOM capture is only a hydrated tail updater; it must not observe the entire
+ * ChatGPT document during SSR hydration or force layout before the page settles.
  */
 (() => {
   "use strict";
@@ -14,11 +14,15 @@
   const TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
   const ROLE_SELECTOR = '[data-message-author-role="user"], [data-message-author-role="assistant"]';
   const CAPTURE_TAIL_TURNS = 96;
+  const DOM_GATE = globalThis.CGAntiCurseDomReady;
 
   let archiveEnabled = true;
   let currentConversationId = null;
   let captureTimer = null;
   let lastFingerprint = "";
+  let observedThread = null;
+  let threadObserver = null;
+  let parentObserver = null;
 
   function conversationId() {
     const fromPage = CGArchive.conversationIdFromUrl(location.href);
@@ -35,18 +39,21 @@
   function visibleText(roleElement) {
     const markdownBlocks = Array.from(roleElement.querySelectorAll(".markdown"));
     if (markdownBlocks.length) {
-      const text = markdownBlocks
+      const value = markdownBlocks
         .map((node) => node.innerText || node.textContent || "")
         .join("\n\n")
         .trim();
-      if (text) return text;
+      if (value) return value;
     }
     return (roleElement.innerText || roleElement.textContent || "").trim();
   }
 
   function collectRenderedMessages() {
+    const root = observedThread && observedThread.isConnected ? observedThread : document.querySelector("#thread");
+    if (!root) return [];
+
     const result = [];
-    const turns = Array.from(document.querySelectorAll(TURN_SELECTOR)).slice(-CAPTURE_TAIL_TURNS);
+    const turns = Array.from(root.querySelectorAll(TURN_SELECTOR)).slice(-CAPTURE_TAIL_TURNS);
 
     if (turns.length) {
       for (const turn of turns) {
@@ -60,9 +67,7 @@
       return result;
     }
 
-    // Fallback if ChatGPT renames the conversation-turn test id but keeps the
-    // role attribute used by its message renderer.
-    for (const roleElement of Array.from(document.querySelectorAll(ROLE_SELECTOR)).slice(-CAPTURE_TAIL_TURNS)) {
+    for (const roleElement of Array.from(root.querySelectorAll(ROLE_SELECTOR)).slice(-CAPTURE_TAIL_TURNS)) {
       const role = roleElement.getAttribute("data-message-author-role");
       const text = visibleText(roleElement);
       if (text) result.push({ role, text, turnIndex: null });
@@ -127,28 +132,50 @@
 
     for (const node of record.addedNodes || []) {
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
-      if (node.matches?.(`${TURN_SELECTOR}, ${ROLE_SELECTOR}`) || node.querySelector?.(`${TURN_SELECTOR}, ${ROLE_SELECTOR}`)) {
-        return true;
-      }
+      if (node.matches?.(`${TURN_SELECTOR}, ${ROLE_SELECTOR}`) || node.querySelector?.(`${TURN_SELECTOR}, ${ROLE_SELECTOR}`)) return true;
     }
     return false;
   }
 
-  function startObserver() {
-    if (!document.documentElement) {
-      setTimeout(startObserver, 25);
-      return;
-    }
-    const observer = new MutationObserver((records) => {
-      if (records.some(touchesConversation)) scheduleCapture();
-    });
-    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-    scheduleCapture(250);
+  function disconnectObservers() {
+    if (threadObserver) threadObserver.disconnect();
+    if (parentObserver) parentObserver.disconnect();
+    threadObserver = null;
+    parentObserver = null;
+    observedThread = null;
   }
 
-  // Chromium MAIN-world interception publishes the authoritative untrimmed
-  // archive across this private same-page channel. Firefox saves it directly in
-  // its background response filter, so it never emits this message.
+  function attachThreadObserver() {
+    const thread = document.querySelector("#thread");
+    if (!thread || !thread.parentElement) return false;
+    if (thread === observedThread && threadObserver) return true;
+
+    disconnectObservers();
+    observedThread = thread;
+
+    threadObserver = new MutationObserver((records) => {
+      if (records.some(touchesConversation)) scheduleCapture();
+    });
+    threadObserver.observe(thread, { childList: true, subtree: true, characterData: true });
+
+    const parent = thread.parentElement;
+    parentObserver = new MutationObserver(() => {
+      const current = document.querySelector("#thread");
+      if (current !== observedThread) {
+        attachThreadObserver();
+        scheduleCapture(100);
+      }
+    });
+    parentObserver.observe(parent, { childList: true });
+
+    scheduleCapture(250);
+    return true;
+  }
+
+  function startObserver() {
+    if (!attachThreadObserver()) setTimeout(startObserver, 100);
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
     const message = event.data;
@@ -159,13 +186,13 @@
 
   ext.storage.local.get(DEFAULT_SETTINGS).then((saved) => {
     archiveEnabled = saved.archiveEnabled !== false;
-    if (archiveEnabled) scheduleCapture(100);
+    if (archiveEnabled && DOM_GATE && DOM_GATE.isReady()) scheduleCapture(100);
   }).catch(() => {});
 
   ext.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.archiveEnabled) return;
     archiveEnabled = changes.archiveEnabled.newValue !== false;
-    if (archiveEnabled) scheduleCapture(50);
+    if (archiveEnabled && (!DOM_GATE || DOM_GATE.isReady())) scheduleCapture(50);
   });
 
   ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -190,7 +217,10 @@
       captureTimer = null;
     }
     flushCapture(true).catch(() => {});
+    disconnectObservers();
   });
 
-  startObserver();
+  if (DOM_GATE) DOM_GATE.whenReady(startObserver);
+  else if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", startObserver, { once: true });
+  else startObserver();
 })();
