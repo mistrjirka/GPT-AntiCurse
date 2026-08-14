@@ -45,7 +45,7 @@ const FIXTURE_HTML = `<!doctype html>
 <style>[data-scroll-root]{height:500px;overflow-y:auto}#thread{min-height:600px}</style>
 </head>
 <body>
-<div data-scroll-root>
+<div data-scroll-root data-scroll-from-end="">
   <main id="main">
     <div role="presentation" class="contents">
       <div id="thread">
@@ -56,6 +56,7 @@ const FIXTURE_HTML = `<!doctype html>
 </div>
 <img src="/hydration-blocker.svg" alt="" hidden>
 <script>
+window.__fetchStarted = true;
 fetch('/backend-api/conversation/hydration-e2e')
   .then((response) => response.json())
   .then((data) => {
@@ -112,27 +113,34 @@ async function waitForServiceWorker(context) {
 
     const page = await context.newPage();
     await page.goto("https://chatgpt.com/c/hydration-e2e", { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(() => window.__fetchDone === true || !!window.__fixtureError);
-    const fixtureError = await page.evaluate(() => window.__fixtureError || null);
-    assert.equal(fixtureError, null, fixtureError || "fixture failed");
+    await page.waitForFunction(() => window.__fetchStarted === true);
+    await page.waitForTimeout(200);
 
     const beforeLoad = await page.evaluate(() => ({
       readyState: document.readyState,
       host: !!document.querySelector("#cg-window-history-host"),
       badge: !!document.querySelector("#cg-conversation-guard-status"),
-      receivedNodes: window.__receivedNodes
+      fetchDone: window.__fetchDone === true,
+      fixtureError: window.__fixtureError || null
     }));
     console.log("hydration pre-load state", JSON.stringify(beforeLoad));
+    assert.equal(beforeLoad.fixtureError, null, beforeLoad.fixtureError || "fixture failed");
     assert.notEqual(beforeLoad.readyState, "complete", "blocker must keep the load boundary open");
-    assert(beforeLoad.receivedNodes < fullNodeCount, "conversation must already be trimmed before hydration-safe UI is released");
-    assert.equal(beforeLoad.host, false, "history DOM must not modify the SSR conversation tree before load/hydration settles");
-    assert.equal(beforeLoad.badge, false, "status badge must not modify document HTML before load/hydration settles");
+    assert.equal(beforeLoad.fetchDone, false, "conversation data must not reach React while SSR hydration is still open");
+    assert.equal(beforeLoad.host, false, "history DOM must not modify the SSR conversation tree before hydration settles");
+    assert.equal(beforeLoad.badge, false, "status badge must not modify document HTML before hydration settles");
 
     await page.waitForLoadState("load");
-    await page.locator("#cg-window-history-host").waitFor({ state: "attached", timeout: 4000 });
-    await page.locator("#cg-conversation-guard-status").waitFor({ state: "attached", timeout: 4000 });
+    await page.waitForFunction(() => window.__fetchDone === true || !!window.__fixtureError, null, { timeout: 5000 });
+    const fixtureError = await page.evaluate(() => window.__fixtureError || null);
+    assert.equal(fixtureError, null, fixtureError || "fixture failed");
+    const receivedNodes = await page.evaluate(() => window.__receivedNodes);
+    assert(receivedNodes < fullNodeCount, "React/page must receive only the bounded graph after hydration");
+
+    await page.locator("#cg-window-history-host").waitFor({ state: "attached", timeout: 5000 });
+    await page.locator("#cg-conversation-guard-status").waitFor({ state: "attached", timeout: 5000 });
     const button = page.locator("#cg-window-history-host .cg-history-previous");
-    await button.waitFor({ state: "visible", timeout: 4000 });
+    await button.waitFor({ state: "visible", timeout: 10000 });
     assert.equal(await button.textContent(), "Load previous 4");
 
     console.log("Chromium hydration-boundary E2E: PASS");
