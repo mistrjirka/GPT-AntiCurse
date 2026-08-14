@@ -14,7 +14,7 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Release ')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate manifests
         run: |
           python -m json.tool firefox/manifest.json >/dev/null
@@ -60,18 +60,29 @@ jobs:
             exit 1
           fi
       - name: Run unit and code-quality tests
+        shell: bash
         run: |
-          node tests/test-trim.js
-          node tests/test-trim-logical.js
-          node tests/test-archive.js
-          node tests/test-archive-export.js
-          node tests/test-history-inline.js
-          node tests/test-history-virtualized.js
-          node tests/test-history-fidelity.js
-          node tests/test-packaging.js
-          node tests/test-no-silent-catches.js
-          node tests/test-chrome-host-access.js
-          node tests/test-reliability.js
+          set -euo pipefail
+          tests=(
+            tests/test-trim.js
+            tests/test-trim-logical.js
+            tests/test-archive.js
+            tests/test-archive-export.js
+            tests/test-history-inline.js
+            tests/test-history-virtualized.js
+            tests/test-history-fidelity.js
+            tests/test-packaging.js
+            tests/test-no-silent-catches.js
+            tests/test-chrome-host-access.js
+            tests/test-reliability.js
+          )
+          for test in "${tests[@]}"; do
+            echo "==> $test"
+            if ! node "$test"; then
+              echo "::error file=$test::Unit/code-quality test failed: $test"
+              exit 1
+            fi
+          done
       - name: Build browser packages
         run: bash ./scripts/build.sh
       - name: Install browser E2E runtimes
