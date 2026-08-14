@@ -1,44 +1,33 @@
-# GPT AntiCurse v0.5.15
+# GPT AntiCurse v0.5.16
 
-Reliability, Manifest V3 lifecycle, and debugging audit.
+Chromium 148+ compatibility and response-shape diagnostics.
 
-## Failure recovery
+## Chrome 148+ browser namespace compatibility
 
-- Chromium counter serialization now recovers after a failed storage operation instead of leaving every later counter update attached to a permanently rejected Promise.
-- IndexedDB initialization no longer caches a rejected open forever. Transient open/blocked failures can be retried, and version changes close/reset the cached connection.
-- Archive persistence queues remain self-healing after a failed operation.
-- Removes the background archive helper's tab-to-conversation fallback global; archive reads now require the explicit conversation id already supplied by the content script.
+- Chrome 148+ exposes the WebExtensions `browser` namespace in addition to `chrome`, so `typeof browser !== "undefined"` can no longer be used to identify Firefox.
+- History routing and popup/debug browser detection now use the packaged manifest's Firefox-specific `browser_specific_settings.gecko` marker instead.
+- Restores Chromium's fast transient MAIN-to-ISOLATED history path on modern Chrome instead of incorrectly taking the Firefox background-history path.
+- Restores Chrome host-access detection in the popup on modern Chrome.
+- Debug reports now identify modern Chrome as `chromium` rather than `firefox`.
 
-## Firefox MV3 lifecycle
+## Recovered diagnostics
 
-- Firefox response filtering now waits for authoritative stored settings before deciding whether to trim a newly loaded conversation.
-- A background/event-page wakeup can therefore no longer process the first conversation with startup defaults before the user's saved settings have loaded.
-- If settings storage cannot be read, the Firefox interceptor fails open and returns the original response with a diagnostic.
-- Per-tab Firefox stats/history now have `storage.session` fallback in addition to hot memory, so event-page unload/recreation does not silently erase the history fallback.
-- Session-cache failures, including quota/storage failures, are explicit diagnostics rather than indistinguishable `archive-not-found` states.
+- A later valid Chromium conversation graph now clears stale `unsupported-conversation-shape`, transform, or JSON-parse diagnostics.
+- Recovery clearing is code-specific, so a successful trim cannot accidentally erase an unrelated archive/storage issue.
+- A valid `below-limit` response counts as recovery even when no nodes need trimming.
 
-## DOM/background overhead
+## Response-shape diagnostics
 
-- Removes the archive tail updater's permanent 100 ms `#thread` polling loop and replaces it with mutation-driven discovery/re-attachment.
-- DOM tail observers are not installed while persistent conversation backup is disabled.
-- Tail text extraction uses `textContent` instead of `innerText`, avoiding unnecessary synchronous layout work.
-- Hydration-ready callbacks now report rejected/throwing callbacks instead of creating unhandled Promise rejections.
-
-## Debugging
-
-- Keeps a bounded local history of the most recent 24 AntiCurse diagnostic issues, with repeated identical issues collapsed into a count.
-- Adds **Download debug report** under Details.
-- The report actively checks the live content-script bridge, current settings, hydration/DOM state, native thread/scroller state, AntiCurse history host/button state, transient archive state, background history source/counts, archive summary, counters, and recent diagnostic history.
-- Debug reports contain health metadata and identifiers only; they do not include conversation message text.
+- Unsupported successful conversation responses now record content-free structural metadata: HTTP status/content type, top-level keys, mapping type/count, and current-node presence.
+- Non-success HTTP responses are passed through as `http-status` rather than being mislabeled as a ChatGPT schema incompatibility.
+- Unsupported response objects are not published as transient conversation archives.
 
 ## Regression coverage
 
-- Adds lifecycle/failure-recovery tests for poisoned Promise queues, IndexedDB retry behavior, permanent DOM polling, Firefox settings initialization, session history fallback, diagnostic history, and debug-state packaging.
-- Existing real Chromium Recent/Auto, hydration and native-fidelity E2Es remain release gates.
-- Existing real Firefox interception/paging and native-fidelity E2Es remain release gates.
-- Dead-code, silent-catch, package reachability, cross-browser parity, archive/export and virtualization checks remain enabled.
+- Adds permanent checks preventing `browser` namespace presence from being reused as Firefox detection.
+- Existing Chromium Recent/Auto, hydration, native-fidelity, Firefox interception/paging, Firefox fidelity, lifecycle, silent-catch, archive and virtualization tests remain release gates.
 
 ## Privacy
 
+- Shape diagnostics contain structural metadata only, never conversation message text.
 - No telemetry and no remote extension code.
-- Conversation processing, optional archive storage, diagnostics, debug reports, counters, history rendering and Markdown export remain local to the browser.
