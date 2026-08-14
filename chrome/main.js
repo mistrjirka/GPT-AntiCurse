@@ -37,6 +37,40 @@
     return String(error && error.message ? error.message : error || "Unknown error");
   }
 
+  function responseMeta(response) {
+    const contentType = response && response.headers && typeof response.headers.get === "function"
+      ? response.headers.get("content-type") || ""
+      : "";
+    return {
+      responseStatus: Number(response && response.status) || 0,
+      responseOk: !!(response && response.ok),
+      responseContentType: contentType
+    };
+  }
+
+  function shapeSummary(data) {
+    const isArray = Array.isArray(data);
+    const isObject = data !== null && typeof data === "object";
+    const record = isObject && !isArray ? data : null;
+    const mapping = record ? record.mapping : null;
+    const mappingObject = mapping !== null && typeof mapping === "object" && !Array.isArray(mapping);
+    const currentNode = record ? record.current_node : null;
+    const keys = record ? Object.keys(record).slice(0, 24) : [];
+    const supported = !!(mappingObject && currentNode && mapping[currentNode]);
+    return {
+      shapeSupported: supported,
+      shapeDataType: data === null ? "null" : isArray ? "array" : typeof data,
+      shapeTopLevelKeys: keys.join(","),
+      shapeArrayLength: isArray ? data.length : null,
+      shapeHasMapping: !!(record && Object.prototype.hasOwnProperty.call(record, "mapping")),
+      shapeMappingType: mapping === null ? "null" : Array.isArray(mapping) ? "array" : typeof mapping,
+      shapeMappingNodeCount: mappingObject ? Object.keys(mapping).length : null,
+      shapeHasCurrentNode: !!(record && Object.prototype.hasOwnProperty.call(record, "current_node")),
+      shapeCurrentNodeType: currentNode === null ? "null" : typeof currentNode,
+      shapeCurrentNodePresent: supported
+    };
+  }
+
   function normalizeMessageLimit(value) {
     const number = Number(value);
     return Math.max(4, Math.min(500, Number.isFinite(number) ? number : 64));
@@ -160,6 +194,15 @@
 
   function publishArchive(data) {
     const buildStarted = performance.now();
+    const shape = shapeSummary(data);
+    if (!shape.shapeSupported) {
+      return {
+        archiveOk: false,
+        archiveSkipped: "unsupported-shape",
+        archiveBuildMs: elapsed(buildStarted),
+        archiveMessageCount: 0
+      };
+    }
     try {
       const archive = CGArchive.createArchive(data, { sourceUrl: location.href });
       const archiveBuildMs = elapsed(buildStarted);
@@ -186,7 +229,8 @@
     if (!transformed.changed) {
       if (transformed.reason === "unsupported-shape") {
         const message = "Unsupported ChatGPT conversation response shape; original response kept.";
-        publishDiagnostic("unsupported-conversation-shape", message);
+        const shape = shapeSummary(transformed.data);
+        publishDiagnostic("unsupported-conversation-shape", message, { ...trace, ...shape });
         publishStats({
           mode: "error",
           transport: "chromium-response-body",
@@ -194,7 +238,8 @@
           error: message,
           originalBytes,
           processingMs: elapsed(started),
-          ...trace
+          ...trace,
+          ...shape
         });
         return;
       }
@@ -263,12 +308,27 @@
     value: async function antiCurseJson() {
       if (!isConversationDocument(this.url)) return nativeJson.call(this);
 
+      const meta = responseMeta(this);
+      if (!meta.responseOk) {
+        const readStarted = performance.now();
+        const data = await nativeJson.call(this);
+        publishStats({
+          mode: "passthrough",
+          transport: "chromium-response-json",
+          reason: "http-status",
+          responseReadMs: elapsed(readStarted),
+          ...meta
+        });
+        return data;
+      }
+
       const interceptStarted = performance.now();
       const safeToTransform = await waitForTransformSafety();
       const safetyWaitMs = elapsed(interceptStarted);
       const readStarted = performance.now();
       const data = await nativeJson.call(this);
       const trace = {
+        ...meta,
         safetyWaitMs,
         responseReadMs: elapsed(readStarted),
         ...publishArchive(data)
@@ -295,6 +355,20 @@
     value: async function antiCurseText() {
       if (!isConversationDocument(this.url)) return nativeText.call(this);
 
+      const meta = responseMeta(this);
+      if (!meta.responseOk) {
+        const readStarted = performance.now();
+        const text = await nativeText.call(this);
+        publishStats({
+          mode: "passthrough",
+          transport: "chromium-response-text",
+          reason: "http-status",
+          responseReadMs: elapsed(readStarted),
+          ...meta
+        });
+        return text;
+      }
+
       const interceptStarted = performance.now();
       const safeToTransform = await waitForTransformSafety();
       const safetyWaitMs = elapsed(interceptStarted);
@@ -310,11 +384,12 @@
         data = JSON.parse(body);
         jsonParseMs = elapsed(parseStarted);
       } catch (error) {
-        publishDiagnostic("conversation-json-parse-failed", error, { safetyWaitMs, responseReadMs });
+        publishDiagnostic("conversation-json-parse-failed", error, { ...meta, safetyWaitMs, responseReadMs });
         return text;
       }
 
       const trace = {
+        ...meta,
         safetyWaitMs,
         responseReadMs,
         jsonParseMs,

@@ -1,7 +1,9 @@
 "use strict";
 (() => {
-  const IS_FIREFOX = typeof browser !== "undefined";
-  const ext = IS_FIREFOX ? browser : chrome;
+  const ext = typeof browser !== "undefined" ? browser : chrome;
+  // Chrome 148+ also exposes `browser`, so detect Firefox from the packaged manifest.
+  const extensionManifest = ext.runtime.getManifest();
+  const IS_FIREFOX = !!(extensionManifest.browser_specific_settings && extensionManifest.browser_specific_settings.gecko);
   const diagnostics = globalThis.CGAntiCurseDiagnostics;
   const CHATGPT_ORIGIN = "https://chatgpt.com/*";
   const toggle = document.getElementById("archiveEnabled");
@@ -196,8 +198,8 @@
     const report = {
       generatedAt: new Date().toISOString(),
       extension: {
-        name: ext.runtime.getManifest().name,
-        version: ext.runtime.getManifest().version,
+        name: extensionManifest.name,
+        version: extensionManifest.version,
         browserPath: IS_FIREFOX ? "firefox" : "chromium"
       },
       browser: { userAgent: navigator.userAgent },

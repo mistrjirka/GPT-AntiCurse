@@ -3,7 +3,9 @@
   "use strict";
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
-  const IS_FIREFOX = typeof browser !== "undefined";
+  // Chrome 148+ also exposes `browser`, so namespace presence no longer identifies Firefox.
+  const extensionManifest = ext.runtime.getManifest();
+  const IS_FIREFOX = !!(extensionManifest.browser_specific_settings && extensionManifest.browser_specific_settings.gecko);
   const NETWORK_ARCHIVE_EVENT = "__gpt_anticurse_archive_ready__";
   const STATS_EVENT = "__gpt_anticurse_stats_ready__";
   const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });

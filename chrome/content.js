@@ -3,6 +3,11 @@
 const CHANNEL = "__gpt_anticurse_v1__";
 const STATS_EVENT = "__gpt_anticurse_stats_ready__";
 const DEFAULT_SETTINGS = { enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true };
+const RECOVERABLE_MAIN_CODES = new Set([
+  "unsupported-conversation-shape",
+  "conversation-transform-failed",
+  "conversation-json-parse-failed"
+]);
 const DOM_GATE = globalThis.CGAntiCurseDomReady;
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 let currentSettings = { ...DEFAULT_SETTINGS };
@@ -109,6 +114,15 @@ function recordDiagnostic(scope, code, error, extra) {
   return Promise.resolve(null);
 }
 
+function clearRecoveredMainIssue(stats) {
+  const validGraph = stats && (
+    stats.mode === "trimmed" ||
+    (stats.mode === "passthrough" && stats.reason === "below-limit")
+  );
+  if (!validGraph || !lastIssue || lastIssue.scope !== "chromium-main" || !RECOVERABLE_MAIN_CODES.has(lastIssue.code)) return;
+  if (DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") DIAGNOSTICS.clear("chromium-main", lastIssue.code);
+}
+
 chrome.storage.local.get({ ...DEFAULT_SETTINGS, cgLastIssue: null }).then((saved) => {
   currentSettings = { ...DEFAULT_SETTINGS, ...saved };
   lastIssue = saved.cgLastIssue || null;
@@ -151,9 +165,7 @@ window.addEventListener("message", (event) => {
 
   if (msg.type !== "stats") return;
   lastStats = msg.stats || null;
-  if (lastStats && lastStats.mode === "trimmed" && DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") {
-    DIAGNOSTICS.clear("chromium-main");
-  }
+  clearRecoveredMainIssue(lastStats);
   render(lastStats);
   window.dispatchEvent(new CustomEvent(STATS_EVENT, { detail: {
     mode: lastStats && lastStats.mode,
