@@ -6,7 +6,7 @@
   "permissions": ["storage", "webRequest", "webRequestBlocking", "webRequestFilterResponse", "unlimitedStorage"],
   "host_permissions": ["https://chatgpt.com/*"],
   "background": {
-    "scripts": ["defaults.js", "diagnostics.js", "trim.js", "trim-logical.js", "archive.js", "archive-export.js", "archive-store.js", "archive-background.js", "archive-firefox-hook.js", "background.js"]
+    "scripts": ["diagnostics.js", "defaults.js", "trim.js", "trim-logical.js", "archive.js", "archive-export.js", "archive-store.js", "archive-background.js", "background.js"]
   },
   "content_scripts": [
     {
