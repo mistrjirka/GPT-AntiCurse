@@ -3,6 +3,7 @@
 const CHANNEL = "__gpt_anticurse_v1__";
 const DEFAULT_SETTINGS = { enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true };
 let currentSettings = { ...DEFAULT_SETTINGS };
+let settingsReady = false;
 let lastStats = null;
 let badge;
 let hideTimer;
@@ -62,13 +63,21 @@ function render(stats) {
 }
 
 function postSettings() {
+  if (!settingsReady) return false;
   window.postMessage({ channel: CHANNEL, type: "settings", settings: currentSettings }, location.origin);
+  return true;
 }
 
 chrome.storage.local.get(DEFAULT_SETTINGS).then((saved) => {
   currentSettings = { ...DEFAULT_SETTINGS, ...saved };
+  settingsReady = true;
   postSettings();
   if (!currentSettings.showGuardNotice) removeBadge();
+}).catch(() => {
+  // The bounded product defaults are safer than pretending storage initialized.
+  // Mark them authoritative only after the storage read itself has failed.
+  settingsReady = true;
+  postSettings();
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -76,6 +85,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   for (const key of Object.keys(DEFAULT_SETTINGS)) {
     if (changes[key]) currentSettings[key] = changes[key].newValue;
   }
+  if (!settingsReady) return;
   postSettings();
   if (currentSettings.showGuardNotice) render(lastStats);
   else removeBadge();
@@ -86,6 +96,8 @@ window.addEventListener("message", (event) => {
   const msg = event.data;
   if (!msg || msg.channel !== CHANNEL) return;
   if (msg.type === "settings-request") {
+    // Do not satisfy MAIN world's startup barrier with an in-memory fallback.
+    // The initial storage read posts once it has produced authoritative values.
     postSettings();
   } else if (msg.type === "stats") {
     lastStats = msg.stats || null;
