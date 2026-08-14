@@ -173,16 +173,9 @@
   }
 
   function startObserver() {
-    if (!attachThreadObserver()) {
-      // The hydrated shell may create #thread one task after the readiness gate.
-      setTimeout(startObserver, 100);
-    }
+    if (!attachThreadObserver()) setTimeout(startObserver, 100);
   }
 
-  // MAIN-world Chromium interception publishes the authoritative untrimmed
-  // archive once. Keep this listener active from document_start so persistence
-  // does not depend on the later DOM observer. Firefox saves its network archive
-  // directly in the background response filter and never emits this message.
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
     const message = event.data;
