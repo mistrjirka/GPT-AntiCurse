@@ -1,7 +1,7 @@
 "use strict";
 
 const CHANNEL = "__gpt_anticurse_v1__";
-const DEFAULT_SETTINGS = { enabled: true, mode: "visible-history", maxDisplayMessages: 64, showGuardNotice: true };
+const DEFAULT_SETTINGS = { enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true };
 let currentSettings = { ...DEFAULT_SETTINGS };
 let lastStats = null;
 let badge;
