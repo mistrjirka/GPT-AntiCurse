@@ -60,13 +60,20 @@ function recordIssue(scope, code, error, extra) {
 }
 
 function recordStats(stats) {
-  updateQueue = updateQueue.then(async () => {
+  const operation = updateQueue.then(async () => {
     const saved = await chrome.storage.local.get({ cgTotals: EMPTY_TOTALS });
     const next = addStats(normalizeTotals(saved.cgTotals), stats);
     await chrome.storage.local.set({ cgTotals: next });
     return next;
   });
-  return updateQueue;
+
+  // Keep the serialized queue usable after a transient storage failure. The
+  // caller still receives `operation` and therefore sees the rejection, while
+  // later counter updates are not permanently poisoned until the worker restarts.
+  updateQueue = operation.catch((error) => {
+    console.warn("[GPT AntiCurse] Counter queue recovered after a failed update", error);
+  });
+  return operation;
 }
 
 function resetTotals() {
@@ -81,7 +88,10 @@ function conversationIdFromMessage(message, sender) {
   try {
     const match = new URL(urlString).pathname.match(/(?:^|\/)c\/([^/?#]+)/);
     return match ? decodeURIComponent(match[1]) : null;
-  } catch (_) {
+  } catch (error) {
+    // Expected URL probe: a sender without a normal tab URL simply has no
+    // conversation id and is handled by the caller as missing-conversation-id.
+    void error;
     return null;
   }
 }

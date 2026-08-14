@@ -12,6 +12,15 @@
     resolveReady();
   }
 
+  function reportCallbackFailure(error) {
+    const diagnostics = global.CGAntiCurseDiagnostics;
+    if (diagnostics && typeof diagnostics.record === "function") {
+      diagnostics.record("dom-ready", "callback-failed", error);
+      return;
+    }
+    console.error("[GPT AntiCurse] Hydration-ready callback failed", error);
+  }
+
   function settleAfterLoad() {
     // Give React two paint opportunities, then wait for an idle slice. The
     // timeout keeps the extension usable even if ChatGPT remains continuously
@@ -28,7 +37,11 @@
   global.CGAntiCurseDomReady = {
     isReady() { return ready; },
     whenReady(callback) {
-      if (typeof callback === "function") readyPromise.then(callback);
+      if (typeof callback === "function") {
+        // Observe callback rejections explicitly. A failed history/archive setup
+        // must not turn into an unhandled Promise rejection with no AntiCurse clue.
+        readyPromise.then(() => callback()).catch(reportCallbackFailure);
+      }
       return readyPromise;
     }
   };

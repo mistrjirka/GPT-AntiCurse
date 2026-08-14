@@ -30,6 +30,8 @@
   let observedThread = null;
   let threadObserver = null;
   let parentObserver = null;
+  let discoveryObserver = null;
+  let discoveryRaf = 0;
 
   function recordIssue(code, error, extra) {
     if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record("archive", code, error, extra);
@@ -42,24 +44,30 @@
     return Promise.resolve(false);
   }
 
+  function conversationId() {
+    const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/);
+    if (match) currentConversationId = decodeURIComponent(match[1]);
+    return currentConversationId;
+  }
+
   globalThis.CGAntiCurseArchiveBridge = {
     get(id) {
       if (!latestNetworkArchive) return null;
       if (id && latestNetworkArchive.id !== id) return null;
       return latestNetworkArchive;
+    },
+    debug() {
+      return {
+        conversationId: conversationId(),
+        transientArchive: !!latestNetworkArchive,
+        transientMessages: latestNetworkArchive && Array.isArray(latestNetworkArchive.messages) ? latestNetworkArchive.messages.length : 0,
+        archiveEnabled,
+        archiveSettingsReady,
+        threadObserved: !!(observedThread && observedThread.isConnected),
+        capturePending: !!captureTimer
+      };
     }
   };
-
-  function conversationIdFromPage() {
-    const match = String(location.pathname || "").match(/(?:^|\/)c\/([^/?#]+)/);
-    return match ? match[1] : null;
-  }
-
-  function conversationId() {
-    const fromPage = conversationIdFromPage();
-    if (fromPage) currentConversationId = fromPage;
-    return currentConversationId;
-  }
 
   async function persistNetworkArchive(archive) {
     if (!archiveEnabled || !archive) return { ok: false, reason: "backup-disabled" };
@@ -105,12 +113,13 @@
     const markdownBlocks = Array.from(roleElement.querySelectorAll(".markdown"));
     if (markdownBlocks.length) {
       const value = markdownBlocks
-        .map((node) => node.innerText || node.textContent || "")
+        .map((node) => node.textContent || "")
         .join("\n\n")
         .trim();
       if (value) return value;
     }
-    return (roleElement.innerText || roleElement.textContent || "").trim();
+    // textContent avoids the synchronous layout work that innerText can trigger.
+    return (roleElement.textContent || "").trim();
   }
 
   function collectRenderedMessages() {
@@ -201,7 +210,7 @@
     return false;
   }
 
-  function disconnectObservers() {
+  function disconnectThreadObservers() {
     if (threadObserver) threadObserver.disconnect();
     if (parentObserver) parentObserver.disconnect();
     threadObserver = null;
@@ -209,12 +218,21 @@
     observedThread = null;
   }
 
+  function disconnectObservers() {
+    disconnectThreadObservers();
+    if (discoveryObserver) discoveryObserver.disconnect();
+    discoveryObserver = null;
+    if (discoveryRaf) cancelAnimationFrame(discoveryRaf);
+    discoveryRaf = 0;
+  }
+
   function attachThreadObserver() {
+    if (!archiveEnabled) return false;
     const thread = document.querySelector("#thread");
     if (!thread || !thread.parentElement) return false;
     if (thread === observedThread && threadObserver) return true;
 
-    disconnectObservers();
+    disconnectThreadObservers();
     observedThread = thread;
     threadObserver = new MutationObserver((records) => {
       if (records.some(touchesConversation)) scheduleCapture();
@@ -223,19 +241,35 @@
 
     const parent = thread.parentElement;
     parentObserver = new MutationObserver(() => {
-      const current = document.querySelector("#thread");
-      if (current !== observedThread) {
-        attachThreadObserver();
-        scheduleCapture(100);
-      }
+      if (document.querySelector("#thread") !== observedThread) scheduleThreadAttachment();
     });
     parentObserver.observe(parent, { childList: true });
     scheduleCapture(250);
     return true;
   }
 
+  function scheduleThreadAttachment() {
+    if (!archiveEnabled || discoveryRaf) return;
+    discoveryRaf = requestAnimationFrame(() => {
+      discoveryRaf = 0;
+      attachThreadObserver();
+    });
+  }
+
+  function installDiscoveryObserver() {
+    if (discoveryObserver || !archiveEnabled || !document.documentElement) return;
+    discoveryObserver = new MutationObserver(() => {
+      // Cheap steady-state path: streaming mutations do not query the document
+      // while the already-observed native thread is still connected.
+      if (!observedThread || !observedThread.isConnected) scheduleThreadAttachment();
+    });
+    discoveryObserver.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
   function startObserver() {
-    if (!attachThreadObserver()) setTimeout(startObserver, 100);
+    if (!archiveEnabled) return;
+    installDiscoveryObserver();
+    scheduleThreadAttachment();
   }
 
   window.addEventListener("message", (event) => {
@@ -253,13 +287,17 @@
       pendingNetworkArchive = null;
       if (archiveEnabled) persistNetworkArchive(archive);
     }
-    if (archiveEnabled && DOM_GATE && DOM_GATE.isReady()) scheduleCapture(100);
+    if (archiveEnabled && (!DOM_GATE || DOM_GATE.isReady())) {
+      startObserver();
+      scheduleCapture(100);
+    }
   }).catch((error) => {
     // Fail private: current-page history still uses the transient archive, but
     // persistent backup remains disabled until storage can be read successfully.
     archiveEnabled = false;
     archiveSettingsReady = true;
     pendingNetworkArchive = null;
+    disconnectObservers();
     recordIssue("backup-setting-read-failed", error);
   });
 
@@ -268,7 +306,14 @@
     archiveEnabled = changes.archiveEnabled.newValue !== false;
     if (archiveEnabled) {
       persistNetworkArchive(latestNetworkArchive);
-      if (!DOM_GATE || DOM_GATE.isReady()) scheduleCapture(50);
+      if (!DOM_GATE || DOM_GATE.isReady()) {
+        startObserver();
+        scheduleCapture(50);
+      }
+    } else {
+      if (captureTimer) clearTimeout(captureTimer);
+      captureTimer = null;
+      disconnectObservers();
     }
   });
 
@@ -298,7 +343,11 @@
     disconnectObservers();
   });
 
-  if (DOM_GATE) DOM_GATE.whenReady(startObserver);
-  else if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", startObserver, { once: true });
-  else startObserver();
+  if (DOM_GATE) DOM_GATE.whenReady(() => {
+    if (archiveEnabled) startObserver();
+  });
+  else if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", () => {
+    if (archiveEnabled) startObserver();
+  }, { once: true });
+  else if (archiveEnabled) startObserver();
 })();

@@ -1,29 +1,44 @@
-# GPT AntiCurse v0.5.14
+# GPT AntiCurse v0.5.15
 
-Chromium bridge recovery plus archive tail-capture reliability.
+Reliability, Manifest V3 lifecycle, and debugging audit.
 
-## Chromium page bridge
+## Failure recovery
 
-- Keeps the v0.5.13 fix for the Chrome-only state where the popup is alive but no ChatGPT content-script receiver exists.
-- Distinguishes Chrome withholding `chatgpt.com` site access from a genuinely missing/stale content-script bridge.
-- **Save & reload** can request the already-declared ChatGPT host access from the user gesture and reload the tab so `document_start` scripts are installed.
-- If access already exists but the current tab predates an extension install/update, the popup reports **Reload required** and includes Chrome's actual messaging error instead of the old generic `archive/popup-page-bridge-failed` state.
-- The startup defaults writer remains removed, preventing a stale asynchronous default write from overwriting a newly selected Recent-N limit.
+- Chromium counter serialization now recovers after a failed storage operation instead of leaving every later counter update attached to a permanently rejected Promise.
+- IndexedDB initialization no longer caches a rejected open forever. Transient open/blocked failures can be retried, and version changes close/reset the cached connection.
+- Archive persistence queues remain self-healing after a failed operation.
+- Removes the background archive helper's tab-to-conversation fallback global; archive reads now require the explicit conversation id already supplied by the content script.
 
-## Archive tail capture
+## Firefox MV3 lifecycle
 
-- Fixes `archive/tail-merge-failed — CGArchive is not defined` seen in Firefox.
-- The hydrated DOM tail updater no longer depends on a free cross-script `CGArchive` global merely to identify the current conversation.
-- Conversation IDs are derived locally from the current `/c/<id>` page URL; the authoritative network archive and IndexedDB merge path are unchanged.
-- Chromium and Firefox use the same tail-capture implementation and a regression test now rejects reintroducing that global dependency.
+- Firefox response filtering now waits for authoritative stored settings before deciding whether to trim a newly loaded conversation.
+- A background/event-page wakeup can therefore no longer process the first conversation with startup defaults before the user's saved settings have loaded.
+- If settings storage cannot be read, the Firefox interceptor fails open and returns the original response with a diagnostic.
+- Per-tab Firefox stats/history now have `storage.session` fallback in addition to hot memory, so event-page unload/recreation does not silently erase the history fallback.
+- Session-cache failures, including quota/storage failures, are explicit diagnostics rather than indistinguishable `archive-not-found` states.
+
+## DOM/background overhead
+
+- Removes the archive tail updater's permanent 100 ms `#thread` polling loop and replaces it with mutation-driven discovery/re-attachment.
+- DOM tail observers are not installed while persistent conversation backup is disabled.
+- Tail text extraction uses `textContent` instead of `innerText`, avoiding unnecessary synchronous layout work.
+- Hydration-ready callbacks now report rejected/throwing callbacks instead of creating unhandled Promise rejections.
+
+## Debugging
+
+- Keeps a bounded local history of the most recent 24 AntiCurse diagnostic issues, with repeated identical issues collapsed into a count.
+- Adds **Download debug report** under Details.
+- The report actively checks the live content-script bridge, current settings, hydration/DOM state, native thread/scroller state, AntiCurse history host/button state, transient archive state, background history source/counts, archive summary, counters, and recent diagnostic history.
+- Debug reports contain health metadata and identifiers only; they do not include conversation message text.
 
 ## Regression coverage
 
-- Existing real Chromium Recent/Auto, host-access, hydration and native-fidelity tests remain release gates.
-- Existing real Firefox interception/paging and native-fidelity tests remain release gates.
-- Dead packaged code, silent catches, packaging reachability, trim, archive, export, virtualization and cross-browser parity checks remain enabled.
+- Adds lifecycle/failure-recovery tests for poisoned Promise queues, IndexedDB retry behavior, permanent DOM polling, Firefox settings initialization, session history fallback, diagnostic history, and debug-state packaging.
+- Existing real Chromium Recent/Auto, hydration and native-fidelity E2Es remain release gates.
+- Existing real Firefox interception/paging and native-fidelity E2Es remain release gates.
+- Dead-code, silent-catch, package reachability, cross-browser parity, archive/export and virtualization checks remain enabled.
 
 ## Privacy
 
 - No telemetry and no remote extension code.
-- Conversation processing, optional archive storage, diagnostics, counters, history rendering and Markdown export remain local to the browser.
+- Conversation processing, optional archive storage, diagnostics, debug reports, counters, history rendering and Markdown export remain local to the browser.

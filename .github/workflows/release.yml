@@ -14,7 +14,7 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'Release ')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate manifests
         run: |
           python -m json.tool firefox/manifest.json >/dev/null
@@ -45,6 +45,7 @@ jobs:
           cmp firefox/history-fidelity.css chrome/history-fidelity.css
           cmp firefox/history-hydration-safe.js chrome/history-hydration-safe.js
           cmp firefox/windowed.js chrome/windowed.js
+          cmp firefox/debug-state.js chrome/debug-state.js
           cmp firefox/content.css chrome/content.css
           cmp firefox/popup.html chrome/popup.html
           cmp firefox/popup.css chrome/popup.css
@@ -59,17 +60,38 @@ jobs:
             exit 1
           fi
       - name: Run unit and code-quality tests
+        shell: bash
         run: |
-          node tests/test-trim.js
-          node tests/test-trim-logical.js
-          node tests/test-archive.js
-          node tests/test-archive-export.js
-          node tests/test-history-inline.js
-          node tests/test-history-virtualized.js
-          node tests/test-history-fidelity.js
-          node tests/test-packaging.js
-          node tests/test-no-silent-catches.js
-          node tests/test-chrome-host-access.js
+          set -euo pipefail
+          tests=(
+            tests/test-trim.js
+            tests/test-trim-logical.js
+            tests/test-archive.js
+            tests/test-archive-export.js
+            tests/test-history-inline.js
+            tests/test-history-virtualized.js
+            tests/test-history-fidelity.js
+            tests/test-packaging.js
+            tests/test-no-silent-catches.js
+            tests/test-chrome-host-access.js
+            tests/test-reliability.js
+          )
+          for test in "${tests[@]}"; do
+            echo "==> $test"
+            output_file="$(mktemp)"
+            if node "$test" >"$output_file" 2>&1; then
+              cat "$output_file"
+              rm -f "$output_file"
+              continue
+            fi
+            cat "$output_file"
+            summary="$(grep -m1 -E 'AssertionError|Error \[ERR_|Error:' "$output_file" || true)"
+            if [ -z "$summary" ]; then summary="$(head -n 4 "$output_file" | tr '\n' ' ')"; fi
+            summary="$(printf '%s' "$summary" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
+            rm -f "$output_file"
+            echo "::error file=$test::${summary:-Unit/code-quality test failed}"
+            exit 1
+          done
       - name: Build browser packages
         run: bash ./scripts/build.sh
       - name: Install browser E2E runtimes
