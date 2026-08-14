@@ -28,6 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cmp firefox/diagnostics.js chrome/diagnostics.js
           cmp firefox/defaults.js chrome/defaults.js
           cmp firefox/trim.js chrome/trim.js
           cmp firefox/trim-logical.js chrome/trim-logical.js
@@ -38,7 +39,6 @@ jobs:
           cmp firefox/archive-background.js chrome/archive-background.js
           cmp firefox/archive-capture.js chrome/archive-capture.js
           cmp firefox/dom-ready.js chrome/dom-ready.js
-          cmp firefox/history-overlay.js chrome/history-overlay.js
           cmp firefox/history-native.js chrome/history-native.js
           cmp firefox/history-virtualized.js chrome/history-virtualized.js
           cmp firefox/history-virtualized.css chrome/history-virtualized.css
@@ -59,7 +59,7 @@ jobs:
             echo "Dynamic code execution is not allowed in GPT AntiCurse." >&2
             exit 1
           fi
-      - name: Run unit tests
+      - name: Run unit and code-quality tests
         run: |
           node tests/test-trim.js
           node tests/test-trim-logical.js
@@ -68,6 +68,8 @@ jobs:
           node tests/test-history-inline.js
           node tests/test-history-virtualized.js
           node tests/test-history-fidelity.js
+          node tests/test-packaging.js
+          node tests/test-no-silent-catches.js
       - name: Build browser packages
         run: bash ./scripts/build.sh
       - name: Install browser E2E runtimes

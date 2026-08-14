@@ -3,16 +3,29 @@
   "use strict";
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
+  const DIAGNOSTICS = global.CGAntiCurseDiagnostics;
   const activeByTab = new Map();
   const queues = new Map();
 
+  function recordIssue(code, error, extra) {
+    if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record("archive", code, error, extra);
+    console.warn(`[GPT AntiCurse] archive/${code}`, error, extra || "");
+    return Promise.resolve(null);
+  }
+
   function queueFor(id, operation) {
     const previous = queues.get(id) || Promise.resolve();
-    const next = previous.catch(() => {}).then(operation);
-    queues.set(id, next);
-    next.finally(() => {
-      if (queues.get(id) === next) queues.delete(id);
+    const recovered = previous.catch((error) => {
+      // The previous caller already receives its own rejection. Recover only so
+      // one failed archive write cannot permanently poison this conversation's queue.
+      console.warn("[GPT AntiCurse] Continuing archive queue after a failed operation", id, error);
     });
+    const next = recovered.then(operation);
+    queues.set(id, next);
+    const cleanup = () => {
+      if (queues.get(id) === next) queues.delete(id);
+    };
+    next.then(cleanup, cleanup);
     return next;
   }
 
@@ -71,11 +84,11 @@
     };
   }
 
-  function asyncResponse(promise, sendResponse) {
-    promise.then(sendResponse).catch((error) => sendResponse({
-      ok: false,
-      reason: String(error && error.message ? error.message : error)
-    }));
+  function asyncResponse(promise, sendResponse, code) {
+    promise.then(sendResponse).catch((error) => {
+      recordIssue(code, error);
+      sendResponse({ ok: false, reason: String(error && error.message ? error.message : error) });
+    });
     return true;
   }
 
@@ -83,29 +96,14 @@
     if (!message) return false;
     const tabId = sender && sender.tab ? sender.tab.id : message.tabId;
 
-    if (message.type === "cg-save-network-archive") {
-      return asyncResponse(saveNetworkArchive(message.archive, tabId), sendResponse);
-    }
-    if (message.type === "cg-merge-rendered-archive") {
-      return asyncResponse(mergeRenderedArchive(message, tabId), sendResponse);
-    }
-    if (message.type === "cg-get-archive-summary") {
-      return asyncResponse(archiveSummary(message), sendResponse);
-    }
-    if (message.type === "cg-export-archive") {
-      return asyncResponse(exportArchive(message), sendResponse);
-    }
+    if (message.type === "cg-save-network-archive") return asyncResponse(saveNetworkArchive(message.archive, tabId), sendResponse, "save-network-failed");
+    if (message.type === "cg-merge-rendered-archive") return asyncResponse(mergeRenderedArchive(message, tabId), sendResponse, "merge-rendered-failed");
+    if (message.type === "cg-get-archive-summary") return asyncResponse(archiveSummary(message), sendResponse, "summary-read-failed");
+    if (message.type === "cg-export-archive") return asyncResponse(exportArchive(message), sendResponse, "export-read-failed");
     return false;
   });
 
-  if (ext.tabs && ext.tabs.onRemoved) {
-    ext.tabs.onRemoved.addListener((tabId) => activeByTab.delete(tabId));
-  }
+  if (ext.tabs && ext.tabs.onRemoved) ext.tabs.onRemoved.addListener((tabId) => activeByTab.delete(tabId));
 
-  global.CGArchiveBackground = {
-    saveNetworkArchive,
-    mergeRenderedArchive,
-    archiveSummary,
-    exportArchive
-  };
+  global.CGArchiveBackground = { saveNetworkArchive, mergeRenderedArchive, archiveSummary, exportArchive };
 })(typeof globalThis !== "undefined" ? globalThis : this);

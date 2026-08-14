@@ -127,7 +127,11 @@
           if (Array.isArray(value.plan)) return { kind: "activity", label: "Updated task plan", raw };
           if (value.command || value.cwd || value.session_id || value.job_id) return { kind: "activity", label: "Used a tool", raw };
         }
-      } catch (_) {}
+      } catch (error) {
+        // Expected parse probe: ordinary prose may be brace-delimited without
+        // being a serialized tool payload. It remains visible content below.
+        void error;
+      }
     }
 
     if (/^\{\s*"(?:path|search_query|plan|command|session_id|job_id)"\s*:/s.test(raw)) {

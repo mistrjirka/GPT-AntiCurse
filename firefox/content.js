@@ -1,11 +1,20 @@
 "use strict";
 
 const DOM_GATE = globalThis.CGAntiCurseDomReady;
+const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
+const STATS_EVENT = "__gpt_anticurse_stats_ready__";
 let badge;
 let hideTimer;
 let lastStats = null;
+let lastIssue = null;
 let showGuardNotice = true;
 let renderQueuedForDomReady = false;
+
+function recordIssue(scope, code, error, extra) {
+  if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record(scope, code, error, extra);
+  console.warn(`[GPT AntiCurse] ${scope}/${code}`, error, extra || "");
+  return Promise.resolve(null);
+}
 
 function removeBadge() {
   clearTimeout(hideTimer);
@@ -28,6 +37,22 @@ function pctRemoved(stats) {
   return before > 0 ? Math.round(Math.max(0, Math.min(100, ((before - after) / before) * 100))) : 0;
 }
 
+function issueIsRecent(issue) {
+  const at = issue && Date.parse(issue.at);
+  return Number.isFinite(at) && Date.now() - at < 10 * 60 * 1000;
+}
+
+function renderIssueIfNeeded() {
+  if (!showGuardNotice || !lastIssue || !issueIsRecent(lastIssue)) return false;
+  if (!["history", "archive", "interceptor", "settings"].includes(lastIssue.scope)) return false;
+  const el = ensureBadge();
+  el.dataset.mode = "error";
+  el.classList.remove("cg-compact");
+  el.textContent = "AntiCurse issue — open extension details";
+  el.title = `${lastIssue.scope}/${lastIssue.code}\n${lastIssue.message}`;
+  return true;
+}
+
 function queueRenderAfterDomReady() {
   if (!DOM_GATE || renderQueuedForDomReady) return;
   renderQueuedForDomReady = true;
@@ -47,7 +72,9 @@ function render(stats) {
     removeBadge();
     return;
   }
+  if (renderIssueIfNeeded()) return;
   if (!stats) return;
+
   const el = ensureBadge();
   el.dataset.mode = stats.mode || "unknown";
   el.classList.remove("cg-compact");
@@ -61,33 +88,49 @@ function render(stats) {
 
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
-      if (el && el.dataset.mode === "trimmed" && showGuardNotice) {
+      if (el && el.dataset.mode === "trimmed" && showGuardNotice && !renderIssueIfNeeded()) {
         el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${saved}% trimmed</span>`;
         el.classList.add("cg-compact");
       }
     }, 9000);
   } else if (stats.mode === "error") {
     el.textContent = "AntiCurse error — original response kept";
-    el.title = stats.error || "Unknown interception error";
+    el.title = stats.error || stats.reason || "Unknown interception error";
   } else {
     el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span>no trimming needed</span>`;
   }
 }
 
-browser.storage.local.get({ showGuardNotice: true }).then((saved) => {
+function acceptStats(stats) {
+  lastStats = stats || null;
+  if (lastStats && lastStats.mode === "trimmed" && DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") {
+    DIAGNOSTICS.clear("interceptor");
+  }
+  render(lastStats);
+  window.dispatchEvent(new CustomEvent(STATS_EVENT, { detail: {
+    mode: lastStats && lastStats.mode,
+    reason: lastStats && lastStats.reason
+  } }));
+}
+
+browser.storage.local.get({ showGuardNotice: true, cgLastIssue: null }).then((saved) => {
   showGuardNotice = saved.showGuardNotice !== false;
+  lastIssue = saved.cgLastIssue || null;
   if (!showGuardNotice) removeBadge();
-}).catch(() => {});
+}).catch((error) => recordIssue("settings", "firefox-content-storage-read-failed", error));
 
 browser.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes.showGuardNotice) return;
-  showGuardNotice = changes.showGuardNotice.newValue !== false;
+  if (area !== "local") return;
+  if (changes.showGuardNotice) showGuardNotice = changes.showGuardNotice.newValue !== false;
+  if (changes.cgLastIssue) lastIssue = changes.cgLastIssue.newValue || null;
   if (showGuardNotice) render(lastStats);
   else removeBadge();
 });
 
 browser.runtime.onMessage.addListener((message) => {
-  if (message && message.type === "cg-stats") render(message.stats);
+  if (message && message.type === "cg-stats") acceptStats(message.stats);
 });
 
-browser.runtime.sendMessage({ type: "cg-get-stats" }).then(render).catch(() => {});
+browser.runtime.sendMessage({ type: "cg-get-stats" }).then(acceptStats).catch((error) => {
+  recordIssue("interceptor", "initial-stats-request-failed", error);
+});

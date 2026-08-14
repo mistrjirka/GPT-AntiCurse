@@ -1,17 +1,17 @@
 {
   "manifest_version": 3,
   "name": "GPT AntiCurse",
-  "version": "0.5.11",
+  "version": "0.5.12",
   "description": "Makes very long ChatGPT conversations responsive by shrinking invisible conversation state before page JavaScript processes it.",
   "permissions": ["storage", "webRequest", "webRequestBlocking", "webRequestFilterResponse", "unlimitedStorage"],
   "host_permissions": ["https://chatgpt.com/*"],
   "background": {
-    "scripts": ["defaults.js", "trim.js", "trim-logical.js", "archive.js", "archive-export.js", "archive-store.js", "archive-background.js", "archive-firefox-hook.js", "background.js"]
+    "scripts": ["diagnostics.js", "defaults.js", "trim.js", "trim-logical.js", "archive.js", "archive-export.js", "archive-store.js", "archive-background.js", "background.js"]
   },
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["dom-ready.js", "archive.js", "content.js", "history-overlay.js", "history-native.js", "history-virtualized.js", "history-fidelity.js", "history-hydration-safe.js", "windowed.js", "archive-capture.js"],
+      "js": ["dom-ready.js", "diagnostics.js", "archive.js", "content.js", "history-native.js", "history-virtualized.js", "history-fidelity.js", "history-hydration-safe.js", "archive-capture.js", "windowed.js"],
       "css": ["content.css", "history-virtualized.css", "history-fidelity.css"],
       "run_at": "document_start"
     }

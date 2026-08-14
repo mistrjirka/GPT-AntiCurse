@@ -1,31 +1,119 @@
-/* Controller for limited-history modes. Older archived turns render inline above ChatGPT's native #thread. */
+/* Limited-history controller. Old turns stay outside ChatGPT's React-owned graph. */
 (() => {
   "use strict";
+
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const IS_FIREFOX = typeof browser !== "undefined";
-  const CHANNEL = "__gpt_anticurse_v1__";
-  const LIMITED_MODES = new Set(["recent", "latest-visible", "windowed-visible"]);
-  const DEFAULT_SETTINGS = { enabled: true, mode: "recent", maxDisplayMessages: 64 };
+  const NETWORK_ARCHIVE_EVENT = "__gpt_anticurse_archive_ready__";
+  const STATS_EVENT = "__gpt_anticurse_stats_ready__";
+  const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
   const TOP_EPSILON = 16;
-  const REATTACH_INTERVAL_MS = 750;
+  const HISTORY_WATCHDOG_MS = 2000;
+  const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
+
   let settings = { ...DEFAULT_SETTINGS };
   let history = null;
   let historyKey = "none";
   let nativeScroller = null;
   let nativeEventTarget = null;
   let rootStateObserver = null;
-  let reattachTimer = null;
+  let shellObserver = null;
+  let shellRefreshRaf = 0;
+  let historyWatchdog = 0;
   let lastNativeTop = 0;
   let lastFromTop = null;
   let autoArmed = false;
   let suppressAutoUntil = 0;
+  let initialPositionSettled = false;
+  let userInteracted = false;
+
   const reader = CGHistoryOverlay.create({ getScroller: () => nativeScroller });
 
-  function isLimitedMode(mode) { return LIMITED_MODES.has(mode); }
+  function recordIssue(code, error, extra) {
+    if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record("history", code, error, extra);
+    console.warn(`[GPT AntiCurse] history/${code}`, error, extra || "");
+    return Promise.resolve(null);
+  }
+
+  function clearHistoryIssue() {
+    if (DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") return DIAGNOSTICS.clear("history");
+    return Promise.resolve(false);
+  }
+
+  function normalizeLimit(value) {
+    const number = Number(value);
+    return Math.max(4, Math.min(500, Number.isFinite(number) ? number : 64));
+  }
+
+  function normalizeMode(value) {
+    return value === "windowed-visible" ? "windowed-visible" : "recent";
+  }
+
+  function applySavedSettings(saved) {
+    settings = {
+      enabled: saved && typeof saved.enabled === "boolean" ? saved.enabled : true,
+      mode: normalizeMode(saved && saved.mode),
+      maxDisplayMessages: normalizeLimit(saved && saved.maxDisplayMessages)
+    };
+  }
+
+  function conversationId() {
+    if (globalThis.CGArchive && typeof CGArchive.conversationIdFromUrl === "function") return CGArchive.conversationIdFromUrl(location.href);
+    const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  function rawVisibleWindowCount(messages, requestedLimit) {
+    const limit = normalizeLimit(requestedLimit);
+    if (!Array.isArray(messages) || !messages.length) return 0;
+    const units = [];
+    let unit = -1;
+    let previousRole = null;
+    for (const message of messages) {
+      const role = message && message.role === "user" ? "user" : "assistant";
+      if (role === "user" || previousRole !== "assistant") unit++;
+      units.push(unit);
+      previousRole = role;
+    }
+    const totalUnits = unit + 1;
+    if (totalUnits <= limit) return messages.length;
+    const cutoff = totalUnits - limit;
+    const first = units.findIndex((value) => value >= cutoff);
+    return first < 0 ? messages.length : messages.length - first;
+  }
+
+  function historyFromArchive(archive) {
+    if (!archive || !Array.isArray(archive.messages)) return null;
+    const pageSize = normalizeLimit(settings.maxDisplayMessages);
+    const messages = archive.messages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      createTime: message.createTime == null ? null : message.createTime
+    }));
+    return {
+      ok: true,
+      messages,
+      nativeVisibleCount: rawVisibleWindowCount(messages, pageSize),
+      pageSize,
+      maxRendered: Math.max(pageSize, Math.min(500, pageSize * 3)),
+      source: "isolated-transient"
+    };
+  }
+
+  function transientHistory() {
+    if (IS_FIREFOX) return null;
+    const bridge = globalThis.CGAntiCurseArchiveBridge;
+    const id = conversationId();
+    if (!bridge || typeof bridge.get !== "function" || !id) return null;
+    return historyFromArchive(bridge.get(id));
+  }
+
   function firstNativeTurn() {
     return document.querySelector('[data-testid^="conversation-turn-"]') ||
       document.querySelector("[data-message-author-role]")?.closest("section, article, [data-turn-id-container]") || null;
   }
+
   function findFallbackScroller(element) {
     let node = element && element.parentElement;
     while (node && node !== document.body && node !== document.documentElement) {
@@ -35,20 +123,44 @@
     }
     return document.scrollingElement || document.documentElement;
   }
+
   function findNativeScroller() {
     const marked = document.querySelector("[data-scroll-root]");
     if (marked && (marked.querySelector('[data-testid^="conversation-turn-"]') || marked.querySelector("#thread"))) return marked;
     return findFallbackScroller(firstNativeTurn());
   }
-  function nativeTop() { return nativeScroller ? Math.max(0, Number(nativeScroller.scrollTop) || 0) : 0; }
+
+  function nativeTop() {
+    return nativeScroller ? Math.max(0, Number(nativeScroller.scrollTop) || 0) : 0;
+  }
+
   function isAtTop() {
     if (!nativeScroller) return false;
     if (nativeScroller.hasAttribute("data-scroll-from-top")) return false;
     return nativeTop() <= TOP_EPSILON;
   }
+
   function eventTargetForScroller(scroller) {
     return scroller === document.scrollingElement || scroller === document.documentElement ? window : scroller;
   }
+
+  function markUserInteraction(event) {
+    if (!initialPositionSettled && event && event.isTrusted) userInteracted = true;
+  }
+
+  function settleInitialPosition() {
+    if (initialPositionSettled || userInteracted || !nativeScroller) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (initialPositionSettled || userInteracted || !nativeScroller || !nativeScroller.isConnected) return;
+      if (nativeScroller.hasAttribute("data-scroll-from-end")) {
+        nativeScroller.scrollTop = Math.max(0, nativeScroller.scrollHeight - nativeScroller.clientHeight);
+        lastNativeTop = nativeTop();
+        autoArmed = lastNativeTop > 64 || nativeScroller.hasAttribute("data-scroll-from-top");
+      }
+      initialPositionSettled = true;
+    }));
+  }
+
   function detachNativeWatch() {
     if (rootStateObserver) rootStateObserver.disconnect();
     rootStateObserver = null;
@@ -57,13 +169,13 @@
     nativeScroller = null;
     lastFromTop = null;
   }
+
   function canAutoLoad() {
-    return settings.mode === "windowed-visible" && settings.enabled && !!history &&
-      reader.hasMoreOlderTurns() && performance.now() >= suppressAutoUntil;
+    return settings.mode === "windowed-visible" && settings.enabled && !!history && reader.hasMoreOlderTurns() && performance.now() >= suppressAutoUntil;
   }
+
   function loadPreviousPage(auto = false) {
     if (!settings.enabled) return { ok: false, reason: "guard-disabled" };
-    if (!isLimitedMode(settings.mode)) return { ok: false, reason: "mode-has-full-history" };
     if (!history) return { ok: false, reason: "no-history-archive" };
     if (!reader.hasMoreOlderTurns()) return { ok: false, reason: "no-older-visible-turns" };
     const result = reader.loadPreviousPage({ preserveScroll: true });
@@ -73,10 +185,12 @@
     }
     return result;
   }
+
   function handleTopReached() {
     if (!autoArmed || !canAutoLoad()) return false;
     return loadPreviousPage(true).ok;
   }
+
   function onRootStateMutation() {
     if (!nativeScroller) return;
     const fromTop = nativeScroller.hasAttribute("data-scroll-from-top");
@@ -84,46 +198,57 @@
     lastFromTop = fromTop;
     if (fromTop) autoArmed = true;
   }
+
   function attachNativeWatch() {
-    if (!history || !settings.enabled || !isLimitedMode(settings.mode)) return false;
+    if (!history || !settings.enabled) return false;
     const nextScroller = findNativeScroller();
     if (!nextScroller) return false;
     const nextTarget = eventTargetForScroller(nextScroller);
-    if (nativeScroller === nextScroller && nativeScroller.isConnected && nativeEventTarget === nextTarget) {
-      reader.ensureAttached();
-      return true;
-    }
-    detachNativeWatch();
-    nativeScroller = nextScroller;
-    nativeEventTarget = nextTarget;
-    lastNativeTop = nativeTop();
-    lastFromTop = nativeScroller.hasAttribute("data-scroll-from-top");
-    autoArmed = lastFromTop || lastNativeTop > 64;
-    nextTarget.addEventListener("scroll", onNativeScroll, { passive: true, capture: true });
-    rootStateObserver = new MutationObserver(onRootStateMutation);
-    rootStateObserver.observe(nativeScroller, { attributes: true, attributeFilter: ["data-scroll-from-top"] });
-    reader.ensureAttached();
-    return true;
-  }
-  function refreshNativeWatch() {
-    if (!history || !settings.enabled || !isLimitedMode(settings.mode)) {
+
+    if (nativeScroller !== nextScroller || nativeEventTarget !== nextTarget || !nativeScroller.isConnected) {
       detachNativeWatch();
-      return false;
+      nativeScroller = nextScroller;
+      nativeEventTarget = nextTarget;
+      lastNativeTop = nativeTop();
+      lastFromTop = nativeScroller.hasAttribute("data-scroll-from-top");
+      autoArmed = lastFromTop || lastNativeTop > 64;
+      nextTarget.addEventListener("scroll", onNativeScroll, { passive: true, capture: true });
+      rootStateObserver = new MutationObserver(onRootStateMutation);
+      rootStateObserver.observe(nativeScroller, { attributes: true, attributeFilter: ["data-scroll-from-top"] });
     }
-    const current = findNativeScroller();
-    if (!nativeScroller || !nativeScroller.isConnected || current !== nativeScroller) return attachNativeWatch();
+
     reader.ensureAttached();
+    settleInitialPosition();
     return true;
   }
-  function startReattachWatch() {
-    if (reattachTimer) return;
-    refreshNativeWatch();
-    reattachTimer = setInterval(refreshNativeWatch, REATTACH_INTERVAL_MS);
+
+  function scheduleShellRefresh() {
+    if (shellRefreshRaf) return;
+    shellRefreshRaf = requestAnimationFrame(() => {
+      shellRefreshRaf = 0;
+      attachNativeWatch();
+    });
   }
-  function stopReattachWatch() {
-    if (reattachTimer) clearInterval(reattachTimer);
-    reattachTimer = null;
+
+  function installShellObserver() {
+    if (shellObserver || !document.body) return;
+    const root = document.querySelector("#main") || document.body;
+    shellObserver = new MutationObserver(() => {
+      const thread = document.querySelector("#thread");
+      const host = document.querySelector("#cg-window-history-host");
+      const misplaced = !!thread && (!host || host.parentElement !== thread.parentElement || host.nextSibling !== thread);
+      if (!nativeScroller || !nativeScroller.isConnected || misplaced) scheduleShellRefresh();
+    });
+    shellObserver.observe(root, { childList: true, subtree: true });
   }
+
+  function stopShellObserver() {
+    if (shellObserver) shellObserver.disconnect();
+    shellObserver = null;
+    if (shellRefreshRaf) cancelAnimationFrame(shellRefreshRaf);
+    shellRefreshRaf = 0;
+  }
+
   function onNativeScroll() {
     if (!nativeScroller) return;
     const currentTop = nativeTop();
@@ -132,89 +257,156 @@
     if (movingUp && isAtTop()) handleTopReached();
     lastNativeTop = currentTop;
   }
+
   function eventBelongsToConversation(event) {
     if (!nativeScroller) return false;
     const path = typeof event.composedPath === "function" ? event.composedPath() : [];
     return path.includes(nativeScroller) || (event.target instanceof Node && nativeScroller.contains(event.target));
   }
+
   function onGlobalWheel(event) {
     if (!settings.enabled || !history || settings.mode !== "windowed-visible") return;
-    refreshNativeWatch();
+    if (!nativeScroller || !nativeScroller.isConnected) attachNativeWatch();
     if (!nativeScroller || !eventBelongsToConversation(event)) return;
     if (event.deltaY < 0 && isAtTop() && reader.hasMoreOlderTurns()) {
       autoArmed = true;
       if (canAutoLoad() && loadPreviousPage(true).ok && event.cancelable) event.preventDefault();
     }
   }
+
   function snapshotKey(value) {
     if (!value || !Array.isArray(value.messages)) return "none";
     const messages = value.messages;
     const first = messages[0] || {};
     const last = messages[messages.length - 1] || {};
-    return [
-      messages.length,
-      Number(value.nativeVisibleCount) || 0,
-      Number(value.pageSize) || 0,
-      first.id || "",
-      first.role || "",
-      last.id || "",
-      last.role || "",
-      String(last.text || "")
-    ].join("\u001f");
+    return [messages.length, Number(value.nativeVisibleCount) || 0, Number(value.pageSize) || 0,
+      first.id || "", first.role || "", last.id || "", last.role || "", String(last.text || "")].join("\u001f");
   }
+
   function applyHistory(value) {
     const nextHistory = value && Array.isArray(value.messages) ? value : null;
     const nextKey = snapshotKey(nextHistory);
     reader.setMode(settings.mode);
+    if (!nextHistory) return false;
 
-    // Chromium may receive both the original publication and a retained replay;
-    // Firefox may answer a settings-triggered history request with the same
-    // snapshot. Equivalent snapshots must be idempotent: resetting the reader
-    // here would erase pages the user already loaded.
-    if (history && nextHistory && historyKey === nextKey) {
+    if (history && historyKey === nextKey) {
       history = nextHistory;
-      if (settings.enabled && isLimitedMode(settings.mode)) {
-        startReattachWatch();
-        refreshNativeWatch();
-      }
-      return;
+      if (settings.enabled) attachNativeWatch();
+      return true;
     }
 
     history = nextHistory;
     historyKey = nextKey;
+    initialPositionSettled = false;
     reader.setHistory(history);
-    if (!history || !settings.enabled || !isLimitedMode(settings.mode)) {
+    if (historyWatchdog) clearTimeout(historyWatchdog);
+    historyWatchdog = 0;
+    clearHistoryIssue();
+
+    if (!settings.enabled) {
       detachNativeWatch();
-      stopReattachWatch();
-      return;
+      stopShellObserver();
+      return true;
     }
-    startReattachWatch();
+
+    attachNativeWatch();
+    installShellObserver();
+    return true;
   }
+
   function clear() {
-    stopReattachWatch();
+    if (historyWatchdog) clearTimeout(historyWatchdog);
+    historyWatchdog = 0;
     detachNativeWatch();
+    stopShellObserver();
     reader.destroy();
     history = null;
     historyKey = "none";
+    initialPositionSettled = false;
   }
-  async function requestFirefoxHistory() {
-    if (!IS_FIREFOX || !settings.enabled || !isLimitedMode(settings.mode)) return;
-    try { applyHistory(await ext.runtime.sendMessage({ type: "cg-get-window-history" })); } catch (_) {}
+
+  async function requestHistory() {
+    if (!settings.enabled) return false;
+
+    const transient = transientHistory();
+    if (transient) return applyHistory(transient);
+
+    const id = conversationId();
+    if (!IS_FIREFOX && !id) return false;
+
+    try {
+      const value = await ext.runtime.sendMessage({
+        type: "cg-get-window-history",
+        conversationId: id,
+        maxDisplayMessages: settings.maxDisplayMessages
+      });
+      if (value && value.ok === false) {
+        if (value.reason !== "archive-not-found" && value.reason !== "missing-conversation-id") {
+          recordIssue(value.reason || "background-history-failed", value.error || value.reason || "History request failed");
+        }
+        return false;
+      }
+      if (!value || !Array.isArray(value.messages)) return false;
+      return applyHistory(value);
+    } catch (error) {
+      recordIssue("runtime-request-failed", error);
+      return false;
+    }
   }
+
+  function scheduleHistoryWatchdog(reason) {
+    if (history || !settings.enabled || !conversationId()) return;
+    if (historyWatchdog) clearTimeout(historyWatchdog);
+    historyWatchdog = setTimeout(() => {
+      historyWatchdog = 0;
+      if (!history && settings.enabled && conversationId()) {
+        recordIssue("missing-after-trim", "Conversation trimming succeeded but no archived history reached the UI.", {
+          mode: settings.mode,
+          limit: settings.maxDisplayMessages,
+          trigger: reason || "trimmed-stats"
+        });
+      }
+    }, HISTORY_WATCHDOG_MS);
+  }
+
   window.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });
+  window.addEventListener("wheel", markUserInteraction, { passive: true, capture: true });
+  window.addEventListener("pointerdown", markUserInteraction, { passive: true, capture: true });
+  window.addEventListener("touchstart", markUserInteraction, { passive: true, capture: true });
+  window.addEventListener("keydown", markUserInteraction, { capture: true });
+  window.addEventListener(NETWORK_ARCHIVE_EVENT, () => {
+    if (IS_FIREFOX) return;
+    requestHistory().then((ok) => {
+      if (!ok) recordIssue("transient-archive-unavailable", "The MAIN-world archive event fired, but the isolated archive was unavailable.");
+    });
+  });
+  window.addEventListener(STATS_EVENT, (event) => {
+    if (event && event.detail && event.detail.mode === "trimmed") scheduleHistoryWatchdog("trimmed-stats");
+  });
+
   ext.storage.local.get(DEFAULT_SETTINGS).then((saved) => {
-    settings = { ...DEFAULT_SETTINGS, ...saved };
+    applySavedSettings(saved);
     reader.setMode(settings.mode);
-    requestFirefoxHistory();
-  }).catch(() => {});
+    return requestHistory();
+  }).catch((error) => {
+    applySavedSettings(DEFAULT_SETTINGS);
+    reader.setMode(settings.mode);
+    recordIssue("settings-read-failed", error);
+    return requestHistory();
+  });
+
   ext.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    for (const key of Object.keys(DEFAULT_SETTINGS)) if (changes[key]) settings[key] = changes[key].newValue;
+    const next = { ...settings };
+    if (changes.enabled) next.enabled = changes.enabled.newValue;
+    if (changes.mode) next.mode = changes.mode.newValue;
+    if (changes.maxDisplayMessages) next.maxDisplayMessages = changes.maxDisplayMessages.newValue;
+    applySavedSettings(next);
     reader.setMode(settings.mode);
-    if (!settings.enabled || !isLimitedMode(settings.mode)) clear();
-    else if (IS_FIREFOX) requestFirefoxHistory();
-    else if (history) { startReattachWatch(); refreshNativeWatch(); }
+    if (!settings.enabled) clear();
+    else requestHistory();
   });
+
   ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message && message.type === "cg-open-window-history") {
       const result = loadPreviousPage(false);
@@ -225,11 +417,4 @@
     if (IS_FIREFOX && message && message.type === "cg-window-history") applyHistory(message.history);
     return undefined;
   });
-  if (!IS_FIREFOX) {
-    window.addEventListener("message", (event) => {
-      if (event.source !== window || event.origin !== location.origin) return;
-      const message = event.data;
-      if (message && message.channel === CHANNEL && message.type === "history") applyHistory(message.history);
-    });
-  }
 })();

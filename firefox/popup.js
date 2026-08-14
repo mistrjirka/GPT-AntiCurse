@@ -1,22 +1,16 @@
 /* Popup controller. Two history modes only: Recent N and Auto window. */
 "use strict";
 
-const EMPTY_TOTALS = {
-  responsesTrimmed: 0,
-  nodesRemoved: 0,
-  nodesDelivered: 0,
-  visibleTurnsKept: 0,
-  inputBytes: 0,
-  outputBytes: 0,
-  bytesRemoved: 0
-};
-
+const EMPTY_TOTALS = { responsesTrimmed: 0, nodesRemoved: 0, nodesDelivered: 0, visibleTurnsKept: 0, inputBytes: 0, outputBytes: 0, bytesRemoved: 0 };
+const diagnostics = globalThis.CGAntiCurseDiagnostics;
 const numberFormat = new Intl.NumberFormat();
 const enabledInput = document.getElementById("enabled");
 const modeSelect = document.getElementById("mode");
 const modeHelp = document.getElementById("modeHelp");
 const limitInput = document.getElementById("limit");
 const noticeInput = document.getElementById("showNotice");
+const feedback = document.getElementById("feedback");
+const lastIssueElement = document.getElementById("lastIssue");
 
 function normalizeMode(value) { return value === "windowed-visible" ? "windowed-visible" : "recent"; }
 function formatNumber(value) { const number = Number(value); return numberFormat.format(Number.isFinite(number) ? number : 0); }
@@ -39,15 +33,38 @@ function setStatus(text, kind = "") {
   status.textContent = text;
   status.className = `status${kind ? ` ${kind}` : ""}`;
 }
+function renderIssue(issue) {
+  if (!issue) {
+    lastIssueElement.textContent = "None";
+    lastIssueElement.removeAttribute("title");
+    return;
+  }
+  lastIssueElement.textContent = `${issue.scope || "unknown"}/${issue.code || "unknown"}`;
+  lastIssueElement.title = `${issue.message || "Unknown error"}${issue.at ? `\n${new Date(issue.at).toLocaleString()}` : ""}`;
+}
+function showError(label, error) {
+  const text = error && error.message ? error.message : String(error || "Unknown error");
+  console.error(`[GPT AntiCurse] ${label}`, error);
+  feedback.textContent = `${label}: ${text}`;
+  setStatus("Error", "error");
+}
+async function recordSettingIssue(code, error) {
+  if (diagnostics && typeof diagnostics.record === "function") await diagnostics.record("settings", code, error);
+}
 async function currentTab() { return (await browser.tabs.query({ active: true, currentWindow: true }))[0]; }
 async function saveSettings() {
-  return browser.runtime.sendMessage({
-    type: "cg-settings",
-    enabled: enabledInput.checked,
-    mode: normalizeMode(modeSelect.value),
-    maxDisplayMessages: messageLimit(),
-    showGuardNotice: noticeInput.checked
-  });
+  try {
+    return await browser.runtime.sendMessage({
+      type: "cg-settings",
+      enabled: enabledInput.checked,
+      mode: normalizeMode(modeSelect.value),
+      maxDisplayMessages: messageLimit(),
+      showGuardNotice: noticeInput.checked
+    });
+  } catch (error) {
+    await recordSettingIssue("popup-save-failed", error);
+    throw error;
+  }
 }
 async function saveAndReload() {
   await saveSettings();
@@ -68,7 +85,10 @@ function renderTrimmedStats(stats) {
   const percentage = before ? Math.max(0, Math.min(100, (removed / before) * 100)) : 0;
   document.getElementById("savedPct").textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}%`;
   document.getElementById("summaryText").textContent = `${formatNumber(before)} → ${formatNumber(after)} nodes`;
-  document.getElementById("summarySub").textContent = `${formatNumber(stats.displayAfter)} visible turns kept in ChatGPT`;
+  const logical = Number(stats.logicalDisplayAfter);
+  document.getElementById("summarySub").textContent = Number.isFinite(logical)
+    ? `${formatNumber(logical)} recent conversation units · ${formatNumber(stats.displayAfter)} visible records`
+    : `${formatNumber(stats.displayAfter)} visible turns kept in ChatGPT`;
   document.getElementById("removedNodes").textContent = formatNumber(removed);
   document.getElementById("processing").textContent = Number.isFinite(Number(stats.processingMs)) ? `${stats.processingMs} ms` : "—";
   document.getElementById("bytesSaved").textContent = Number.isFinite(Number(stats.originalBytes)) && Number.isFinite(Number(stats.outputBytes))
@@ -81,6 +101,7 @@ function renderStats(stats) {
   if (stats.mode === "error") {
     setStatus("Error", "error");
     document.getElementById("summaryText").textContent = "Original response kept";
+    document.getElementById("summarySub").textContent = stats.error || stats.reason || "AntiCurse reported an interception error.";
     return;
   }
   setStatus("Ready", "active");
@@ -88,30 +109,29 @@ function renderStats(stats) {
   document.getElementById("summaryText").textContent = "No trimming needed";
 }
 async function initialize() {
-  const saved = await browser.storage.local.get({
-    enabled: true,
-    mode: "recent",
-    maxDisplayMessages: 64,
-    showGuardNotice: true,
-    cgTotals: EMPTY_TOTALS
-  });
+  const saved = await browser.storage.local.get({ enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true, cgTotals: EMPTY_TOTALS, cgLastIssue: null });
   enabledInput.checked = saved.enabled;
   modeSelect.value = normalizeMode(saved.mode);
   limitInput.value = saved.maxDisplayMessages;
   noticeInput.checked = saved.showGuardNotice !== false;
   renderTotals(saved.cgTotals);
+  renderIssue(saved.cgLastIssue);
   updateControls();
-  if (saved.mode !== modeSelect.value) browser.storage.local.set({ mode: modeSelect.value }).catch(() => {});
+  if (saved.mode !== modeSelect.value) await browser.storage.local.set({ mode: modeSelect.value });
   const tab = await currentTab();
   if (tab && tab.id != null) renderStats(await browser.runtime.sendMessage({ type: "cg-get-stats", tabId: tab.id }));
 }
+function runAction(label, action) {
+  Promise.resolve().then(action).catch((error) => showError(label, error));
+}
 
-document.getElementById("reload").addEventListener("click", saveAndReload);
-document.getElementById("resetTotals").addEventListener("click", async () => {
-  renderTotals(await browser.runtime.sendMessage({ type: "cg-reset-totals" }));
+document.getElementById("reload").addEventListener("click", () => runAction("Save/reload failed", saveAndReload));
+document.getElementById("resetTotals").addEventListener("click", () => runAction("Counter reset failed", async () => renderTotals(await browser.runtime.sendMessage({ type: "cg-reset-totals" }))));
+enabledInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
+noticeInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
+modeSelect.addEventListener("change", () => { updateControls(); runAction("Saving settings failed", saveSettings); });
+limitInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.cgLastIssue) renderIssue(changes.cgLastIssue.newValue || null);
 });
-enabledInput.addEventListener("change", saveSettings);
-noticeInput.addEventListener("change", saveSettings);
-modeSelect.addEventListener("change", () => { updateControls(); saveSettings(); });
-limitInput.addEventListener("change", saveSettings);
-initialize().catch(() => {});
+initialize().catch((error) => showError("Popup initialization failed", error));
