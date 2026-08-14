@@ -16,7 +16,7 @@
     {
       "matches": ["https://chatgpt.com/*"],
       "js": ["archive-settings-bridge.js", "archive.js", "content.js", "history-overlay.js", "history-native.js", "history-virtualized.js", "windowed.js", "history-request.js", "archive-capture.js"],
-      "css": ["content.css"],
+      "css": ["content.css", "history-virtualized.css"],
       "run_at": "document_start",
       "world": "ISOLATED"
     }
