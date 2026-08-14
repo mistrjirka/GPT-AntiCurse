@@ -2,34 +2,31 @@
 (() => {
   "use strict";
   const CHANNEL = "__gpt_anticurse_v1__";
-  let resolved = false;
   const timers = [];
-
-  function stop() {
-    if (resolved) return;
-    resolved = true;
-    for (const timer of timers) clearTimeout(timer);
-    window.removeEventListener("message", onMessage, true);
-  }
-
-  function onMessage(event) {
-    if (event.source !== window || event.origin !== location.origin) return;
-    const message = event.data;
-    if (message && message.channel === CHANNEL && message.type === "history") stop();
-  }
+  let finished = false;
 
   function request() {
-    if (resolved) return;
+    if (finished) return;
     window.postMessage({ channel: CHANNEL, type: "history-request" }, location.origin);
   }
 
-  // The listener is installed before the first request. If the conversation
-  // response has not arrived yet, bounded retries cover that startup race, but
-  // the first real/retained history delivery cancels every later replay so it
-  // cannot reset already-loaded archived pages.
-  window.addEventListener("message", onMessage, true);
+  function finish() {
+    if (finished) return;
+    finished = true;
+    for (const timer of timers) clearTimeout(timer);
+  }
+
+  // Do not stop after the first history delivery. MAIN world can receive the
+  // authoritative settings slightly before windowed.js finishes its own
+  // storage read. In that ordering, the first archive arrives while the
+  // isolated controller is still on its startup defaults. A later retained
+  // replay lets the controller attach once its real Recent/Auto mode is known.
+  // Equivalent snapshots are idempotent in windowed.js, so these bounded
+  // replays cannot erase already-loaded pages.
   request();
   timers.push(setTimeout(request, 100));
-  timers.push(setTimeout(request, 500));
-  timers.push(setTimeout(request, 1500));
+  timers.push(setTimeout(request, 350));
+  timers.push(setTimeout(request, 800));
+  timers.push(setTimeout(request, 1600));
+  timers.push(setTimeout(finish, 1800));
 })();
