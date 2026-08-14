@@ -4,7 +4,6 @@
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const DIAGNOSTICS = global.CGAntiCurseDiagnostics;
-  const activeByTab = new Map();
   const queues = new Map();
 
   function recordIssue(code, error, extra) {
@@ -29,13 +28,8 @@
     return next;
   }
 
-  function rememberTab(tabId, id) {
-    if (Number.isInteger(tabId) && tabId >= 0 && id) activeByTab.set(tabId, id);
-  }
-
-  async function saveNetworkArchive(archive, tabId) {
+  async function saveNetworkArchive(archive) {
     if (!archive || !archive.id) return { ok: false, reason: "invalid-archive" };
-    rememberTab(tabId, archive.id);
     return queueFor(archive.id, async () => {
       const existing = await CGArchiveStore.get(archive.id);
       const merged = CGArchive.mergeNetworkArchive(existing, archive);
@@ -44,10 +38,9 @@
     });
   }
 
-  async function mergeRenderedArchive(message, tabId) {
+  async function mergeRenderedArchive(message) {
     const id = message && message.conversationId;
     if (!id) return { ok: false, reason: "missing-conversation-id" };
-    rememberTab(tabId, id);
 
     return queueFor(id, async () => {
       const existing = await CGArchiveStore.get(id);
@@ -63,7 +56,10 @@
   }
 
   async function resolveArchive(message) {
-    const id = message && (message.conversationId || activeByTab.get(message.tabId));
+    // Callers resolve the conversation id from the active content script. Do not
+    // keep a tab->conversation global fallback: Chromium MV3 workers can restart
+    // at any time, making such a cache look valid until it silently disappears.
+    const id = message && message.conversationId;
     if (!id) return null;
     return queueFor(id, () => CGArchiveStore.get(id));
   }
@@ -92,18 +88,14 @@
     return true;
   }
 
-  ext.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message) return false;
-    const tabId = sender && sender.tab ? sender.tab.id : message.tabId;
-
-    if (message.type === "cg-save-network-archive") return asyncResponse(saveNetworkArchive(message.archive, tabId), sendResponse, "save-network-failed");
-    if (message.type === "cg-merge-rendered-archive") return asyncResponse(mergeRenderedArchive(message, tabId), sendResponse, "merge-rendered-failed");
+    if (message.type === "cg-save-network-archive") return asyncResponse(saveNetworkArchive(message.archive), sendResponse, "save-network-failed");
+    if (message.type === "cg-merge-rendered-archive") return asyncResponse(mergeRenderedArchive(message), sendResponse, "merge-rendered-failed");
     if (message.type === "cg-get-archive-summary") return asyncResponse(archiveSummary(message), sendResponse, "summary-read-failed");
     if (message.type === "cg-export-archive") return asyncResponse(exportArchive(message), sendResponse, "export-read-failed");
     return false;
   });
-
-  if (ext.tabs && ext.tabs.onRemoved) ext.tabs.onRemoved.addListener((tabId) => activeByTab.delete(tabId));
 
   global.CGArchiveBackground = { saveNetworkArchive, mergeRenderedArchive, archiveSummary, exportArchive };
 })(typeof globalThis !== "undefined" ? globalThis : this);
