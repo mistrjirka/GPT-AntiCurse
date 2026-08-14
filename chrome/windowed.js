@@ -3,14 +3,17 @@
   "use strict";
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
-  // Chrome 148+ also exposes `browser`, so namespace presence no longer identifies Firefox.
-  const extensionManifest = ext.runtime.getManifest();
-  const IS_FIREFOX = !!(extensionManifest.browser_specific_settings && extensionManifest.browser_specific_settings.gecko);
+  // Chrome 148+ also exposes `browser`, so namespace presence is not browser identity.
+  // This code runs in a page-backed content-script realm where the browser UA is a
+  // direct, synchronous description of the actual host browser.
+  const IS_FIREFOX = /Firefox\//.test(String(navigator.userAgent || ""));
   const NETWORK_ARCHIVE_EVENT = "__gpt_anticurse_archive_ready__";
   const STATS_EVENT = "__gpt_anticurse_stats_ready__";
   const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
   const TOP_EPSILON = 16;
   const HISTORY_WATCHDOG_MS = 2000;
+  const HISTORY_RETRY_BASE_MS = 1000;
+  const HISTORY_RETRY_MAX_MS = 30000;
   const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 
   let settings = { ...DEFAULT_SETTINGS };
@@ -28,6 +31,9 @@
   let suppressAutoUntil = 0;
   let initialPositionSettled = false;
   let userInteracted = false;
+  let historyRequestPromise = null;
+  let historyFailureStreak = 0;
+  let historyRetryAt = 0;
 
   const reader = CGHistoryOverlay.create({ getScroller: () => nativeScroller });
 
@@ -40,6 +46,18 @@
   function clearHistoryIssue() {
     if (DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") return DIAGNOSTICS.clear("history");
     return Promise.resolve(false);
+  }
+
+  function resetHistoryBackoff() {
+    historyFailureStreak = 0;
+    historyRetryAt = 0;
+  }
+
+  function noteHistoryFailure() {
+    historyFailureStreak = Math.min(8, historyFailureStreak + 1);
+    const delay = Math.min(HISTORY_RETRY_MAX_MS, HISTORY_RETRY_BASE_MS * (2 ** (historyFailureStreak - 1)));
+    historyRetryAt = performance.now() + delay;
+    return delay;
   }
 
   function normalizeLimit(value) {
@@ -291,6 +309,7 @@
     reader.setMode(settings.mode);
     if (!nextHistory) return false;
 
+    resetHistoryBackoff();
     if (history && historyKey === nextKey) {
       history = nextHistory;
       if (settings.enabled) attachNativeWatch();
@@ -325,14 +344,11 @@
     history = null;
     historyKey = "none";
     initialPositionSettled = false;
+    historyRequestPromise = null;
+    resetHistoryBackoff();
   }
 
-  async function requestHistory() {
-    if (!settings.enabled) return false;
-
-    const transient = transientHistory();
-    if (transient) return applyHistory(transient);
-
+  async function performHistoryRequest() {
     const id = conversationId();
     if (!IS_FIREFOX && !id) return false;
 
@@ -342,6 +358,9 @@
         conversationId: id,
         maxDisplayMessages: settings.maxDisplayMessages
       });
+      // Any response means the receiver is alive. Archive-not-found is not a
+      // transport failure and therefore must not keep the retry cooldown active.
+      resetHistoryBackoff();
       if (value && value.ok === false) {
         if (value.reason !== "archive-not-found" && value.reason !== "missing-conversation-id") {
           recordIssue(value.reason || "background-history-failed", value.error || value.reason || "History request failed");
@@ -351,9 +370,25 @@
       if (!value || !Array.isArray(value.messages)) return false;
       return applyHistory(value);
     } catch (error) {
-      recordIssue("runtime-request-failed", error);
+      const retryInMs = noteHistoryFailure();
+      recordIssue("runtime-request-failed", error, { failureStreak: historyFailureStreak, retryInMs });
       return false;
     }
+  }
+
+  function requestHistory() {
+    if (!settings.enabled) return Promise.resolve(false);
+
+    const transient = transientHistory();
+    if (transient) return Promise.resolve(applyHistory(transient));
+
+    if (historyRequestPromise) return historyRequestPromise;
+    if (performance.now() < historyRetryAt) return Promise.resolve(false);
+
+    historyRequestPromise = performHistoryRequest().finally(() => {
+      historyRequestPromise = null;
+    });
+    return historyRequestPromise;
   }
 
   function scheduleHistoryWatchdog(reason) {
@@ -371,6 +406,19 @@
     }, HISTORY_WATCHDOG_MS);
   }
 
+  globalThis.CGAntiCurseHistoryDebug = {
+    debug() {
+      return {
+        browserPath: IS_FIREFOX ? "firefox" : "chromium",
+        historyPresent: !!history,
+        historySource: history && history.source ? history.source : null,
+        requestInFlight: !!historyRequestPromise,
+        failureStreak: historyFailureStreak,
+        retryInMs: historyRetryAt > performance.now() ? Math.ceil(historyRetryAt - performance.now()) : 0
+      };
+    }
+  };
+
   window.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });
   window.addEventListener("wheel", markUserInteraction, { passive: true, capture: true });
   window.addEventListener("pointerdown", markUserInteraction, { passive: true, capture: true });
@@ -379,7 +427,9 @@
   window.addEventListener(NETWORK_ARCHIVE_EVENT, () => {
     if (IS_FIREFOX) return;
     requestHistory().then((ok) => {
-      if (!ok) recordIssue("transient-archive-unavailable", "The MAIN-world archive event fired, but the isolated archive was unavailable.");
+      if (!ok && performance.now() >= historyRetryAt) {
+        recordIssue("transient-archive-unavailable", "The MAIN-world archive event fired, but the isolated archive was unavailable.");
+      }
     });
   });
   window.addEventListener(STATS_EVENT, (event) => {
@@ -399,12 +449,19 @@
 
   ext.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
+    const settingsChanged = !!(changes.enabled || changes.mode || changes.maxDisplayMessages);
+    // Diagnostics, counters, and archive bookkeeping also write storage.local.
+    // Reacting to those writes here creates a request -> diagnostic -> storage
+    // feedback loop when the background receiver is unavailable.
+    if (!settingsChanged) return;
+
     const next = { ...settings };
     if (changes.enabled) next.enabled = changes.enabled.newValue;
     if (changes.mode) next.mode = changes.mode.newValue;
     if (changes.maxDisplayMessages) next.maxDisplayMessages = changes.maxDisplayMessages.newValue;
     applySavedSettings(next);
     reader.setMode(settings.mode);
+    resetHistoryBackoff();
     if (!settings.enabled) clear();
     else requestHistory();
   });
