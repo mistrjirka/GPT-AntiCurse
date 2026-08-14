@@ -1,22 +1,31 @@
-# GPT AntiCurse v0.5.6
+# GPT AntiCurse v0.5.7
 
-Markdown export hierarchy and default-detail correction.
+History-mode simplification, Chromium reliability fix, and native-looking inline history.
 
-## Export formatting
+## Two history modes
 
-- **Progress is now the default Markdown export level.** Existing explicit Clean/Full choices remain preserved.
-- Progress, Plan, Response, and Full-mode tool labels use bold inline labels instead of artificial `###` headings.
-- `Final answer` was renamed to the more accurate **Response**, because archived records do not always contain a reliable explicit final-channel marker.
-- Original Markdown headings inside assistant responses are preserved at their original hierarchy.
-- Empty assistant records continue to be omitted.
+- The popup now exposes only **Recent N + button** and **Auto window**.
+- Legacy `All visible history` / `Latest visible only` settings migrate to Recent N.
+- Recent N keeps the latest bounded window and shows **Load previous N** at the top of the ChatGPT page.
+- Auto window loads the previous archived page automatically when the user reaches the top.
+- The duplicate popup-level Load previous button was removed.
 
-## Regression coverage
+## Chromium fix
 
-- Added tests for Progress-as-default behavior.
-- Added a hierarchy regression that verifies an original `##` response heading is not nested under an extension-generated heading.
-- Added checks that Progress omits raw shell/tool payloads while Full retains them.
-- Firefox and Chromium continue to share the same export formatter and defaults.
+- Chromium no longer relies on a one-shot `window.postMessage` for archived history.
+- The MAIN-world bridge retains the latest history payload and answers explicit replay requests from the isolated window controller.
+- This fixes the shared failure mode where both Auto window and the inline Load previous button could disappear when the first history message was missed.
 
-## Privacy
+## Older-message rendering
 
-Conversation backup and all Markdown export modes remain local to the browser. No conversation content is sent to the developer or another service.
+- The runtime history reader now supersedes the closed Shadow DOM/plain-text renderer with a light-DOM renderer.
+- Older turns now live in extension-owned light DOM immediately before ChatGPT's native `#thread`, so they inherit ChatGPT token colors and typography.
+- User turns reuse ChatGPT's bubble surface class; assistant turns reuse the site's `markdown prose` styling.
+- A safe local Markdown renderer covers paragraphs, headings, lists, blockquotes, tables, links, inline formatting, and fenced code.
+- Consecutive archived assistant records are visually grouped, closer to ChatGPT's current turn presentation.
+- React-owned native thread nodes are still never modified.
+
+## Validation
+
+- Added regression checks for exactly two user-facing history modes, Chromium history replay, light-DOM/native-style history rendering, and the on-page Recent N button.
+- Firefox and Chromium continue to share the inline history implementation byte-for-byte.
