@@ -5,7 +5,7 @@
   const IS_FIREFOX = typeof browser !== "undefined";
   const CHANNEL = "__gpt_anticurse_v1__";
   const LIMITED_MODES = new Set(["recent", "latest-visible", "windowed-visible"]);
-  const DEFAULT_SETTINGS = { enabled: true, mode: "visible-history", maxDisplayMessages: 64 };
+  const DEFAULT_SETTINGS = { enabled: true, mode: "recent", maxDisplayMessages: 64 };
   const TOP_EPSILON = 16;
   const REATTACH_INTERVAL_MS = 750;
   let settings = { ...DEFAULT_SETTINGS };

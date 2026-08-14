@@ -5,6 +5,10 @@ const path = require("path");
 function source(relative) { return fs.readFileSync(path.join(__dirname, "..", relative), "utf8"); }
 const history = source("firefox/history-native.js");
 const windowed = source("firefox/windowed.js");
+const domReady = source("firefox/dom-ready.js");
+const historyHydration = source("firefox/history-hydration-safe.js");
+const firefoxContent = source("firefox/content.js");
+const chromeContent = source("chrome/content.js");
 const chromeReplay = source("chrome/history-replay-main.js");
 const chromeRequest = source("chrome/history-request.js");
 const popup = source("firefox/popup.html");
@@ -26,6 +30,15 @@ assert(history.includes('this.mode === "recent"'), "the button must belong only 
 assert(contentCss.includes("#cg-window-history-host"), "light-DOM history must have scoped fallback styling");
 assert(contentCss.includes("content-visibility: auto"), "archived turns should stay lightweight off-screen");
 
+assert(domReady.includes('window.addEventListener("load"'), "extension DOM must wait for the page load boundary");
+assert((domReady.match(/requestAnimationFrame/g) || []).length >= 2, "hydration gate should wait through two animation frames");
+assert(domReady.includes("requestIdleCallback"), "hydration gate should wait for an idle slice after load");
+assert(historyHydration.includes("pendingHistory"), "history received during hydration must be buffered rather than dropped");
+assert(historyHydration.includes("gate.isReady() ? rawEnsureAttached() : false"), "history must not attach inside React's SSR tree before hydration settles");
+assert(historyHydration.includes('reason: "hydration-pending"'), "manual history loading must fail safely while hydration is pending");
+assert(firefoxContent.includes("DOM_GATE && !DOM_GATE.isReady()"), "Firefox status badge must not write DOM during hydration");
+assert(chromeContent.includes("DOM_GATE && !DOM_GATE.isReady()"), "Chromium status badge must not write DOM during hydration");
+
 assert(windowed.includes('settings.mode === "windowed-visible"'), "auto mode must remain explicit");
 assert(windowed.includes("function snapshotKey"), "history controller must identify equivalent snapshots");
 assert(windowed.includes("historyKey === nextKey"), "equivalent history deliveries must not reset loaded pages");
@@ -38,10 +51,21 @@ assert(chromeRequest.includes("setTimeout(request, 800)"), "Chromium history rep
 assert(chromeRequest.includes("setTimeout(request, 1600)"), "Chromium history replay needs a bounded late retry");
 assert(chromeRequest.includes("setTimeout(finish, 1800)"), "Chromium replay settling must remain bounded");
 assert(!chromeRequest.includes('message.type === "history"'), "first history delivery must not cancel the settling replays");
-assert(chromeManifest.content_scripts[0].js.indexOf("history-replay-main.js") < chromeManifest.content_scripts[0].js.indexOf("main.js"), "Chromium replay bridge must load before main interceptor");
-assert(chromeManifest.content_scripts[1].js.indexOf("windowed.js") < chromeManifest.content_scripts[1].js.indexOf("history-request.js"), "Chromium replay request must load after windowed listener");
-assert(firefoxManifest.content_scripts[0].js.indexOf("history-native.js") < firefoxManifest.content_scripts[0].js.indexOf("windowed.js"), "Firefox native-looking renderer must override the old factory before controller startup");
-assert(chromeManifest.content_scripts[1].js.indexOf("history-native.js") < chromeManifest.content_scripts[1].js.indexOf("windowed.js"), "Chromium native-looking renderer must override the old factory before controller startup");
+
+const chromeMain = chromeManifest.content_scripts[0];
+const chromeUi = chromeManifest.content_scripts[1];
+const firefoxUi = firefoxManifest.content_scripts[0];
+assert.equal(chromeMain.run_at, "document_start", "Chromium graph interception must still run before page JavaScript consumes conversation data");
+assert(chromeMain.js.indexOf("history-replay-main.js") < chromeMain.js.indexOf("main.js"), "Chromium replay bridge must load before main interceptor");
+assert(chromeUi.js.indexOf("dom-ready.js") < chromeUi.js.indexOf("content.js"), "Chromium DOM readiness gate must exist before the status UI");
+assert(chromeUi.js.indexOf("history-fidelity.js") < chromeUi.js.indexOf("history-hydration-safe.js"), "Chromium hydration wrapper must wrap the final history renderer");
+assert(chromeUi.js.indexOf("history-hydration-safe.js") < chromeUi.js.indexOf("windowed.js"), "Chromium hydration wrapper must load before the history controller");
+assert(chromeUi.js.indexOf("windowed.js") < chromeUi.js.indexOf("history-request.js"), "Chromium replay request must load after windowed listener");
+assert(firefoxUi.js.indexOf("dom-ready.js") < firefoxUi.js.indexOf("content.js"), "Firefox DOM readiness gate must exist before the status UI");
+assert(firefoxUi.js.indexOf("history-native.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox native-looking renderer must override the old factory before controller startup");
+assert(firefoxUi.js.indexOf("history-fidelity.js") < firefoxUi.js.indexOf("history-hydration-safe.js"), "Firefox hydration wrapper must wrap the final history renderer");
+assert(firefoxUi.js.indexOf("history-hydration-safe.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox hydration wrapper must load before the history controller");
+assert(chromeUi.js.indexOf("history-native.js") < chromeUi.js.indexOf("windowed.js"), "Chromium native-looking renderer must override the old factory before controller startup");
 
 const modeOptions = popup.match(/<option value="(?:recent|windowed-visible)">/g) || [];
 assert.equal(modeOptions.length, 2, "popup must expose exactly two history modes");

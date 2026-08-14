@@ -1,9 +1,11 @@
 "use strict";
 
+const DOM_GATE = globalThis.CGAntiCurseDomReady;
 let badge;
 let hideTimer;
 let lastStats = null;
 let showGuardNotice = true;
+let renderQueuedForDomReady = false;
 
 function removeBadge() {
   clearTimeout(hideTimer);
@@ -26,8 +28,21 @@ function pctRemoved(stats) {
   return before > 0 ? Math.round(Math.max(0, Math.min(100, ((before - after) / before) * 100))) : 0;
 }
 
+function queueRenderAfterDomReady() {
+  if (!DOM_GATE || renderQueuedForDomReady) return;
+  renderQueuedForDomReady = true;
+  DOM_GATE.whenReady(() => {
+    renderQueuedForDomReady = false;
+    render(lastStats);
+  });
+}
+
 function render(stats) {
   lastStats = stats || lastStats;
+  if (DOM_GATE && !DOM_GATE.isReady()) {
+    queueRenderAfterDomReady();
+    return;
+  }
   if (!showGuardNotice) {
     removeBadge();
     return;

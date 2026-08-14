@@ -2,11 +2,13 @@
 
 const CHANNEL = "__gpt_anticurse_v1__";
 const DEFAULT_SETTINGS = { enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true };
+const DOM_GATE = globalThis.CGAntiCurseDomReady;
 let currentSettings = { ...DEFAULT_SETTINGS };
 let settingsReady = false;
 let lastStats = null;
 let badge;
 let hideTimer;
+let renderQueuedForDomReady = false;
 
 function removeBadge() {
   clearTimeout(hideTimer);
@@ -29,8 +31,21 @@ function pctRemoved(stats) {
   return before > 0 ? Math.round(Math.max(0, Math.min(100, ((before - after) / before) * 100))) : 0;
 }
 
+function queueRenderAfterDomReady() {
+  if (!DOM_GATE || renderQueuedForDomReady) return;
+  renderQueuedForDomReady = true;
+  DOM_GATE.whenReady(() => {
+    renderQueuedForDomReady = false;
+    render(lastStats);
+  });
+}
+
 function render(stats) {
   lastStats = stats || lastStats;
+  if (DOM_GATE && !DOM_GATE.isReady()) {
+    queueRenderAfterDomReady();
+    return;
+  }
   if (!currentSettings.showGuardNotice) {
     removeBadge();
     return;
