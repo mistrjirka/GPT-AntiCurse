@@ -70,14 +70,6 @@ async function hasHostAccess() {
     throw error;
   }
 }
-async function requestHostAccess() {
-  try {
-    return await chrome.permissions.request({ origins: [CHATGPT_ORIGIN] });
-  } catch (error) {
-    await recordSettingIssue("host-access-request-failed", error);
-    throw error;
-  }
-}
 async function saveSettings() {
   try {
     await chrome.storage.local.set({ enabled: enabledInput.checked, mode: normalizeMode(modeSelect.value), maxDisplayMessages: messageLimit(), showGuardNotice: noticeInput.checked });
@@ -86,23 +78,32 @@ async function saveSettings() {
     throw error;
   }
 }
-async function saveAndReload() {
+async function finishSaveAndReload(granted) {
   const tab = activeTab || await currentTab();
-  if (isChatGPTTab(tab)) {
-    const access = await hasHostAccess();
-    if (!access) {
-      const granted = await requestHostAccess();
-      if (!granted) {
-        setStatus("Needs access", "error");
-        feedback.textContent = "Chrome site access was not granted. Allow GPT AntiCurse on chatgpt.com, then press Save & reload again.";
-        return;
-      }
-      await clearBridgeIssue();
-    }
+  if (isChatGPTTab(tab) && !granted) {
+    setStatus("Needs access", "error");
+    feedback.textContent = "Chrome site access was not granted. Allow GPT AntiCurse on chatgpt.com, then press Save & reload again.";
+    return;
   }
+  if (granted) await clearBridgeIssue();
   await saveSettings();
   if (tab && tab.id != null) await chrome.tabs.reload(tab.id);
   window.close();
+}
+function saveAndReloadFromUserGesture() {
+  // permissions.request() must be invoked directly from the click gesture. It is
+  // safe to request the declared required host even when it is already granted;
+  // Chrome resolves true without an extra prompt in that case.
+  if (isChatGPTTab(activeTab)) {
+    chrome.permissions.request({ origins: [CHATGPT_ORIGIN] })
+      .then((granted) => finishSaveAndReload(granted))
+      .catch(async (error) => {
+        await recordSettingIssue("host-access-request-failed", error);
+        showError("Save/reload failed", error);
+      });
+    return;
+  }
+  finishSaveAndReload(true).catch((error) => showError("Save/reload failed", error));
 }
 function renderTotals(value) {
   const totals = { ...EMPTY_TOTALS, ...(value || {}) };
@@ -181,7 +182,7 @@ function runAction(label, action) {
   Promise.resolve().then(action).catch((error) => showError(label, error));
 }
 
-document.getElementById("reload").addEventListener("click", () => { saveAndReload().catch((error) => showError("Save/reload failed", error)); });
+document.getElementById("reload").addEventListener("click", saveAndReloadFromUserGesture);
 document.getElementById("resetTotals").addEventListener("click", () => runAction("Counter reset failed", async () => renderTotals(await chrome.runtime.sendMessage({ type: "cg-reset-totals" }))));
 enabledInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
 noticeInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
