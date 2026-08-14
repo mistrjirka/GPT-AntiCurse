@@ -58,14 +58,16 @@
       await clearPageBridgeIssue();
       return result?.conversationId || null;
     } catch (error) {
-      if (isChatGPTTab(activeTab)) {
-        if (!IS_FIREFOX && !(await hasChromeHostAccess(activeTab))) {
-          feedback.textContent = "Chrome has not granted GPT AntiCurse access to chatgpt.com. Use Save & reload to grant access and reload the page.";
-          return null;
-        }
-        await recordIssue("bridge", "popup-page-bridge-failed", error, { flush });
-        feedback.textContent = `ChatGPT page bridge is not running: ${errorText(error)}. Reload this tab after installing or updating AntiCurse.`;
+      if (!isChatGPTTab(activeTab)) return null;
+      if (!IS_FIREFOX && !(await hasChromeHostAccess(activeTab))) {
+        feedback.textContent = "Chrome has not granted GPT AntiCurse access to chatgpt.com. Use Save & reload to grant access and reload the page.";
+        return null;
       }
+      // The main popup owns passive bridge health. Only an explicit backup/export
+      // operation writes a second bridge diagnostic, so startup probes cannot
+      // overwrite the more specific bridge/content-script-missing result.
+      if (flush) await recordIssue("bridge", "popup-page-bridge-failed", error, { flush: true });
+      feedback.textContent = `ChatGPT page bridge is not running: ${errorText(error)}. Reload this tab after installing or updating AntiCurse.`;
       return null;
     }
   }
