@@ -1,6 +1,6 @@
 # GPT AntiCurse v0.5.8
 
-Bounded archived-history DOM, logical Recent-N budgeting, and real Chromium extension testing.
+Bounded archived-history DOM, logical Recent-N budgeting, and real Chromium + Firefox WebExtension testing.
 
 ## Bounded archived history
 
@@ -21,11 +21,18 @@ Bounded archived-history DOM, logical Recent-N budgeting, and real Chromium exte
 
 ## Real Chromium extension E2E
 
-- CI now launches the actual unpacked Chromium extension using Playwright's persistent Chromium context.
+- CI launches the actual unpacked Chromium extension using Playwright's persistent Chromium context.
 - A mocked `chatgpt.com` fixture fetches a large tool-heavy conversation through the real MAIN-world response interceptor.
 - The test verifies that page/React-side code receives only the bounded graph while AntiCurse retains older history off-React.
 - It verifies recent tool/hidden nodes survive the cutoff, Recent N exposes older pages, Auto window loads at the top, synthetic turns do not impersonate native turns, and repeated paging keeps the mounted archive DOM bounded.
-- Existing static/unit tests remain as faster fail-first gates before the browser run.
+- The browser test caught and fixed a duplicate retained-history replay that could reset pages already loaded by the user.
+
+## Real Firefox extension E2E
+
+- CI also launches a real official Firefox build through Selenium/Geckodriver and installs the Firefox package as a temporary WebExtension.
+- Firefox loads a local HTTPS fixture under the real `chatgpt.com` hostname, so the production `webRequest.filterResponseData()` transport handles the conversation response.
+- The test verifies the logical cutoff before page code sees the graph, preservation of recent tool/hidden nodes, the on-page Recent-N button, archived loading, and absence of native React identity attributes on synthetic history.
+- Static/unit tests remain as faster fail-first gates before the real-browser runs.
 
 ## Browser parity
 
