@@ -83,6 +83,8 @@ jobs:
         run: node tests/e2e-fidelity-chromium.js
       - name: Run Firefox extension E2E
         run: node tests/e2e-firefox.js
+      - name: Run Firefox native-fidelity E2E
+        run: node tests/e2e-fidelity-firefox.js
       - name: Create GitHub Release if missing
         if: github.event_name != 'pull_request'
         env:
