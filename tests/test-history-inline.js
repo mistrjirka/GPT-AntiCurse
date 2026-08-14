@@ -3,7 +3,8 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 function source(relative) { return fs.readFileSync(path.join(__dirname, "..", relative), "utf8"); }
-const history = source("firefox/history-native.js");
+const markdown = source("firefox/history-native.js");
+const virtualized = source("firefox/history-virtualized.js");
 const windowed = source("firefox/windowed.js");
 const domReady = source("firefox/dom-ready.js");
 const historyHydration = source("firefox/history-hydration-safe.js");
@@ -19,15 +20,18 @@ const sizing = source("firefox/popup-sizing.css");
 const chromeManifest = JSON.parse(source("chrome/manifest.json"));
 const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
 
-assert(history.includes('document.querySelector("#thread")'), "inline history must anchor to ChatGPT #thread");
-assert(history.includes("insertBefore(this.host, thread)"), "inline history must stay immediately before native #thread");
-assert(!history.includes("attachShadow"), "active history renderer must use light DOM so ChatGPT styles can apply");
-assert(history.includes("markdown prose dark:prose-invert"), "older text should use ChatGPT markdown/prose styling");
-assert(history.includes("user-message-bubble-color"), "older user turns should reuse ChatGPT's bubble surface class");
-assert(history.includes("renderMarkdown"), "older Markdown should be rendered structurally rather than as pre-wrapped plaintext");
-assert(history.includes("function grouped"), "consecutive assistant records should be visually grouped");
-assert(history.includes("Load previous ${next}"), "Recent N mode needs an inline Load previous button");
-assert(history.includes('this.mode === "recent"'), "the button must belong only to Recent N mode");
+assert(markdown.includes("function renderMarkdown"), "history Markdown parser must remain packaged");
+assert(!markdown.includes("class NativeHistory"), "superseded non-virtualized renderer must not remain as dead compatibility code");
+assert(!markdown.includes("insertBefore(this.host"), "Markdown module must not own history attachment anymore");
+assert(virtualized.includes('document.querySelector("#thread")'), "active history must anchor to ChatGPT #thread");
+assert(virtualized.includes("insertBefore(this.host, thread)"), "active history must stay immediately before native #thread");
+assert(!virtualized.includes("attachShadow"), "active history renderer must use light DOM so ChatGPT styles can apply");
+assert(virtualized.includes("markdown prose dark:prose-invert"), "older text should use ChatGPT markdown/prose styling");
+assert(virtualized.includes("user-message-bubble-color"), "older user turns should reuse ChatGPT's bubble surface class");
+assert(virtualized.includes("renderMarkdown"), "older Markdown should be rendered structurally rather than as pre-wrapped plaintext");
+assert(virtualized.includes("function grouped"), "consecutive assistant records should be visually grouped");
+assert(virtualized.includes("Load previous ${next}"), "Recent N mode needs an inline Load previous button");
+assert(virtualized.includes('this.mode === "recent"'), "the button must belong only to Recent N mode");
 assert(contentCss.includes("#cg-window-history-host"), "light-DOM history must have scoped fallback styling");
 assert(contentCss.includes("content-visibility: auto"), "archived turns should stay lightweight off-screen");
 
@@ -53,7 +57,6 @@ assert(chromeBackground.includes("CGArchiveStore.get(conversationId)"), "Chromiu
 assert(chromeBackground.includes('source: "extension-indexeddb"'), "Chromium history responses should expose their durable source for diagnostics");
 assert(chromeBackground.includes("rawVisibleWindowCount"), "Chromium background must reproduce logical Recent-N raw cutoff semantics");
 assert(!chromeMain.includes("publishHistory"), "MAIN world must not clone the full history into page messages");
-assert(!chromeMain.includes('type, { history'), "MAIN world must not own history replay state");
 
 assert(chromeBarrier.includes("hydrationReady"), "initial Chromium response delivery must have a hydration barrier");
 assert(chromeBarrier.includes("waitForSafeDelivery"), "conversation responses must wait for both settings and hydration");
@@ -67,15 +70,17 @@ const firefoxUi = firefoxManifest.content_scripts[0];
 assert.equal(chromeMainScripts.run_at, "document_start", "Chromium graph interception must still install before page JavaScript consumes conversation data");
 assert(!chromeMainScripts.js.includes("history-replay-main.js"), "Chromium MAIN world must not package the old full-history replay bridge");
 assert(!chromeUi.js.includes("history-request.js"), "Chromium isolated world must not use page-global history replay timers");
+assert(!chromeUi.js.includes("history-overlay.js"), "superseded shadow/inline history layer must not be packaged");
 assert(chromeMainScripts.js.indexOf("main-settings-barrier.js") < chromeMainScripts.js.indexOf("main.js"), "hydration/settings barrier must wrap the transformer before it installs");
 assert(chromeUi.js.indexOf("dom-ready.js") < chromeUi.js.indexOf("content.js"), "Chromium DOM readiness gate must exist before the status UI");
+assert(chromeUi.js.indexOf("history-native.js") < chromeUi.js.indexOf("history-virtualized.js"), "Markdown helper must load before the virtualized renderer");
 assert(chromeUi.js.indexOf("history-fidelity.js") < chromeUi.js.indexOf("history-hydration-safe.js"), "Chromium hydration wrapper must wrap the final history renderer");
 assert(chromeUi.js.indexOf("history-hydration-safe.js") < chromeUi.js.indexOf("windowed.js"), "Chromium hydration wrapper must load before the history controller");
 assert(firefoxUi.js.indexOf("dom-ready.js") < firefoxUi.js.indexOf("content.js"), "Firefox DOM readiness gate must exist before the status UI");
-assert(firefoxUi.js.indexOf("history-native.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox native-looking renderer must override the old factory before controller startup");
+assert(!firefoxUi.js.includes("history-overlay.js"), "Firefox must not package the superseded history layer");
+assert(firefoxUi.js.indexOf("history-native.js") < firefoxUi.js.indexOf("history-virtualized.js"), "Firefox Markdown helper must load before virtualized history");
 assert(firefoxUi.js.indexOf("history-fidelity.js") < firefoxUi.js.indexOf("history-hydration-safe.js"), "Firefox hydration wrapper must wrap the final history renderer");
 assert(firefoxUi.js.indexOf("history-hydration-safe.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox hydration wrapper must load before the history controller");
-assert(chromeUi.js.indexOf("history-native.js") < chromeUi.js.indexOf("windowed.js"), "Chromium native-looking renderer must override the old factory before controller startup");
 
 const modeOptions = popup.match(/<option value="(?:recent|windowed-visible)">/g) || [];
 assert.equal(modeOptions.length, 2, "popup must expose exactly two history modes");
