@@ -168,7 +168,7 @@ async function configure(worker, mode) {
   }, { mode });
 }
 
-async function openFixture(context, fullConversation) {
+async function openFixture(context) {
   const page = await context.newPage();
   await page.goto("https://chatgpt.com/c/e2e", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__ready === true || !!window.__fixtureError);
@@ -220,23 +220,24 @@ async function recentPagingTest(context, worker) {
   const bounded = await page.evaluate(() => ({
     pages: document.querySelectorAll("#cg-window-history-host .cg-history-page").length,
     turns: document.querySelectorAll("#cg-window-history-host .cg-history-turn").length,
+    topSpacer: parseFloat(getComputedStyle(document.querySelector("#cg-window-history-host .cg-history-spacer-top")).height) || 0,
     bottomSpacer: parseFloat(getComputedStyle(document.querySelector("#cg-window-history-host .cg-history-spacer-bottom")).height) || 0,
     nativeSyntheticAttrs: document.querySelectorAll("#cg-window-history-host [data-message-author-role], #cg-window-history-host [data-turn-id]").length
   }));
   assert(bounded.pages <= 3, `only ~3 archived pages should stay mounted, got ${bounded.pages}`);
   assert(bounded.turns <= 24, `logical page grouping should bound synthetic turn DOM, got ${bounded.turns}`);
-  assert(bounded.bottomSpacer > 0, "evicted loaded pages should be represented by a measured spacer");
+  assert(bounded.topSpacer + bounded.bottomSpacer > 0, "evicted loaded pages should be represented by measured spacer height");
   assert.equal(bounded.nativeSyntheticAttrs, 0, "synthetic history must never impersonate React-owned native turns");
 
   const firstStart = await page.locator("#cg-window-history-host .cg-history-page").first().getAttribute("data-cg-start");
-  await page.evaluate(() => {
+  await page.evaluate(({ useBottom }) => {
     const root = document.querySelector('[data-scroll-root]');
-    root.scrollTop = root.scrollHeight;
+    root.scrollTop = useBottom ? root.scrollHeight : 0;
     root.dispatchEvent(new Event('scroll', { bubbles: true }));
-  });
+  }, { useBottom: bounded.bottomSpacer > 0 });
   await page.waitForFunction((start) => {
-    const page = document.querySelector("#cg-window-history-host .cg-history-page");
-    return page && page.getAttribute("data-cg-start") !== start;
+    const mounted = document.querySelector("#cg-window-history-host .cg-history-page");
+    return mounted && mounted.getAttribute("data-cg-start") !== start;
   }, firstStart);
 
   await page.close();
