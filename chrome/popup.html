@@ -18,9 +18,9 @@
     <section class="controls card" aria-label="AntiCurse settings">
       <label class="row"><span class="label"><b>Performance guard</b><small>Reduce heavy conversation state</small></span><input id="enabled" type="checkbox"></label>
       <label class="row"><span class="label"><b>History mode</b><small id="modeHelp">Keep the latest window and load older turns with a button.</small></span><select id="mode" aria-describedby="modeHelp"><option value="recent">Recent N + button</option><option value="windowed-visible">Auto window</option></select></label>
-      <label class="row"><span class="label"><b>Window size</b><small>Recent turns kept natively by ChatGPT</small></span><input id="limit" type="number" min="4" max="500" step="2"></label>
+      <label class="row"><span class="label"><b>Window size</b><small>Recent conversation units kept natively by ChatGPT</small></span><input id="limit" type="number" min="4" max="500" step="2"></label>
       <label class="row"><span class="label"><b>On-page status</b></span><input id="showNotice" type="checkbox"></label>
-      <label class="row"><span class="label"><b>Conversation backup</b><small>Local Markdown-ready copy</small></span><input id="archiveEnabled" type="checkbox"></label>
+      <label class="row"><span class="label"><b>Conversation backup</b><small>Optional persistent local Markdown-ready copy</small></span><input id="archiveEnabled" type="checkbox"></label>
     </section>
     <div class="buttons" style="grid-template-columns:1fr"><button id="reload" class="primary">Save &amp; reload</button></div>
     <div id="feedback" role="status" aria-live="polite"></div>
@@ -37,7 +37,7 @@
       </label>
       <div class="backup-buttons"><button id="exportMarkdown">Export Markdown</button><button id="continueChat">Export &amp; new chat</button></div>
     </section>
-    <details><summary>Details</summary><dl><dt>Nodes removed</dt><dd id="removedNodes">—</dd><dt>Response data removed</dt><dd id="bytesSaved">—</dd><dt>Processing</dt><dd id="processing">—</dd><dt>Total optimized loads</dt><dd id="totalResponses">0</dd><dt>Total nodes skipped</dt><dd id="totalRemoved">0</dd><dt>Total data removed</dt><dd id="totalBytes">0 B</dd></dl><div class="details-actions"><span>All counters are local.</span><button id="resetTotals" class="link-button">Reset counters</button></div></details>
+    <details><summary>Details</summary><dl><dt>Nodes removed</dt><dd id="removedNodes">—</dd><dt>Response data removed</dt><dd id="bytesSaved">—</dd><dt>Processing</dt><dd id="processing">—</dd><dt>Last issue</dt><dd id="lastIssue">None</dd><dt>Total optimized loads</dt><dd id="totalResponses">0</dd><dt>Total nodes skipped</dt><dd id="totalRemoved">0</dd><dt>Total data removed</dt><dd id="totalBytes">0 B</dd></dl><div class="details-actions"><span>Diagnostics and counters stay local.</span><button id="resetTotals" class="link-button">Reset counters</button></div></details>
   </div>
   <script src="popup.js"></script>
   <script src="backup-popup.js"></script>
