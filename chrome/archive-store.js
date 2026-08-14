@@ -9,7 +9,8 @@
 
   function openDatabase() {
     if (dbPromise) return dbPromise;
-    dbPromise = new Promise((resolve, reject) => {
+
+    const opening = new Promise((resolve, reject) => {
       const request = indexedDB.open(DB_NAME, DB_VERSION);
       request.onupgradeneeded = () => {
         const db = request.result;
@@ -18,9 +19,23 @@
           store.createIndex("updatedAt", "updatedAt", { unique: false });
         }
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const db = request.result;
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+        };
+        resolve(db);
+      };
       request.onerror = () => reject(request.error || new Error("IndexedDB open failed"));
       request.onblocked = () => reject(new Error("IndexedDB upgrade blocked"));
+    });
+
+    // Never cache a rejected open forever. A temporary blocked/open failure must
+    // be retryable without waiting for the extension context or MV3 worker to die.
+    dbPromise = opening.catch((error) => {
+      dbPromise = null;
+      throw error;
     });
     return dbPromise;
   }
@@ -57,6 +72,7 @@
       const request = transaction.objectStore(STORE).get(id);
       request.onsuccess = () => resolve(request.result || null);
       request.onerror = () => reject(request.error || new Error("IndexedDB read failed"));
+      transaction.onabort = () => reject(transaction.error || new Error("IndexedDB read transaction aborted"));
     });
   }
 
