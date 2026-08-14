@@ -1,22 +1,20 @@
 /*
  * Firefox network interception and extension state.
  *
- * Firefox exposes webRequest.filterResponseData(), so this background script can
- * reduce the conversation JSON before ChatGPT's page JavaScript receives it.
- * Parsing failures are fail-open: the untouched response is written back.
+ * Firefox exposes webRequest.filterResponseData(), so the full conversation is
+ * captured before ChatGPT page code sees the graph. Parsing/transformation
+ * failures are fail-open: the untouched response is written back and an explicit
+ * local diagnostic is recorded.
  */
 "use strict";
 
 const DEFAULT_SETTINGS = {
   enabled: true,
-  // Recent is the actual product default. Keep the synchronous startup state
-  // bounded too: a conversation request can arrive before storage.local.get()
-  // resolves on a freshly installed/restarted Firefox extension.
   mode: "recent",
   maxDisplayMessages: 64,
-  showGuardNotice: true
+  showGuardNotice: true,
+  archiveEnabled: true
 };
-
 const EMPTY_TOTALS = Object.freeze({
   responsesTrimmed: 0,
   nodesRemoved: 0,
@@ -26,19 +24,25 @@ const EMPTY_TOTALS = Object.freeze({
   outputBytes: 0,
   bytesRemoved: 0
 });
+const LIMITED_MODES = new Set(["recent", "windowed-visible"]);
+const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 
-const LIMITED_MODES = new Set(["recent", "latest-visible", "windowed-visible"]);
-const VALID_MODES = new Set(["visible-history", ...LIMITED_MODES]);
-
-let settings = { ...DEFAULT_SETTINGS };
+// Backup persistence fails private until storage confirms the setting. Graph
+// trimming itself still starts with the bounded product defaults immediately.
+let settings = { ...DEFAULT_SETTINGS, archiveEnabled: false };
 let totals = { ...EMPTY_TOTALS };
 const lastStatsByTab = new Map();
 const historyByTab = new Map();
 
+function recordIssue(scope, code, error, extra) {
+  if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record(scope, code, error, extra);
+  console.warn(`[GPT AntiCurse] ${scope}/${code}`, error, extra || "");
+  return Promise.resolve(null);
+}
+
 function normalizeTotals(value) {
   const normalized = { ...EMPTY_TOTALS };
   if (!value || typeof value !== "object") return normalized;
-
   for (const key of Object.keys(normalized)) {
     const number = Number(value[key]);
     if (Number.isFinite(number) && number >= 0) normalized[key] = number;
@@ -52,7 +56,7 @@ function normalizeMessageLimit(value) {
 }
 
 function resolveMode(value) {
-  return VALID_MODES.has(value) ? value : "visible-history";
+  return LIMITED_MODES.has(value) ? value : "recent";
 }
 
 function isConversationDocument(urlString) {
@@ -76,12 +80,10 @@ function percentRemoved(stats) {
 
 function recordTotals(stats) {
   if (!stats || stats.mode !== "trimmed") return stats;
-
   const after = Math.max(0, Number(stats.mappingNodesAfter) || 0);
   const inputBytes = Math.max(0, Number(stats.originalBytes) || 0);
   const outputBytes = Math.max(0, Number(stats.outputBytes) || 0);
   const bytesRemoved = inputBytes && outputBytes ? Math.max(0, inputBytes - outputBytes) : 0;
-
   totals = {
     responsesTrimmed: totals.responsesTrimmed + 1,
     nodesRemoved: totals.nodesRemoved + removedNodeCount(stats),
@@ -91,24 +93,25 @@ function recordTotals(stats) {
     outputBytes: totals.outputBytes + outputBytes,
     bytesRemoved: totals.bytesRemoved + bytesRemoved
   };
-
-  browser.storage.local.set({ cgTotals: totals }).catch(() => {});
+  browser.storage.local.set({ cgTotals: totals }).catch((error) => {
+    // Counters are optional and never affect interception/history correctness.
+    console.warn("[GPT AntiCurse] Failed to persist local counters", error);
+  });
   return { ...stats, totals: { ...totals } };
 }
 
 function updateActionBadge(tabId, stats) {
   if (tabId < 0) return;
-
   const saved = Math.round(Math.max(0, Math.min(100, percentRemoved(stats))));
   const badge = stats.mode === "trimmed" ? `${saved}%` : stats.mode === "error" ? "ERR" : "OK";
   const title = stats.mode === "trimmed"
     ? `GPT AntiCurse: removed ${removedNodeCount(stats)} of ${stats.mappingNodesBefore} mapping nodes; kept ${stats.displayAfter} visible turns`
     : stats.mode === "error"
-      ? `GPT AntiCurse error: original response passed through (${stats.error})`
+      ? `GPT AntiCurse error: original response passed through (${stats.error || stats.reason || "unknown"})`
       : "GPT AntiCurse: response unchanged";
-
-  browser.action.setBadgeText({ tabId, text: badge }).catch(() => {});
-  browser.action.setTitle({ tabId, title }).catch(() => {});
+  // Tab closure/navigation can race these cosmetic calls; failure is harmless.
+  browser.action.setBadgeText({ tabId, text: badge }).catch((error) => console.debug("[GPT AntiCurse] Badge update skipped", error));
+  browser.action.setTitle({ tabId, title }).catch((error) => console.debug("[GPT AntiCurse] Badge title update skipped", error));
 }
 
 function publishStats(tabId, rawStats) {
@@ -116,48 +119,58 @@ function publishStats(tabId, rawStats) {
   const stats = recordTotals(rawStats);
   lastStatsByTab.set(tabId, stats);
   updateActionBadge(tabId, stats);
-  browser.tabs.sendMessage(tabId, { type: "cg-stats", stats }).catch(() => {});
+  // Content script may not exist yet; cg-get-stats provides a deterministic fallback.
+  browser.tabs.sendMessage(tabId, { type: "cg-stats", stats }).catch((error) => console.debug("[GPT AntiCurse] Early stats delivery skipped", error));
 }
 
 function publishHistory(tabId, history) {
   if (tabId < 0) return;
-
   if (history) historyByTab.set(tabId, history);
   else historyByTab.delete(tabId);
-
-  browser.tabs.sendMessage(tabId, { type: "cg-window-history", history }).catch(() => {});
+  // Content script may not exist yet; cg-get-window-history retrieves retained history later.
+  browser.tabs.sendMessage(tabId, { type: "cg-window-history", history }).catch((error) => console.debug("[GPT AntiCurse] Early history delivery skipped", error));
 }
 
 function buildHistoryArchive(parsed, transformed, mode, limit) {
   if (!LIMITED_MODES.has(mode)) return null;
-
   const messages = CGTrim.extractVisibleHistory(parsed);
   const fallbackNativeCount = Math.min(messages.length, limit);
   const nativeVisibleCount = transformed.stats && Number.isFinite(Number(transformed.stats.displayAfter))
     ? Math.max(0, Number(transformed.stats.displayAfter))
     : fallbackNativeCount;
-
   return {
+    ok: true,
     messages,
     nativeVisibleCount,
     pageSize: limit,
-    maxRendered: Math.max(limit, Math.min(500, limit * 3))
+    maxRendered: Math.max(limit, Math.min(500, limit * 3)),
+    source: "firefox-network-filter"
   };
 }
 
 function transformConversation(parsed) {
   const mode = resolveMode(settings.mode);
   const limit = normalizeMessageLimit(settings.maxDisplayMessages);
-  const transformed = CGTrim.trimConversation(parsed, {
-    mode,
-    maxDisplayMessages: limit
-  });
+  const transformed = CGTrim.trimConversation(parsed, { mode, maxDisplayMessages: limit });
+  return { mode, transformed, history: buildHistoryArchive(parsed, transformed, mode, limit) };
+}
 
-  return {
-    mode,
-    transformed,
-    history: buildHistoryArchive(parsed, transformed, mode, limit)
-  };
+function persistAuthoritativeArchive(parsed, details) {
+  if (!settings.archiveEnabled) return;
+  let archive;
+  try {
+    archive = CGArchive.createArchive(parsed, { endpointUrl: details.url });
+  } catch (error) {
+    recordIssue("archive", "network-archive-build-failed", error);
+    return;
+  }
+  if (!archive) {
+    recordIssue("archive", "network-archive-build-empty", "The Firefox network response could not be converted to an archive.");
+    return;
+  }
+  CGArchiveBackground.saveNetworkArchive(archive, details.tabId).then((result) => {
+    if (!result || result.ok !== true) recordIssue("archive", "network-persist-rejected", result && result.reason ? result.reason : "Archive write was not confirmed.");
+  }).catch((error) => recordIssue("archive", "network-persist-failed", error));
 }
 
 function copyChunk(arrayBuffer) {
@@ -188,7 +201,19 @@ function writeOriginal(filter, chunks) {
 }
 
 function publishPassthroughStats(details, transformed, totalBytes, started) {
-  if (transformed.reason === "unsupported-shape") return;
+  if (transformed.reason === "unsupported-shape") {
+    const message = "Unsupported ChatGPT conversation response shape; original response kept.";
+    recordIssue("interceptor", "unsupported-conversation-shape", message);
+    publishStats(details.tabId, {
+      mode: "error",
+      transport: "firefox-stream-filter",
+      reason: transformed.reason,
+      error: message,
+      originalBytes: totalBytes,
+      processingMs: +(performance.now() - started).toFixed(2)
+    });
+    return;
+  }
   publishStats(details.tabId, {
     mode: "passthrough",
     reason: transformed.reason,
@@ -213,9 +238,9 @@ function writeTransformedResponse(filter, details, transformed, totalBytes, star
 
 function processResponse(filter, chunks, totalBytes, details) {
   const started = performance.now();
-
   try {
     const parsed = decodeJson(chunks, totalBytes);
+    persistAuthoritativeArchive(parsed, details);
     const result = transformConversation(parsed);
     publishHistory(details.tabId, result.history);
 
@@ -228,8 +253,10 @@ function processResponse(filter, chunks, totalBytes, details) {
   } catch (error) {
     try {
       writeOriginal(filter, chunks);
-    } catch (_) {}
-
+    } catch (writeError) {
+      console.error("[GPT AntiCurse] Failed to restore the original Firefox response after an interceptor error", writeError);
+    }
+    recordIssue("interceptor", "firefox-transform-failed", error);
     publishStats(details.tabId, {
       mode: "error",
       transport: "firefox-stream-filter",
@@ -240,58 +267,45 @@ function processResponse(filter, chunks, totalBytes, details) {
   } finally {
     try {
       filter.close();
-    } catch (_) {}
+    } catch (closeError) {
+      console.debug("[GPT AntiCurse] StreamFilter was already closed", closeError);
+    }
   }
 }
 
 function interceptConversation(details) {
-  if (!settings.enabled || details.method !== "GET" || !isConversationDocument(details.url)) {
-    return {};
-  }
-
+  if (!settings.enabled || details.method !== "GET" || !isConversationDocument(details.url)) return {};
   const filter = browser.webRequest.filterResponseData(details.requestId);
   const chunks = [];
   let totalBytes = 0;
-
   filter.ondata = (event) => {
     const chunk = copyChunk(event.data);
     chunks.push(chunk);
     totalBytes += chunk.byteLength;
   };
-
   filter.onstop = () => processResponse(filter, chunks, totalBytes, details);
   filter.onerror = () => {
-    publishStats(details.tabId, {
-      mode: "error",
-      transport: "firefox-stream-filter",
-      error: filter.error || "StreamFilter error"
-    });
+    const error = filter.error || "StreamFilter error";
+    recordIssue("interceptor", "firefox-stream-filter-error", error);
+    publishStats(details.tabId, { mode: "error", transport: "firefox-stream-filter", error });
   };
-
   return {};
 }
 
-function updateSettingsFromMessage(message) {
-  const next = {};
-  if (typeof message.enabled === "boolean") next.enabled = message.enabled;
-  if (VALID_MODES.has(message.mode)) next.mode = message.mode;
-  if (Number.isFinite(Number(message.maxDisplayMessages))) {
-    next.maxDisplayMessages = normalizeMessageLimit(message.maxDisplayMessages);
-  }
-  if (typeof message.showGuardNotice === "boolean") next.showGuardNotice = message.showGuardNotice;
-  return next;
-}
-
 browser.storage.local.get({ ...DEFAULT_SETTINGS, cgTotals: EMPTY_TOTALS }).then((saved) => {
-  settings = { ...DEFAULT_SETTINGS, ...saved };
+  settings = { ...DEFAULT_SETTINGS, ...saved, mode: resolveMode(saved.mode) };
   totals = normalizeTotals(saved.cgTotals);
-}).catch(console.error);
+}).catch((error) => {
+  settings = { ...DEFAULT_SETTINGS, archiveEnabled: false };
+  recordIssue("settings", "firefox-storage-read-failed", error);
+});
 
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   for (const key of Object.keys(DEFAULT_SETTINGS)) {
     if (changes[key]) settings[key] = changes[key].newValue;
   }
+  settings.mode = resolveMode(settings.mode);
   if (changes.cgTotals) totals = normalizeTotals(changes.cgTotals.newValue);
 });
 
@@ -303,34 +317,32 @@ browser.webRequest.onBeforeRequest.addListener(
 
 browser.runtime.onMessage.addListener((message, sender) => {
   if (!message) return undefined;
-
   if (message.type === "cg-get-stats") {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
     return Promise.resolve(lastStatsByTab.get(tabId) || null);
   }
-
   if (message.type === "cg-get-window-history") {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
-    return Promise.resolve(historyByTab.get(tabId) || null);
+    const history = historyByTab.get(tabId);
+    return Promise.resolve(history || { ok: false, reason: "archive-not-found" });
   }
-
-  if (message.type === "cg-get-totals") {
-    return Promise.resolve({ ...totals });
-  }
-
+  if (message.type === "cg-get-totals") return Promise.resolve({ ...totals });
   if (message.type === "cg-reset-totals") {
     totals = { ...EMPTY_TOTALS };
     return browser.storage.local.set({ cgTotals: totals }).then(() => ({ ...totals }));
   }
-
   if (message.type === "cg-settings") {
-    const next = updateSettingsFromMessage(message);
+    const next = {};
+    if (typeof message.enabled === "boolean") next.enabled = message.enabled;
+    if (LIMITED_MODES.has(message.mode)) next.mode = message.mode;
+    if (Number.isFinite(Number(message.maxDisplayMessages))) next.maxDisplayMessages = normalizeMessageLimit(message.maxDisplayMessages);
+    if (typeof message.showGuardNotice === "boolean") next.showGuardNotice = message.showGuardNotice;
+    if (typeof message.archiveEnabled === "boolean") next.archiveEnabled = message.archiveEnabled;
     return browser.storage.local.set(next).then(() => {
-      settings = { ...settings, ...next };
+      settings = { ...settings, ...next, mode: resolveMode(next.mode || settings.mode) };
       return settings;
     });
   }
-
   return undefined;
 });
 
