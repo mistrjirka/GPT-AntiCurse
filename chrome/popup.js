@@ -2,6 +2,7 @@
 "use strict";
 
 const EMPTY_TOTALS = { responsesTrimmed: 0, nodesRemoved: 0, nodesDelivered: 0, visibleTurnsKept: 0, inputBytes: 0, outputBytes: 0, bytesRemoved: 0 };
+const CHATGPT_ORIGIN = "https://chatgpt.com/*";
 const diagnostics = globalThis.CGAntiCurseDiagnostics;
 const numberFormat = new Intl.NumberFormat();
 const enabledInput = document.getElementById("enabled");
@@ -11,6 +12,7 @@ const limitInput = document.getElementById("limit");
 const noticeInput = document.getElementById("showNotice");
 const feedback = document.getElementById("feedback");
 const lastIssueElement = document.getElementById("lastIssue");
+let activeTab = null;
 
 function normalizeMode(value) { return value === "windowed-visible" ? "windowed-visible" : "recent"; }
 function formatNumber(value) { const number = Number(value); return numberFormat.format(Number.isFinite(number) ? number : 0); }
@@ -23,6 +25,7 @@ function formatBytes(value) {
   return `${number.toFixed(digits)} ${units[unitIndex]}`;
 }
 function messageLimit() { return Math.max(4, Math.min(500, Number(limitInput.value) || 64)); }
+function isChatGPTTab(tab) { return !!(tab && typeof tab.url === "string" && /^https:\/\/chatgpt\.com\//.test(tab.url)); }
 function updateControls() {
   modeHelp.textContent = modeSelect.value === "windowed-visible"
     ? "Automatically loads an older page when you reach the top."
@@ -39,8 +42,10 @@ function renderIssue(issue) {
     lastIssueElement.removeAttribute("title");
     return;
   }
-  lastIssueElement.textContent = `${issue.scope || "unknown"}/${issue.code || "unknown"}`;
-  lastIssueElement.title = `${issue.message || "Unknown error"}${issue.at ? `\n${new Date(issue.at).toLocaleString()}` : ""}`;
+  const code = `${issue.scope || "unknown"}/${issue.code || "unknown"}`;
+  const message = issue.message || "Unknown error";
+  lastIssueElement.textContent = `${code} — ${message}`;
+  lastIssueElement.title = `${message}${issue.at ? `\n${new Date(issue.at).toLocaleString()}` : ""}`;
 }
 function showError(label, error) {
   const text = error && error.message ? error.message : String(error || "Unknown error");
@@ -51,7 +56,20 @@ function showError(label, error) {
 async function recordSettingIssue(code, error) {
   if (diagnostics && typeof diagnostics.record === "function") await diagnostics.record("settings", code, error);
 }
+async function clearBridgeIssue() {
+  if (!diagnostics || typeof diagnostics.clear !== "function") return;
+  await diagnostics.clear("bridge");
+  await diagnostics.clear("archive", "popup-page-bridge-failed");
+}
 async function currentTab() { return (await chrome.tabs.query({ active: true, currentWindow: true }))[0]; }
+async function hasHostAccess() {
+  try {
+    return await chrome.permissions.contains({ origins: [CHATGPT_ORIGIN] });
+  } catch (error) {
+    await recordSettingIssue("host-access-check-failed", error);
+    throw error;
+  }
+}
 async function saveSettings() {
   try {
     await chrome.storage.local.set({ enabled: enabledInput.checked, mode: normalizeMode(modeSelect.value), maxDisplayMessages: messageLimit(), showGuardNotice: noticeInput.checked });
@@ -60,11 +78,32 @@ async function saveSettings() {
     throw error;
   }
 }
-async function saveAndReload() {
+async function finishSaveAndReload(granted) {
+  const tab = activeTab || await currentTab();
+  if (isChatGPTTab(tab) && !granted) {
+    setStatus("Needs access", "error");
+    feedback.textContent = "Chrome site access was not granted. Allow GPT AntiCurse on chatgpt.com, then press Save & reload again.";
+    return;
+  }
+  if (granted) await clearBridgeIssue();
   await saveSettings();
-  const tab = await currentTab();
   if (tab && tab.id != null) await chrome.tabs.reload(tab.id);
   window.close();
+}
+function saveAndReloadFromUserGesture() {
+  // permissions.request() must be invoked directly from the click gesture. It is
+  // safe to request the declared required host even when it is already granted;
+  // Chrome resolves true without an extra prompt in that case.
+  if (isChatGPTTab(activeTab)) {
+    chrome.permissions.request({ origins: [CHATGPT_ORIGIN] })
+      .then((granted) => finishSaveAndReload(granted))
+      .catch(async (error) => {
+        await recordSettingIssue("host-access-request-failed", error);
+        showError("Save/reload failed", error);
+      });
+    return;
+  }
+  finishSaveAndReload(true).catch((error) => showError("Save/reload failed", error));
 }
 function renderTotals(value) {
   const totals = { ...EMPTY_TOTALS, ...(value || {}) };
@@ -113,16 +152,29 @@ async function initialize() {
   updateControls();
   if (saved.mode !== modeSelect.value) await chrome.storage.local.set({ mode: modeSelect.value });
 
-  const tab = await currentTab();
-  if (!tab || tab.id == null) return;
+  activeTab = await currentTab();
+  if (!activeTab || activeTab.id == null) return;
+  if (!isChatGPTTab(activeTab)) {
+    setStatus("Waiting");
+    feedback.textContent = "Open a chatgpt.com conversation to use AntiCurse.";
+    return;
+  }
+
+  if (!(await hasHostAccess())) {
+    await clearBridgeIssue();
+    setStatus("Needs access", "error");
+    feedback.textContent = "Chrome has withheld access to chatgpt.com. Press Save & reload to grant site access and reload this tab.";
+    return;
+  }
+
   try {
-    renderStats(await chrome.tabs.sendMessage(tab.id, { type: "cg-get-stats" }));
+    renderStats(await chrome.tabs.sendMessage(activeTab.id, { type: "cg-get-stats" }));
+    await clearBridgeIssue();
   } catch (error) {
-    const onChatGPT = typeof tab.url === "string" && /^https:\/\/chatgpt\.com\//.test(tab.url);
-    if (onChatGPT) {
-      console.warn("[GPT AntiCurse] Could not reach the page-side status bridge", error);
-      feedback.textContent = "AntiCurse could not read status from this ChatGPT tab. Reload the page if this persists.";
-    }
+    console.warn("[GPT AntiCurse] Could not reach the page-side status bridge", error);
+    if (diagnostics && typeof diagnostics.record === "function") await diagnostics.record("bridge", "content-script-missing", error);
+    setStatus("Reload required", "error");
+    feedback.textContent = `AntiCurse is allowed on ChatGPT, but this tab has no content-script bridge: ${error && error.message ? error.message : error}. Press Save & reload.`;
   }
 }
 
@@ -130,7 +182,7 @@ function runAction(label, action) {
   Promise.resolve().then(action).catch((error) => showError(label, error));
 }
 
-document.getElementById("reload").addEventListener("click", () => runAction("Save/reload failed", saveAndReload));
+document.getElementById("reload").addEventListener("click", saveAndReloadFromUserGesture);
 document.getElementById("resetTotals").addEventListener("click", () => runAction("Counter reset failed", async () => renderTotals(await chrome.runtime.sendMessage({ type: "cg-reset-totals" }))));
 enabledInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
 noticeInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
