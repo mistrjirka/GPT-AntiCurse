@@ -1,15 +1,17 @@
 /*
- * Content-side incremental backup capture.
+ * Content-side archive bridge and incremental backup capture.
  *
- * The initial authoritative archive comes from the untrimmed conversation GET.
- * DOM capture is only a hydrated tail updater; it must not observe the entire
- * ChatGPT document during SSR hydration or force layout before the page settles.
+ * Chromium publishes one authoritative untrimmed visible archive from MAIN world.
+ * The isolated world keeps that object in memory for current-page history. Only
+ * the optional backup copy is persisted to extension IndexedDB. DOM capture is
+ * a hydrated tail updater and never observes the whole ChatGPT document.
  */
 (() => {
   "use strict";
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const CHANNEL = "__gpt_anticurse_v1__";
+  const NETWORK_ARCHIVE_EVENT = "__gpt_anticurse_archive_ready__";
   const DEFAULT_SETTINGS = { archiveEnabled: true };
   const TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
   const ROLE_SELECTOR = '[data-message-author-role="user"], [data-message-author-role="assistant"]';
@@ -17,6 +19,9 @@
   const DOM_GATE = globalThis.CGAntiCurseDomReady;
 
   let archiveEnabled = true;
+  let archiveSettingsReady = false;
+  let pendingNetworkArchive = null;
+  let latestNetworkArchive = null;
   let currentConversationId = null;
   let captureTimer = null;
   let lastFingerprint = "";
@@ -24,10 +29,36 @@
   let threadObserver = null;
   let parentObserver = null;
 
+  globalThis.CGAntiCurseArchiveBridge = {
+    get(id) {
+      if (!latestNetworkArchive) return null;
+      if (id && latestNetworkArchive.id !== id) return null;
+      return latestNetworkArchive;
+    }
+  };
+
   function conversationId() {
     const fromPage = CGArchive.conversationIdFromUrl(location.href);
     if (fromPage) currentConversationId = fromPage;
     return currentConversationId;
+  }
+
+  function persistNetworkArchive(archive) {
+    if (!archiveEnabled || !archive) return;
+    ext.runtime.sendMessage({ type: "cg-save-network-archive", archive }).catch(() => {});
+  }
+
+  function acceptNetworkArchive(archive) {
+    if (!archive || !archive.id) return;
+    currentConversationId = archive.id || currentConversationId;
+    latestNetworkArchive = archive;
+    window.dispatchEvent(new Event(NETWORK_ARCHIVE_EVENT));
+
+    if (!archiveSettingsReady) {
+      pendingNetworkArchive = archive;
+      return;
+    }
+    persistNetworkArchive(archive);
   }
 
   function turnIndex(turn) {
@@ -180,19 +211,34 @@
     if (event.source !== window || event.origin !== location.origin) return;
     const message = event.data;
     if (!message || message.channel !== CHANNEL || message.type !== "archive" || !message.archive) return;
-    currentConversationId = message.archive.id || currentConversationId;
-    ext.runtime.sendMessage({ type: "cg-save-network-archive", archive: message.archive }).catch(() => {});
+    acceptNetworkArchive(message.archive);
   });
 
   ext.storage.local.get(DEFAULT_SETTINGS).then((saved) => {
     archiveEnabled = saved.archiveEnabled !== false;
+    archiveSettingsReady = true;
+    if (pendingNetworkArchive) {
+      const archive = pendingNetworkArchive;
+      pendingNetworkArchive = null;
+      persistNetworkArchive(archive);
+    }
     if (archiveEnabled && DOM_GATE && DOM_GATE.isReady()) scheduleCapture(100);
-  }).catch(() => {});
+  }).catch(() => {
+    archiveSettingsReady = true;
+    if (pendingNetworkArchive) {
+      const archive = pendingNetworkArchive;
+      pendingNetworkArchive = null;
+      persistNetworkArchive(archive);
+    }
+  });
 
   ext.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.archiveEnabled) return;
     archiveEnabled = changes.archiveEnabled.newValue !== false;
-    if (archiveEnabled && (!DOM_GATE || DOM_GATE.isReady())) scheduleCapture(50);
+    if (archiveEnabled) {
+      persistNetworkArchive(latestNetworkArchive);
+      if (!DOM_GATE || DOM_GATE.isReady()) scheduleCapture(50);
+    }
   });
 
   ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
