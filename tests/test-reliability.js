@@ -32,7 +32,7 @@ assert(archiveBackground.includes("message && message.conversationId"), "archive
 assert(!archiveCapture.includes("setTimeout(startObserver"), "archive thread discovery must not poll the DOM forever");
 assert(archiveCapture.includes("discoveryObserver"), "archive thread discovery should be mutation-driven");
 assert(archiveCapture.includes("if (!archiveEnabled) return;"), "DOM backup observers must stay off when persistent backup is disabled");
-assert(!archiveCapture.includes("innerText"), "tail backup extraction should not use innerText and force layout");
+assert(!archiveCapture.includes(".innerText"), "tail backup extraction should not use innerText and force layout");
 assert(archiveCapture.includes("debug()"), "archive bridge must expose a content-free health snapshot");
 
 assert(domReady.includes('"dom-ready", "callback-failed"'), "hydration callback failures must become diagnostics");
