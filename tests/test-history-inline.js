@@ -11,6 +11,8 @@ const domReady = source("firefox/dom-ready.js");
 const historyHydration = source("firefox/history-hydration-safe.js");
 const firefoxContent = source("firefox/content.js");
 const chromeContent = source("chrome/content.js");
+const firefoxArchiveCapture = source("firefox/archive-capture.js");
+const chromeArchiveCapture = source("chrome/archive-capture.js");
 const chromeBackground = source("chrome/background.js");
 const chromeBackgroundEntry = source("chrome/background-entry.js");
 const chromeMain = source("chrome/main.js");
@@ -56,6 +58,11 @@ assert(!windowed.includes("setInterval("), "history attachment must be event-dri
 assert(windowed.includes('nativeScroller.hasAttribute("data-scroll-from-end")'), "initial bounded loads must restore the current/end position when ChatGPT starts away from the end");
 assert(windowed.includes("userInteracted"), "initial scroll correction must not fight user input");
 assert(windowed.includes("missing-after-trim"), "trim-without-history must become a visible diagnostic rather than a silent missing button");
+
+assert.equal(firefoxArchiveCapture, chromeArchiveCapture, "archive tail capture logic must stay byte-identical across browsers");
+assert(firefoxArchiveCapture.includes("function conversationIdFromPage"), "tail capture must derive its conversation id locally from the current page");
+assert(!/\bCGArchive\b/.test(firefoxArchiveCapture), "tail capture must not depend on a free archive helper global");
+assert(firefoxArchiveCapture.includes('type: "cg-merge-rendered-archive"'), "tail capture must still merge rendered updates through the background archive service");
 
 assert(chromeBackground.includes('message.type === "cg-get-window-history"'), "Chromium service worker must serve durable archived history");
 assert(chromeBackground.includes("CGArchiveStore.get(conversationId)"), "Chromium durable history must come from extension-origin IndexedDB");
