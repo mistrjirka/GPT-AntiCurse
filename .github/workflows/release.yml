@@ -30,6 +30,7 @@ jobs:
           set -euo pipefail
           cmp firefox/defaults.js chrome/defaults.js
           cmp firefox/trim.js chrome/trim.js
+          cmp firefox/trim-logical.js chrome/trim-logical.js
           cmp firefox/archive.js chrome/archive.js
           cmp firefox/archive-export.js chrome/archive-export.js
           cmp firefox/archive-export.css chrome/archive-export.css
@@ -38,6 +39,8 @@ jobs:
           cmp firefox/archive-capture.js chrome/archive-capture.js
           cmp firefox/history-overlay.js chrome/history-overlay.js
           cmp firefox/history-native.js chrome/history-native.js
+          cmp firefox/history-virtualized.js chrome/history-virtualized.js
+          cmp firefox/history-virtualized.css chrome/history-virtualized.css
           cmp firefox/windowed.js chrome/windowed.js
           cmp firefox/content.css chrome/content.css
           cmp firefox/popup.html chrome/popup.html
@@ -55,11 +58,19 @@ jobs:
       - name: Run unit tests
         run: |
           node tests/test-trim.js
+          node tests/test-trim-logical.js
           node tests/test-archive.js
           node tests/test-archive-export.js
           node tests/test-history-inline.js
+          node tests/test-history-virtualized.js
       - name: Build browser packages
         run: bash ./scripts/build.sh
+      - name: Install Chromium extension test runtime
+        run: |
+          npm install --no-save --no-package-lock playwright@1.55.0
+          npx playwright install --with-deps --no-shell chromium
+      - name: Run Chromium extension E2E
+        run: node tests/e2e-chromium.js
       - name: Create GitHub Release if missing
         if: github.event_name != 'pull_request'
         env:
