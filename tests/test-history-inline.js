@@ -32,9 +32,12 @@ assert(windowed.includes("historyKey === nextKey"), "equivalent history deliveri
 assert(chromeReplay.includes("let lastHistory"), "Chromium MAIN world must retain the latest history payload");
 assert(chromeReplay.includes('message.type === "history-request"'), "Chromium MAIN world must answer history replay requests");
 assert(chromeRequest.includes('type: "history-request"'), "Chromium isolated world must request replay after windowed.js is listening");
-assert(chromeRequest.includes("let resolved = false"), "Chromium history retries must have a completion latch");
-assert(chromeRequest.includes("clearTimeout"), "later Chromium retries must be cancelled after first history delivery");
-assert(chromeRequest.includes('message.type === "history"'), "history request bridge must recognize the first successful response");
+assert(chromeRequest.includes("setTimeout(request, 100)"), "Chromium history replay needs an early settling retry");
+assert(chromeRequest.includes("setTimeout(request, 350)"), "Chromium history replay must survive a delayed isolated storage read");
+assert(chromeRequest.includes("setTimeout(request, 800)"), "Chromium history replay needs a medium settling retry");
+assert(chromeRequest.includes("setTimeout(request, 1600)"), "Chromium history replay needs a bounded late retry");
+assert(chromeRequest.includes("setTimeout(finish, 1800)"), "Chromium replay settling must remain bounded");
+assert(!chromeRequest.includes('message.type === "history"'), "first history delivery must not cancel the settling replays");
 assert(chromeManifest.content_scripts[0].js.indexOf("history-replay-main.js") < chromeManifest.content_scripts[0].js.indexOf("main.js"), "Chromium replay bridge must load before main interceptor");
 assert(chromeManifest.content_scripts[1].js.indexOf("windowed.js") < chromeManifest.content_scripts[1].js.indexOf("history-request.js"), "Chromium replay request must load after windowed listener");
 assert(firefoxManifest.content_scripts[0].js.indexOf("history-native.js") < firefoxManifest.content_scripts[0].js.indexOf("windowed.js"), "Firefox native-looking renderer must override the old factory before controller startup");
