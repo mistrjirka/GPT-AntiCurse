@@ -2,14 +2,15 @@
  * Chromium MAIN-world startup barrier and authoritative pre-transform backup.
  *
  * The MAIN world cannot read chrome.storage directly. Delay consumption of the
- * conversation response for a short bounded period until the isolated-world
- * bridges have delivered both AntiCurse settings and the backup toggle.
+ * conversation response for a bounded period until the isolated-world bridges
+ * have delivered both AntiCurse settings and the backup toggle. In normal page
+ * loads this resolves immediately; the timeout is only a fail-safe.
  */
 (() => {
   "use strict";
 
   const CHANNEL = "__gpt_anticurse_v1__";
-  const WAIT_MS = 300;
+  const WAIT_MS = 2000;
   let trimSettingsReady = false;
   let archiveSettingsReady = false;
   let archiveEnabled = false;

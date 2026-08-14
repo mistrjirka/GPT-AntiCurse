@@ -9,7 +9,10 @@
 
 const DEFAULT_SETTINGS = {
   enabled: true,
-  mode: "visible-history",
+  // Recent is the actual product default. Keep the synchronous startup state
+  // bounded too: a conversation request can arrive before storage.local.get()
+  // resolves on a freshly installed/restarted Firefox extension.
+  mode: "recent",
   maxDisplayMessages: 64,
   showGuardNotice: true
 };
