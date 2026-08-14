@@ -4,21 +4,13 @@
  * Manifest V3 Chromium does not expose Firefox's filterResponseData() API to
  * normal extensions. This packaged MAIN-world script therefore wraps
  * Response.json()/text() only for ChatGPT's conversation-document endpoint.
- * Full history is not retained here; the untrimmed archive is persisted in the
- * extension origin and the isolated UI retrieves it through runtime messaging.
  */
 (function () {
   "use strict";
 
   const CHANNEL = "__gpt_anticurse_v1__";
-  const LIMITED_MODES = new Set(["recent", "latest-visible", "windowed-visible"]);
-  const VALID_MODES = new Set(["visible-history", ...LIMITED_MODES]);
-  const DEFAULT_SETTINGS = Object.freeze({
-    enabled: true,
-    mode: "recent",
-    maxDisplayMessages: 64
-  });
-
+  const VALID_MODES = new Set(["recent", "windowed-visible"]);
+  const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
   let settings = { ...DEFAULT_SETTINGS };
 
   function normalizeMessageLimit(value) {
@@ -50,21 +42,29 @@
   function applySettings(next) {
     if (!next || typeof next !== "object") return;
     if (typeof next.enabled === "boolean") settings.enabled = next.enabled;
-    if (VALID_MODES.has(next.mode)) settings.mode = next.mode;
-    if (Number.isFinite(Number(next.maxDisplayMessages))) {
-      settings.maxDisplayMessages = normalizeMessageLimit(next.maxDisplayMessages);
-    }
+    settings.mode = resolveMode(next.mode);
+    if (Number.isFinite(Number(next.maxDisplayMessages))) settings.maxDisplayMessages = normalizeMessageLimit(next.maxDisplayMessages);
+  }
+
+  function canTransform(response) {
+    const gate = globalThis.CGAntiCurseResponseGate;
+    return !gate || typeof gate.canTransform !== "function" || gate.canTransform(response);
+  }
+
+  function reportStartupPassthrough(transport) {
+    publishStats({
+      mode: "passthrough",
+      transport,
+      reason: "startup-barrier-timeout",
+      trimMode: resolveMode(settings.mode)
+    });
   }
 
   function transformConversation(data, originalBytes) {
     const started = performance.now();
     const mode = resolveMode(settings.mode);
     const limit = normalizeMessageLimit(settings.maxDisplayMessages);
-    const transformed = CGTrim.trimConversation(data, {
-      mode,
-      maxDisplayMessages: limit
-    });
-
+    const transformed = CGTrim.trimConversation(data, { mode, maxDisplayMessages: limit });
     publishTransformStats(transformed, originalBytes, started);
     return transformed.changed ? transformed.data : data;
   }
@@ -87,7 +87,9 @@
     let outputBytes;
     try {
       outputBytes = new TextEncoder().encode(JSON.stringify(transformed.data)).byteLength;
-    } catch (_) {
+    } catch (error) {
+      // Size accounting is optional; transformation itself remains valid.
+      console.debug("[GPT AntiCurse] Could not measure transformed response size", error);
       outputBytes = undefined;
     }
 
@@ -117,6 +119,10 @@
       value: async function antiCurseJson() {
         const data = await nativeJson.call(this);
         if (!settings.enabled || !isConversationDocument(this.url)) return data;
+        if (!canTransform(this)) {
+          reportStartupPassthrough("chromium-response-json");
+          return data;
+        }
 
         try {
           return transformConversation(data, undefined);
@@ -136,6 +142,10 @@
       value: async function antiCurseText() {
         const text = await nativeText.call(this);
         if (!settings.enabled || !isConversationDocument(this.url)) return text;
+        if (!canTransform(this)) {
+          reportStartupPassthrough("chromium-response-text");
+          return text;
+        }
 
         try {
           let body = text;
@@ -151,10 +161,6 @@
     });
   }
 
-  function requestSettings() {
-    publish("settings-request", {});
-  }
-
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
     const message = event.data;
@@ -165,7 +171,7 @@
   installResponseJsonWrapper();
   installResponseTextWrapper();
 
-  requestSettings();
-  setTimeout(requestSettings, 0);
-  setTimeout(requestSettings, 100);
+  // One request is sufficient: the isolated bridge also publishes settings when
+  // its storage read completes, so no polling timers are needed.
+  publish("settings-request", {});
 })();
