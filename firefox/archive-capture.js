@@ -17,8 +17,10 @@
   const ROLE_SELECTOR = '[data-message-author-role="user"], [data-message-author-role="assistant"]';
   const CAPTURE_TAIL_TURNS = 96;
   const DOM_GATE = globalThis.CGAntiCurseDomReady;
+  const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 
-  let archiveEnabled = true;
+  // Persist nothing until storage explicitly confirms the user's backup setting.
+  let archiveEnabled = false;
   let archiveSettingsReady = false;
   let pendingNetworkArchive = null;
   let latestNetworkArchive = null;
@@ -28,6 +30,17 @@
   let observedThread = null;
   let threadObserver = null;
   let parentObserver = null;
+
+  function recordIssue(code, error, extra) {
+    if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record("archive", code, error, extra);
+    console.warn(`[GPT AntiCurse] archive/${code}`, error, extra || "");
+    return Promise.resolve(null);
+  }
+
+  function clearArchiveIssue() {
+    if (DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") return DIAGNOSTICS.clear("archive");
+    return Promise.resolve(false);
+  }
 
   globalThis.CGAntiCurseArchiveBridge = {
     get(id) {
@@ -43,22 +56,38 @@
     return currentConversationId;
   }
 
-  function persistNetworkArchive(archive) {
-    if (!archiveEnabled || !archive) return;
-    ext.runtime.sendMessage({ type: "cg-save-network-archive", archive }).catch(() => {});
+  async function persistNetworkArchive(archive) {
+    if (!archiveEnabled || !archive) return { ok: false, reason: "backup-disabled" };
+    try {
+      const result = await ext.runtime.sendMessage({ type: "cg-save-network-archive", archive });
+      if (!result || result.ok !== true) {
+        await recordIssue("network-persist-rejected", result && result.reason ? result.reason : "Background did not confirm archive persistence.");
+        return result || { ok: false, reason: "no-background-response" };
+      }
+      clearArchiveIssue();
+      return result;
+    } catch (error) {
+      await recordIssue("network-persist-failed", error);
+      return { ok: false, reason: "network-persist-failed" };
+    }
   }
 
   function acceptNetworkArchive(archive) {
-    if (!archive || !archive.id) return;
-    currentConversationId = archive.id || currentConversationId;
+    if (!archive || !archive.id || !Array.isArray(archive.messages)) {
+      recordIssue("invalid-network-archive", "MAIN world supplied an invalid conversation archive.");
+      return false;
+    }
+
+    currentConversationId = archive.id;
     latestNetworkArchive = archive;
     window.dispatchEvent(new Event(NETWORK_ARCHIVE_EVENT));
 
     if (!archiveSettingsReady) {
       pendingNetworkArchive = archive;
-      return;
+      return true;
     }
-    persistNetworkArchive(archive);
+    if (archiveEnabled) persistNetworkArchive(archive);
+    return true;
   }
 
   function turnIndex(turn) {
@@ -85,7 +114,6 @@
 
     const result = [];
     const turns = Array.from(root.querySelectorAll(TURN_SELECTOR)).slice(-CAPTURE_TAIL_TURNS);
-
     if (turns.length) {
       for (const turn of turns) {
         const roleElement = turn.querySelector(ROLE_SELECTOR);
@@ -133,25 +161,25 @@
     if (!messages.length) return { ok: false, reason: "no-rendered-turns", conversationId: id };
 
     const nextFingerprint = fingerprint(id, messages);
-    if (!force && nextFingerprint === lastFingerprint) {
-      return { ok: true, reason: "unchanged", conversationId: id };
-    }
+    if (!force && nextFingerprint === lastFingerprint) return { ok: true, reason: "unchanged", conversationId: id };
     lastFingerprint = nextFingerprint;
 
-    return ext.runtime.sendMessage({
+    const result = await ext.runtime.sendMessage({
       type: "cg-merge-rendered-archive",
       conversationId: id,
       title: document.title,
       sourceUrl: location.href,
       messages
     });
+    if (!result || result.ok !== true) throw new Error(result && result.reason ? result.reason : "Background did not confirm rendered archive merge.");
+    return result;
   }
 
   function scheduleCapture(delay = 1200) {
     if (!archiveEnabled || captureTimer) return;
     captureTimer = setTimeout(() => {
       captureTimer = null;
-      flushCapture(false).catch(() => {});
+      flushCapture(false).then(() => clearArchiveIssue()).catch((error) => recordIssue("tail-merge-failed", error));
     }, delay);
   }
 
@@ -183,7 +211,6 @@
 
     disconnectObservers();
     observedThread = thread;
-
     threadObserver = new MutationObserver((records) => {
       if (records.some(touchesConversation)) scheduleCapture();
     });
@@ -198,7 +225,6 @@
       }
     });
     parentObserver.observe(parent, { childList: true });
-
     scheduleCapture(250);
     return true;
   }
@@ -207,13 +233,10 @@
     if (!attachThreadObserver()) setTimeout(startObserver, 100);
   }
 
-  // This listener must exist from document_start. MAIN world publishes after
-  // its hydration barrier, but retaining the bridge early makes navigation and
-  // future transport changes insensitive to script timing.
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
     const message = event.data;
-    if (!message || message.channel !== CHANNEL || message.type !== "archive" || !message.archive) return;
+    if (!message || message.channel !== CHANNEL || message.type !== "archive") return;
     acceptNetworkArchive(message.archive);
   });
 
@@ -223,16 +246,16 @@
     if (pendingNetworkArchive) {
       const archive = pendingNetworkArchive;
       pendingNetworkArchive = null;
-      persistNetworkArchive(archive);
+      if (archiveEnabled) persistNetworkArchive(archive);
     }
     if (archiveEnabled && DOM_GATE && DOM_GATE.isReady()) scheduleCapture(100);
-  }).catch(() => {
+  }).catch((error) => {
+    // Fail private: current-page history still uses the transient archive, but
+    // persistent backup remains disabled until storage can be read successfully.
+    archiveEnabled = false;
     archiveSettingsReady = true;
-    if (pendingNetworkArchive) {
-      const archive = pendingNetworkArchive;
-      pendingNetworkArchive = null;
-      persistNetworkArchive(archive);
-    }
+    pendingNetworkArchive = null;
+    recordIssue("backup-setting-read-failed", error);
   });
 
   ext.storage.onChanged.addListener((changes, area) => {
@@ -251,10 +274,10 @@
       return false;
     }
     if (message.type === "cg-flush-archive") {
-      flushCapture(true).then(sendResponse).catch((error) => sendResponse({
-        ok: false,
-        reason: String(error && error.message ? error.message : error)
-      }));
+      flushCapture(true).then(sendResponse).catch((error) => {
+        recordIssue("manual-flush-failed", error);
+        sendResponse({ ok: false, reason: String(error && error.message ? error.message : error) });
+      });
       return true;
     }
     return false;
@@ -265,7 +288,8 @@
       clearTimeout(captureTimer);
       captureTimer = null;
     }
-    flushCapture(true).catch(() => {});
+    // Best effort only: page teardown may prevent an async extension message from completing.
+    flushCapture(true).catch((error) => console.debug("[GPT AntiCurse] Final pagehide backup did not finish", error));
     disconnectObservers();
   });
 
