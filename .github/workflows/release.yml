@@ -85,7 +85,9 @@ jobs:
               continue
             fi
             cat "$output_file"
-            summary="$(tail -n 12 "$output_file" | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
+            summary="$(grep -m1 -E 'AssertionError|Error \[ERR_|Error:' "$output_file" || true)"
+            if [ -z "$summary" ]; then summary="$(head -n 4 "$output_file" | tr '\n' ' ')"; fi
+            summary="$(printf '%s' "$summary" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
             rm -f "$output_file"
             echo "::error file=$test::${summary:-Unit/code-quality test failed}"
             exit 1
