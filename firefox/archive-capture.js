@@ -207,6 +207,9 @@
     if (!attachThreadObserver()) setTimeout(startObserver, 100);
   }
 
+  // This listener must exist from document_start. MAIN world publishes after
+  // its hydration barrier, but retaining the bridge early makes navigation and
+  // future transport changes insensitive to script timing.
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
     const message = event.data;
