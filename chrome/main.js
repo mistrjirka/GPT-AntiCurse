@@ -39,6 +39,12 @@
     publish("stats", { stats });
   }
 
+  function publishDiagnostic(code, message) {
+    publish("diagnostic", {
+      diagnostic: { scope: "chromium-main", code, message: String(message || code) }
+    });
+  }
+
   function applySettings(next) {
     if (!next || typeof next !== "object") return;
     if (typeof next.enabled === "boolean") settings.enabled = next.enabled;
@@ -52,12 +58,7 @@
   }
 
   function reportStartupPassthrough(transport) {
-    publishStats({
-      mode: "passthrough",
-      transport,
-      reason: "startup-barrier-timeout",
-      trimMode: resolveMode(settings.mode)
-    });
+    publishStats({ mode: "passthrough", transport, reason: "startup-barrier-timeout", trimMode: resolveMode(settings.mode) });
   }
 
   function transformConversation(data, originalBytes) {
@@ -71,16 +72,27 @@
 
   function publishTransformStats(transformed, originalBytes, started) {
     if (!transformed.changed) {
-      if (transformed.reason !== "unsupported-shape") {
+      if (transformed.reason === "unsupported-shape") {
+        const message = "Unsupported ChatGPT conversation response shape; original response kept.";
+        publishDiagnostic("unsupported-conversation-shape", message);
         publishStats({
-          mode: "passthrough",
+          mode: "error",
           transport: "chromium-response-body",
           reason: transformed.reason,
+          error: message,
           originalBytes,
-          processingMs: +(performance.now() - started).toFixed(2),
-          ...(transformed.stats || {})
+          processingMs: +(performance.now() - started).toFixed(2)
         });
+        return;
       }
+      publishStats({
+        mode: "passthrough",
+        transport: "chromium-response-body",
+        reason: transformed.reason,
+        originalBytes,
+        processingMs: +(performance.now() - started).toFixed(2),
+        ...(transformed.stats || {})
+      });
       return;
     }
 
@@ -104,11 +116,9 @@
   }
 
   function reportError(transport, error) {
-    publishStats({
-      mode: "error",
-      transport,
-      error: String(error && error.message ? error.message : error)
-    });
+    const text = String(error && error.message ? error.message : error);
+    publishDiagnostic("conversation-transform-failed", text);
+    publishStats({ mode: "error", transport, error: text });
   }
 
   function installResponseJsonWrapper() {
@@ -123,7 +133,6 @@
           reportStartupPassthrough("chromium-response-json");
           return data;
         }
-
         try {
           return transformConversation(data, undefined);
         } catch (error) {
@@ -146,7 +155,6 @@
           reportStartupPassthrough("chromium-response-text");
           return text;
         }
-
         try {
           let body = text;
           if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
@@ -170,8 +178,6 @@
 
   installResponseJsonWrapper();
   installResponseTextWrapper();
-
-  // One request is sufficient: the isolated bridge also publishes settings when
-  // its storage read completes, so no polling timers are needed.
+  // The isolated bridge also publishes settings when storage resolves, so polling is unnecessary.
   publish("settings-request", {});
 })();
