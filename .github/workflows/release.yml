@@ -37,7 +37,9 @@ jobs:
           cmp firefox/archive-background.js chrome/archive-background.js
           cmp firefox/archive-capture.js chrome/archive-capture.js
           cmp firefox/history-overlay.js chrome/history-overlay.js
+          cmp firefox/history-native.js chrome/history-native.js
           cmp firefox/windowed.js chrome/windowed.js
+          cmp firefox/content.css chrome/content.css
           cmp firefox/popup.html chrome/popup.html
           cmp firefox/popup.css chrome/popup.css
           cmp firefox/popup-sizing.css chrome/popup-sizing.css
