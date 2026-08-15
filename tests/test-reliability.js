@@ -101,7 +101,7 @@ assert(chromeMain.includes('archiveSkipped: "unsupported-shape"'), "unsupported 
 
 assert(chromeManifest.content_scripts[1].js.includes("debug-state.js"), "Chromium must package the debug-state content script");
 assert(firefoxManifest.content_scripts[0].js.includes("debug-state.js"), "Firefox must package the debug-state content script");
-assert.equal(chromeManifest.version, "0.5.17");
-assert.equal(firefoxManifest.version, "0.5.17");
+assert.equal(chromeManifest.version, "0.5.18");
+assert.equal(firefoxManifest.version, "0.5.18");
 
 console.log("lifecycle/failure-recovery checks: PASS");
