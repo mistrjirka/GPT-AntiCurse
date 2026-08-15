@@ -150,10 +150,14 @@ const FIXTURE_HTML = String.raw`<!doctype html>
 </body>
 </html>`;
 
+function isAntiCurseWorker(worker) {
+  return /^chrome-extension:\/\//.test(worker.url()) && /\/background-entry\.js(?:$|[?#])/.test(worker.url());
+}
+
 async function waitForServiceWorker(context) {
-  const existing = context.serviceWorkers();
-  if (existing.length) return existing[0];
-  return context.waitForEvent("serviceworker");
+  const existing = context.serviceWorkers().find(isAntiCurseWorker);
+  if (existing) return existing;
+  return context.waitForEvent("serviceworker", isAntiCurseWorker);
 }
 
 async function configure(worker, mode) {
@@ -308,7 +312,7 @@ async function autoWindowTest(context, worker) {
     });
 
     const worker = await waitForServiceWorker(context);
-    assert(worker.url().startsWith("chrome-extension://"), `unexpected service worker URL: ${worker.url()}`);
+    assert(isAntiCurseWorker(worker), `unexpected AntiCurse service worker URL: ${worker.url()}`);
 
     await recentPagingTest(context, worker);
     await autoWindowTest(context, worker);
