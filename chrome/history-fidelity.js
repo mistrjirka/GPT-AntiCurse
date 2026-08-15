@@ -30,8 +30,32 @@
     ? element.className
     : fallback;
 
+  function userTextNode(message) {
+    if (!message) return null;
+    const candidates = Array.from(message.querySelectorAll(".whitespace-pre-wrap"));
+    return candidates.find((element) => String(element.textContent || "").trim()) || candidates[0] || null;
+  }
+
+  function userBubbleNode(message, textNode) {
+    let node = textNode && textNode.parentElement;
+    while (node && node !== message) {
+      const classes = node.classList;
+      if (classes && classes.contains("user-message-bubble-color")) return node;
+      if (classes && classes.contains("leading-6") && Array.from(classes).some((name) => name.startsWith("rounded-"))) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
   function findNativeRole(role) {
-    return document.querySelector(`#thread [data-message-author-role="${role}"]`);
+    const candidates = Array.from(document.querySelectorAll(`#thread [data-message-author-role="${role}"]`));
+    if (role === "user") {
+      return candidates.find((message) => {
+        const text = userTextNode(message);
+        return !!(text && userBubbleNode(message, text));
+      }) || candidates[0] || null;
+    }
+    return candidates.find((message) => message.querySelector(".markdown")) || candidates[0] || null;
   }
 
   function templateFor(role) {
@@ -43,7 +67,6 @@
     const outer = group && group.parentElement;
     const grow = message.parentElement;
     const body = message.firstElementChild;
-    const first = body && body.firstElementChild;
 
     const template = {
       ...FALLBACK,
@@ -55,12 +78,16 @@
     };
 
     if (role === "user") {
+      const text = userTextNode(message);
+      const bubble = userBubbleNode(message, text);
       template.userBody = copyClass(body, FALLBACK.userBody);
-      template.userBubble = copyClass(first, FALLBACK.userBubble);
-      template.userText = copyClass(first && first.firstElementChild, FALLBACK.userText);
+      template.userBubble = copyClass(bubble, FALLBACK.userBubble);
+      template.userText = copyClass(text, FALLBACK.userText);
     } else {
-      template.assistantBody = copyClass(body, FALLBACK.assistantBody);
-      template.assistantMarkdown = copyClass(first, FALLBACK.assistantMarkdown);
+      const markdown = message.querySelector(".markdown");
+      const assistantBody = markdown && markdown.parentElement !== message ? markdown.parentElement : body;
+      template.assistantBody = copyClass(assistantBody, FALLBACK.assistantBody);
+      template.assistantMarkdown = copyClass(markdown, FALLBACK.assistantMarkdown);
     }
     return template;
   }
@@ -120,10 +147,20 @@
       try {
         const value = JSON.parse(raw);
         if (value && typeof value === "object") {
-          if (typeof value.path === "string") {
+          if (typeof value.path === "string" && (value.args || value.path.startsWith("/") || value.path.includes("link_"))) {
             return { kind: "activity", label: actionFromPath(value.path), raw };
           }
-          if (Array.isArray(value.search_query)) return { kind: "activity", label: "Searched the web", raw };
+          const keys = Object.keys(value);
+          if (keys.some((key) => /(?:^|_)search_query$/.test(key)) || Array.isArray(value.image_query)) {
+            return { kind: "activity", label: "Searched the web", raw };
+          }
+          if (Array.isArray(value.commands)) return { kind: "activity", label: "Ran commands", raw };
+          if (Array.isArray(value.files) || Array.isArray(value.read)) return { kind: "activity", label: "Read files", raw };
+          if (Array.isArray(value.find)) return { kind: "activity", label: "Searched files", raw };
+          if (Array.isArray(value.paths) && typeof value.query === "string") return { kind: "activity", label: "Searched tools", raw };
+          if (typeof value.query === "string" && keys.every((key) => ["query", "top_k", "scope", "filters", "intent", "sort", "sort_order"].includes(key))) {
+            return { kind: "activity", label: "Searched", raw };
+          }
           if (Array.isArray(value.plan)) return { kind: "activity", label: "Updated task plan", raw };
           if (value.command || value.cwd || value.session_id || value.job_id) return { kind: "activity", label: "Used a tool", raw };
         }
