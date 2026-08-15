@@ -144,7 +144,11 @@ async function readSession(prefix, tabId, code) {
   if (tabId < 0 || !browser.storage.session) return null;
   const key = sessionKey(prefix, tabId);
   const pending = sessionWriteQueues.get(key);
-  if (pending) await pending.catch(() => {});
+  if (pending) await pending.catch((error) => {
+    // The write path already records the diagnostic. This read still continues so
+    // a stale-but-readable fallback can be used rather than failing the request.
+    console.debug("[GPT AntiCurse] Pending session fallback write failed before read", key, error);
+  });
   try {
     const saved = await browser.storage.session.get(key);
     return saved && saved[key] != null ? saved[key] : null;
