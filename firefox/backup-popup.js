@@ -1,9 +1,18 @@
 "use strict";
 (() => {
   const ext = typeof browser !== "undefined" ? browser : chrome;
-  // Chrome 148+ also exposes `browser`, so detect Firefox from the packaged manifest.
   const extensionManifest = ext.runtime.getManifest();
+  // Package target and actual runtime browser are intentionally separate. Chrome
+  // 148+ exposes `browser`, while a Firefox package can also be loaded manually
+  // into Chromium far enough for content scripts/popup code to run.
   const IS_FIREFOX = !!(extensionManifest.browser_specific_settings && extensionManifest.browser_specific_settings.gecko);
+  const PACKAGE_TARGET = IS_FIREFOX ? "firefox" : "chromium";
+  const RUNTIME_BROWSER = /Firefox\//.test(String(navigator.userAgent || "")) ? "firefox" : "chromium";
+  const BACKGROUND_KIND = extensionManifest.background && extensionManifest.background.service_worker
+    ? "service_worker"
+    : extensionManifest.background && Array.isArray(extensionManifest.background.scripts)
+      ? "scripts"
+      : "none";
   const diagnostics = globalThis.CGAntiCurseDiagnostics;
   const CHATGPT_ORIGIN = "https://chatgpt.com/*";
   const toggle = document.getElementById("archiveEnabled");
@@ -45,6 +54,23 @@
     } catch (error) {
       await recordIssue("bridge", "host-access-check-failed", error);
       return false;
+    }
+  }
+  async function probeRuntimeHostAccess(activeTab) {
+    if (RUNTIME_BROWSER !== "chromium" || !isChatGPTTab(activeTab) || typeof chrome === "undefined" || !chrome.permissions) return null;
+    try {
+      return await chrome.permissions.contains({ origins: [CHATGPT_ORIGIN] });
+    } catch (error) {
+      return { error: errorText(error) };
+    }
+  }
+  async function backgroundHealth() {
+    try {
+      const result = await ext.runtime.sendMessage({ type: "cg-background-health" });
+      if (!result || typeof result !== "object") return { ok: false, reason: "empty-response" };
+      return result;
+    } catch (error) {
+      return { ok: false, reason: "runtime-message-failed", error: errorText(error) };
     }
   }
 
@@ -200,15 +226,19 @@
       extension: {
         name: extensionManifest.name,
         version: extensionManifest.version,
-        browserPath: IS_FIREFOX ? "firefox" : "chromium"
+        packageTarget: PACKAGE_TARGET,
+        runtimeBrowser: RUNTIME_BROWSER,
+        packageRuntimeMatch: PACKAGE_TARGET === RUNTIME_BROWSER,
+        backgroundKind: BACKGROUND_KIND
       },
       browser: { userAgent: navigator.userAgent },
+      backgroundHealth: await backgroundHealth(),
       activeTab: {
         present: !!activeTab,
         id: activeTab && Number.isInteger(activeTab.id) ? activeTab.id : null,
         url: sanitizedTabUrl(activeTab),
         isChatGPT: isChatGPTTab(activeTab),
-        chromeHostAccess: IS_FIREFOX ? null : await hasChromeHostAccess(activeTab)
+        chromeHostAccess: await probeRuntimeHostAccess(activeTab)
       },
       settings: {
         enabled: stored.enabled !== false,

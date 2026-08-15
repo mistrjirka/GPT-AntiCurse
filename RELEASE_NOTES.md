@@ -1,33 +1,42 @@
-# GPT AntiCurse v0.5.16
+# GPT AntiCurse v0.5.17
 
-Chromium 148+ compatibility and response-shape diagnostics.
+History retry-storm fix, background-health diagnostics, and Firefox event-page hardening.
 
-## Chrome 148+ browser namespace compatibility
+## Stop background retry storms
 
-- Chrome 148+ exposes the WebExtensions `browser` namespace in addition to `chrome`, so `typeof browser !== "undefined"` can no longer be used to identify Firefox.
-- History routing and popup/debug browser detection now use the packaged manifest's Firefox-specific `browser_specific_settings.gecko` marker instead.
-- Restores Chromium's fast transient MAIN-to-ISOLATED history path on modern Chrome instead of incorrectly taking the Firefox background-history path.
-- Restores Chrome host-access detection in the popup on modern Chrome.
-- Debug reports now identify modern Chrome as `chromium` rather than `firefox`.
+- Fixes a self-sustaining history-request loop exposed by a real Chrome debug report with hundreds of thousands of coalesced `runtime-request-failed` diagnostics.
+- Root cause: the history controller reacted to every `storage.local` change. A failed request recorded a diagnostic, that diagnostic write triggered another history request, and the cycle repeated.
+- History now reacts only to the three settings that actually affect it: `enabled`, `mode`, and `maxDisplayMessages`.
+- Background history requests are single-flight, so overlapping triggers share one request.
+- Transport failures use exponential cooldown from 1 second up to 30 seconds and recover immediately after a successful response/history delivery.
 
-## Recovered diagnostics
+## Better Chrome service-worker diagnosis
 
-- A later valid Chromium conversation graph now clears stale `unsupported-conversation-shape`, transform, or JSON-parse diagnostics.
-- Recovery clearing is code-specific, so a successful trim cannot accidentally erase an unrelated archive/storage issue.
-- A valid `below-limit` response counts as recovery even when no nodes need trimming.
+- The Chromium service worker now registers a minimal `cg-background-health` listener before importing the rest of the worker modules.
+- If an imported background module throws during startup, a debug report can still identify the worker as `import-failed` and include the startup error instead of only `Receiving end does not exist`.
+- Debug reports separately record:
+  - `packageTarget`: Chromium or Firefox package/manifest;
+  - `runtimeBrowser`: actual Chrome/Chromium or Firefox browser from the browser UA;
+  - `backgroundKind`: MV3 `service_worker` or background `scripts`;
+  - live `backgroundHealth`.
+- This removes ambiguity when extension package identity and the browser running it do not match.
 
-## Response-shape diagnostics
+## Firefox review and hardening
 
-- Unsupported successful conversation responses now record content-free structural metadata: HTTP status/content type, top-level keys, mapping type/count, and current-node presence.
-- Non-success HTTP responses are passed through as `http-status` rather than being mislabeled as a ChatGPT schema incompatibility.
-- Unsupported response objects are not published as transient conversation archives.
+- Firefox history routing remains manifest/package based; Chromium-specific diagnostics do not alter the Firefox architecture.
+- Firefox continues to synchronously attach `filterResponseData()` and waits for authoritative settings before transforming the buffered response.
+- Firefox `storage.session` remains a fallback across nonpersistent background/event-page recreation, but large conversation history is no longer copied there on every successful response.
+- The content script normally receives and retains the full history directly. The large history object is written to the 10 MB session fallback only when direct delivery misses during startup.
+- Session fallback writes are serialized per key so a late write cannot race a newer remove/update.
+- Firefox exposes the same background-health probe for diagnostics without changing its interception path.
 
 ## Regression coverage
 
-- Adds permanent checks preventing `browser` namespace presence from being reused as Firefox detection.
-- Existing Chromium Recent/Auto, hydration, native-fidelity, Firefox interception/paging, Firefox fidelity, lifecycle, silent-catch, archive and virtualization tests remain release gates.
+- Adds an executable regression that reproduces the failed-request → diagnostic-storage-write feedback mechanism and fires 1,000 unrelated storage changes; the history request count must remain bounded.
+- The same regression separately models Chromium package/Chromium runtime, Firefox package/Firefox runtime, and Firefox package executing in Chromium so package identity and runtime identity cannot be conflated again.
+- Existing Chromium Recent/Auto, hydration, native-fidelity, Firefox interception/paging, and Firefox native-fidelity E2Es remain release gates.
 
 ## Privacy
 
-- Shape diagnostics contain structural metadata only, never conversation message text.
+- Health diagnostics contain browser/extension state and error metadata only, never conversation message text.
 - No telemetry and no remote extension code.

@@ -28,9 +28,10 @@ const LIMITED_MODES = new Set(["recent", "windowed-visible"]);
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const STATS_KEY_PREFIX = "cg-tab-stats:";
 const HISTORY_KEY_PREFIX = "cg-tab-history:";
+const BACKGROUND_STARTED_AT = new Date().toISOString();
 
 // Hot copies improve the common path while the event page is alive. storage.session
-// is the source-of-truth fallback when Firefox unloads and later recreates it.
+// is a fallback across event-page unloads, not the primary copy of large history.
 let settings = { ...DEFAULT_SETTINGS, archiveEnabled: false };
 let totals = { ...EMPTY_TOTALS };
 let settingsInitialized = false;
@@ -39,6 +40,7 @@ let pendingSettingChanges = Object.create(null);
 let pendingTotalsChange = null;
 const lastStatsByTab = new Map();
 const historyByTab = new Map();
+const sessionWriteQueues = new Map();
 
 function recordIssue(scope, code, error, extra) {
   if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record(scope, code, error, extra);
@@ -119,17 +121,34 @@ function sessionKey(prefix, tabId) {
 }
 
 function cacheSession(prefix, tabId, value, code) {
-  if (tabId < 0 || !browser.storage.session) return;
+  if (tabId < 0 || !browser.storage.session) return Promise.resolve(false);
   const key = sessionKey(prefix, tabId);
-  const operation = value == null
+  const previous = sessionWriteQueues.get(key) || Promise.resolve();
+  const operation = previous.catch((error) => {
+    console.debug("[GPT AntiCurse] Continuing session cache queue after a failed write", key, error);
+  }).then(() => value == null
     ? browser.storage.session.remove(key)
-    : browser.storage.session.set({ [key]: value });
-  operation.catch((error) => recordIssue("session", code, error, { tabId }));
+    : browser.storage.session.set({ [key]: value }));
+  sessionWriteQueues.set(key, operation);
+  const cleanup = () => {
+    if (sessionWriteQueues.get(key) === operation) sessionWriteQueues.delete(key);
+  };
+  operation.then(cleanup, cleanup);
+  return operation.then(() => true).catch((error) => {
+    recordIssue("session", code, error, { tabId });
+    return false;
+  });
 }
 
 async function readSession(prefix, tabId, code) {
   if (tabId < 0 || !browser.storage.session) return null;
   const key = sessionKey(prefix, tabId);
+  const pending = sessionWriteQueues.get(key);
+  if (pending) await pending.catch((error) => {
+    // The write path already records the diagnostic. This read still continues so
+    // a stale-but-readable fallback can be used rather than failing the request.
+    console.debug("[GPT AntiCurse] Pending session fallback write failed before read", key, error);
+  });
   try {
     const saved = await browser.storage.session.get(key);
     return saved && saved[key] != null ? saved[key] : null;
@@ -179,9 +198,10 @@ function publishStats(tabId, rawStats) {
   if (tabId < 0) return;
   const stats = recordTotals(rawStats);
   lastStatsByTab.set(tabId, stats);
+  // Stats are small and the Firefox popup reads them from the event page, so keep
+  // this fallback across event-page unload/recreation.
   cacheSession(STATS_KEY_PREFIX, tabId, stats, "stats-cache-write-failed");
   updateActionBadge(tabId, stats);
-  // Content script may not exist yet; cg-get-stats provides a deterministic fallback.
   browser.tabs.sendMessage(tabId, { type: "cg-stats", stats }).catch((error) => console.debug("[GPT AntiCurse] Early stats delivery skipped", error));
 }
 
@@ -189,9 +209,23 @@ function publishHistory(tabId, history) {
   if (tabId < 0) return;
   if (history) historyByTab.set(tabId, history);
   else historyByTab.delete(tabId);
-  cacheSession(HISTORY_KEY_PREFIX, tabId, history, "history-cache-write-failed");
-  // Content script may not exist yet; cg-get-window-history retrieves retained history later.
-  browser.tabs.sendMessage(tabId, { type: "cg-window-history", history }).catch((error) => console.debug("[GPT AntiCurse] Early history delivery skipped", error));
+
+  if (!history) {
+    cacheSession(HISTORY_KEY_PREFIX, tabId, null, "history-cache-remove-failed");
+    browser.tabs.sendMessage(tabId, { type: "cg-window-history", history }).catch((error) => console.debug("[GPT AntiCurse] Early empty-history delivery skipped", error));
+    return;
+  }
+
+  // The content script is normally present from document_start and retains the
+  // full old-history payload in its own page lifetime. Only copy that potentially
+  // huge object into Firefox's 10 MB storage.session fallback when direct delivery
+  // actually missed the content script during startup.
+  browser.tabs.sendMessage(tabId, { type: "cg-window-history", history }).then(() => {
+    cacheSession(HISTORY_KEY_PREFIX, tabId, null, "history-cache-remove-failed");
+  }).catch((error) => {
+    console.debug("[GPT AntiCurse] Early history delivery skipped; caching session fallback", error);
+    cacheSession(HISTORY_KEY_PREFIX, tabId, history, "history-cache-write-failed");
+  });
 }
 
 function buildHistoryArchive(parsed, transformed, mode, limit) {
@@ -440,6 +474,19 @@ browser.webRequest.onBeforeRequest.addListener(
 
 browser.runtime.onMessage.addListener((message, sender) => {
   if (!message) return undefined;
+  if (message.type === "cg-background-health") {
+    return Promise.resolve({
+      ok: !initializationFailed,
+      phase: initializationFailed ? "settings-failed" : settingsInitialized ? "ready" : "initializing",
+      startedAt: BACKGROUND_STARTED_AT,
+      version: browser.runtime.getManifest().version,
+      settingsInitialized,
+      initializationFailed,
+      hotStatsTabs: lastStatsByTab.size,
+      hotHistoryTabs: historyByTab.size,
+      sessionWritesPending: sessionWriteQueues.size
+    });
+  }
   if (message.type === "cg-get-stats") {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
     const hot = lastStatsByTab.get(tabId);
@@ -480,6 +527,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
 browser.tabs.onRemoved.addListener((tabId) => {
   lastStatsByTab.delete(tabId);
   historyByTab.delete(tabId);
+  sessionWriteQueues.delete(sessionKey(STATS_KEY_PREFIX, tabId));
+  sessionWriteQueues.delete(sessionKey(HISTORY_KEY_PREFIX, tabId));
   if (browser.storage.session) {
     browser.storage.session.remove([
       sessionKey(STATS_KEY_PREFIX, tabId),
