@@ -44,6 +44,16 @@
     }
   }
 
+  function historyControllerState() {
+    const controller = globalThis.CGAntiCurseHistoryDebug;
+    if (!controller || typeof controller.debug !== "function") return { present: !!controller };
+    try {
+      return { present: true, ...controller.debug() };
+    } catch (error) {
+      return { present: true, debugError: String(error && error.message ? error.message : error) };
+    }
+  }
+
   async function snapshot() {
     const saved = await ext.storage.local.get({
       enabled: true,
@@ -102,6 +112,7 @@
         mountedPages: host ? host.querySelectorAll(".cg-history-page").length : 0,
         syntheticTurns: host ? host.querySelectorAll(".cg-history-turn").length : 0
       },
+      historyController: historyControllerState(),
       archiveBridge: bridgeState,
       backendHistory: await backendHistory(id, Number(saved.maxDisplayMessages) || 64),
       lastIssue: saved.cgLastIssue || null
