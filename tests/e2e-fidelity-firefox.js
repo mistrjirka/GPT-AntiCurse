@@ -87,6 +87,7 @@ html,body{margin:0;height:100%;font-family:system-ui,sans-serif}
 .native-assistant-body{display:flex;width:100%;flex-direction:column;gap:4px}
 .native-markdown{width:100%;line-height:24px}
 .native-user-body{display:flex;width:100%;flex-direction:column;align-items:flex-end}
+.native-user-attachment{width:120px;height:24px}
 .native-user-bubble{max-width:70%;border-radius:22px;padding:10px 16px;background:#ececec}
 .native-user-text{white-space:pre-wrap}
 .native-activity-marker{width:100%}
@@ -124,9 +125,12 @@ html,body{margin:0;height:100%;font-family:system-ui,sans-serif}
     message.setAttribute('data-message-author-role',r);
     if(r==='user'){
       const body=document.createElement('div'); body.className='native-user-body flex w-full flex-col gap-1 items-end';
-      const bubble=document.createElement('div'); bubble.className='native-user-bubble user-message-bubble-color max-w-(--user-chat-width,70%)';
+      // Match the live ChatGPT shape that exposed the bug: attachments/files can
+      // come before the textual user bubble inside the same message body.
+      const attachment=document.createElement('div'); attachment.className='native-user-attachment flex flex-row items-center justify-end gap-1 max-w-72'; attachment.textContent='attachment preview';
+      const bubble=document.createElement('div'); bubble.className='native-user-bubble user-message-bubble-color max-w-(--user-chat-width,70%) leading-6 rounded-[22px]';
       const inner=document.createElement('div'); inner.className='native-user-text max-w-full min-w-0 whitespace-pre-wrap'; inner.textContent=text;
-      bubble.append(inner); body.append(bubble); message.append(body);
+      bubble.append(inner); body.append(attachment,bubble); message.append(body);
     } else {
       const body=document.createElement('div'); body.className='native-assistant-body flex w-full flex-col gap-1';
       const md=document.createElement('div'); md.className='native-markdown markdown prose dark:prose-invert wrap-break-word w-full dark markdown-new-styling'; md.textContent=text;
@@ -239,13 +243,18 @@ async function waitForValue(driver, script, timeout = 12000) {
     const result = await driver.executeScript(`
       const host=document.querySelector('#cg-window-history-host');
       const archivedAssistant=host.querySelector('.cg-history-turn[data-cg-role="assistant"]');
+      const archivedUser=host.querySelector('.cg-history-turn[data-cg-role="user"]');
       const group=archivedAssistant&&archivedAssistant.querySelector('.cg-history-turn-width');
       const outer=archivedAssistant&&archivedAssistant.querySelector('.cg-history-turn-outer');
+      const userBubble=archivedUser&&archivedUser.querySelector('.cg-history-user-bubble');
+      const userText=userBubble&&userBubble.firstElementChild;
       const activity=host.querySelector('.cg-history-activity');
       return {
         fidelity: archivedAssistant&&archivedAssistant.getAttribute('data-cg-fidelity'),
         groupClass: group&&group.className,
         outerClass: outer&&outer.className,
+        userBubbleClass: userBubble&&userBubble.className,
+        userTextClass: userText&&userText.className,
         nativeWidth: document.querySelector('#thread .native-group-marker')?.getBoundingClientRect().width || 0,
         archivedWidth: group&&group.getBoundingClientRect().width,
         activityClass: activity&&activity.className,
@@ -259,6 +268,9 @@ async function waitForValue(driver, script, timeout = 12000) {
     assert.equal(result.fidelity, "native-v1", "Firefox archived turn must pass through native fidelity transformation");
     assert(result.groupClass.includes("native-group-marker"), `Firefox archive must inherit live native group classes: ${result.groupClass}`);
     assert(result.outerClass.includes("native-outer-marker"), `Firefox archive must inherit live native outer classes: ${result.outerClass}`);
+    assert(result.userBubbleClass.includes("native-user-bubble"), `Firefox archived user text must inherit the actual native text bubble: ${result.userBubbleClass}`);
+    assert(!result.userBubbleClass.includes("native-user-attachment"), `Firefox attachment row must never be sampled as the user bubble: ${result.userBubbleClass}`);
+    assert(result.userTextClass.includes("native-user-text"), `Firefox archived user text must inherit the native text-node class: ${result.userTextClass}`);
     assert(Math.abs(result.nativeWidth - result.archivedWidth) < 1.5, `Firefox archived/native widths should match: ${JSON.stringify(result)}`);
     assert(result.activityClass.includes("native-activity-marker"), `Firefox archive should inherit live activity-row class: ${result.activityClass}`);
     assert(result.activityText && result.activityText.includes("Development Sandbox"), `legacy Firefox tool call should become compact activity: ${JSON.stringify(result)}`);
