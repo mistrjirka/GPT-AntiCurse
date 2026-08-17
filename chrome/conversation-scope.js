@@ -2,33 +2,19 @@
 (function (global) {
   "use strict";
 
-  function defaultConversationId() {
-    // Chromium isolated worlds reliably expose page globals through lexical host
-    // bindings. Avoid reading browser-owned properties through the globalThis
-    // proxy; extension-owned test contexts can inject getId/getUrl instead.
-    if (typeof CGArchive !== "undefined" &&
-        CGArchive && typeof CGArchive.conversationIdFromUrl === "function" &&
-        typeof location !== "undefined" && location) {
-      return CGArchive.conversationIdFromUrl(location.href);
+  function currentConversationId() {
+    if (typeof location === "undefined" || !location) return null;
+    const match = String(location.pathname || "").match(/(?:^|\/)c\/([^/?#]+)/);
+    if (!match) return null;
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (_) {
+      return null;
     }
-    return null;
   }
 
   function create(options = {}) {
-    let getId;
-    if (typeof options.getId === "function") {
-      getId = options.getId;
-    } else if (typeof options.getUrl === "function") {
-      const parseId = typeof options.parseId === "function"
-        ? options.parseId
-        : (url) => global.CGArchive && typeof global.CGArchive.conversationIdFromUrl === "function"
-          ? global.CGArchive.conversationIdFromUrl(url)
-          : null;
-      getId = () => parseId(options.getUrl());
-    } else {
-      getId = defaultConversationId;
-    }
-
+    const getId = typeof options.getId === "function" ? options.getId : currentConversationId;
     let id = getId();
     let generation = 0;
 
