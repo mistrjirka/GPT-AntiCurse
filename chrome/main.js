@@ -94,7 +94,6 @@
       const url = new URL(urlString, location.href);
       return url.origin === location.origin && /^\/backend-api\/conversation\/[^/]+\/?$/.test(url.pathname);
     } catch (error) {
-      // A Response without a parseable URL cannot be the scoped endpoint.
       void error;
       return false;
     }
@@ -192,7 +191,7 @@
     return false;
   }
 
-  function publishArchive(data) {
+  function publishArchive(data, endpointUrl) {
     const buildStarted = performance.now();
     const shape = shapeSummary(data);
     if (!shape.shapeSupported) {
@@ -204,7 +203,9 @@
       };
     }
     try {
-      const archive = CGArchive.createArchive(data, { sourceUrl: location.href });
+      // Bind archive identity/metadata to the response that produced it, not to
+      // whatever SPA route happens to be visible when a slow response finishes.
+      const archive = CGArchive.createArchive(data, { endpointUrl });
       const archiveBuildMs = elapsed(buildStarted);
       if (!archive) {
         publishDiagnostic("archive-build-empty", "The conversation response could not be converted to an archive.");
@@ -259,7 +260,6 @@
     try {
       outputBytes = new TextEncoder().encode(JSON.stringify(transformed.data)).byteLength;
     } catch (error) {
-      // Byte accounting is cosmetic; the graph transformation remains valid.
       console.debug("[GPT AntiCurse] Could not measure transformed response size", error);
       outputBytes = undefined;
     }
@@ -308,6 +308,7 @@
     value: async function antiCurseJson() {
       if (!isConversationDocument(this.url)) return nativeJson.call(this);
 
+      const endpointUrl = this.url;
       const meta = responseMeta(this);
       if (!meta.responseOk) {
         const readStarted = performance.now();
@@ -331,7 +332,7 @@
         ...meta,
         safetyWaitMs,
         responseReadMs: elapsed(readStarted),
-        ...publishArchive(data)
+        ...publishArchive(data, endpointUrl)
       };
 
       if (!settings.enabled || !safeToTransform) {
@@ -355,6 +356,7 @@
     value: async function antiCurseText() {
       if (!isConversationDocument(this.url)) return nativeText.call(this);
 
+      const endpointUrl = this.url;
       const meta = responseMeta(this);
       if (!meta.responseOk) {
         const readStarted = performance.now();
@@ -393,7 +395,7 @@
         safetyWaitMs,
         responseReadMs,
         jsonParseMs,
-        ...publishArchive(data)
+        ...publishArchive(data, endpointUrl)
       };
       if (!settings.enabled || !safeToTransform) {
         reportStartupPassthrough("chromium-response-text", trace);
@@ -410,7 +412,5 @@
     }
   });
 
-  // The isolated settings bridge also publishes proactively after storage loads;
-  // this request only handles the case where it was already ready first.
   publish("settings-request", {});
 })();
