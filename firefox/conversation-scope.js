@@ -3,10 +3,11 @@
   "use strict";
 
   function defaultUrl() {
-    // In Chromium extension isolated worlds, the Window proxy exposed as
-    // `globalThis` may not reliably surface `location`, while document.location
-    // still refers to the page URL. Keep the fallback for unit/non-DOM contexts.
-    if (global.document && global.document.location) return global.document.location.href;
+    // Chromium isolated worlds expose page globals such as `location` through
+    // lexical host bindings even when the `globalThis` proxy does not surface
+    // the same property. Use that binding first; the explicit global fallback
+    // keeps this helper usable in unit/non-DOM contexts too.
+    if (typeof location !== "undefined" && location && location.href) return location.href;
     return global.location && global.location.href;
   }
 
