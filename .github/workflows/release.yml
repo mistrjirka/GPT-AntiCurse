@@ -32,6 +32,7 @@ jobs:
           cmp firefox/trim.js chrome/trim.js
           cmp firefox/trim-logical.js chrome/trim-logical.js
           cmp firefox/archive.js chrome/archive.js
+          cmp firefox/conversation-scope.js chrome/conversation-scope.js
           cmp firefox/archive-export.js chrome/archive-export.js
           cmp firefox/archive-export.css chrome/archive-export.css
           cmp firefox/archive-store.js chrome/archive-store.js
