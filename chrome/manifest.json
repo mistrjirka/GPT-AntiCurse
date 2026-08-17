@@ -4,6 +4,12 @@
   "version": "0.5.18",
   "description": "Makes very long ChatGPT conversations responsive by shrinking invisible conversation state before page JavaScript processes it.",
   "minimum_chrome_version": "111",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": ["storage", "tabs", "unlimitedStorage"],
   "host_permissions": ["https://chatgpt.com/*"],
   "content_scripts": [
@@ -21,6 +27,13 @@
       "world": "ISOLATED"
     }
   ],
-  "action": {"default_title": "GPT AntiCurse", "default_popup": "popup.html"},
+  "action": {
+    "default_title": "GPT AntiCurse",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
   "background": {"service_worker": "background-entry.js"}
 }
