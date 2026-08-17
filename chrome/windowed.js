@@ -3,9 +3,6 @@
   "use strict";
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
-  // Package identity decides which AntiCurse history architecture is available.
-  // Runtime browser is recorded separately for diagnostics because Chrome 148+
-  // also exposes the `browser` namespace.
   const extensionManifest = ext.runtime.getManifest();
   const IS_FIREFOX = !!(extensionManifest.browser_specific_settings && extensionManifest.browser_specific_settings.gecko);
   const PACKAGE_TARGET = IS_FIREFOX ? "firefox" : "chromium";
@@ -18,12 +15,12 @@
   const HISTORY_RETRY_BASE_MS = 1000;
   const HISTORY_RETRY_MAX_MS = 30000;
   const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
+  const scope = globalThis.CGConversationScope.create();
 
   let settings = { ...DEFAULT_SETTINGS };
   let history = null;
   let historyConversationId = null;
   let historyKey = "none";
-  let activeConversationId = null;
   let nativeScroller = null;
   let nativeEventTarget = null;
   let rootStateObserver = null;
@@ -36,8 +33,7 @@
   let suppressAutoUntil = 0;
   let initialPositionSettled = false;
   let userInteracted = false;
-  let historyRequestPromise = null;
-  let historyRequestGeneration = 0;
+  let historyRequest = null;
   let historyFailureStreak = 0;
   let historyRetryAt = 0;
 
@@ -83,19 +79,6 @@
     };
   }
 
-  function conversationId() {
-    if (globalThis.CGArchive && typeof CGArchive.conversationIdFromUrl === "function") return CGArchive.conversationIdFromUrl(location.href);
-    const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/);
-    return match ? decodeURIComponent(match[1]) : null;
-  }
-
-  activeConversationId = conversationId();
-
-  function historyMatchesCurrentConversation() {
-    const id = conversationId();
-    return !!history && !!id && historyConversationId === id;
-  }
-
   function rawVisibleWindowCount(messages, requestedLimit) {
     const limit = normalizeLimit(requestedLimit);
     if (!Array.isArray(messages) || !messages.length) return 0;
@@ -135,12 +118,11 @@
     };
   }
 
-  function transientHistory() {
-    if (IS_FIREFOX) return null;
+  function transientHistory(token) {
+    if (IS_FIREFOX || !token || !token.id) return null;
     const bridge = globalThis.CGAntiCurseArchiveBridge;
-    const id = conversationId();
-    if (!bridge || typeof bridge.get !== "function" || !id) return null;
-    return historyFromArchive(bridge.get(id));
+    if (!bridge || typeof bridge.get !== "function") return null;
+    return historyFromArchive(bridge.get(token.id));
   }
 
   function firstNativeTurn() {
@@ -202,6 +184,43 @@
     nativeEventTarget = null;
     nativeScroller = null;
     lastFromTop = null;
+  }
+
+  function stopShellObserver() {
+    if (shellObserver) shellObserver.disconnect();
+    shellObserver = null;
+    if (shellRefreshRaf) cancelAnimationFrame(shellRefreshRaf);
+    shellRefreshRaf = 0;
+  }
+
+  function clearHistoryState() {
+    if (historyWatchdog) clearTimeout(historyWatchdog);
+    historyWatchdog = 0;
+    detachNativeWatch();
+    stopShellObserver();
+    reader.destroy();
+    history = null;
+    historyConversationId = null;
+    historyKey = "none";
+    historyRequest = null;
+    lastNativeTop = 0;
+    lastFromTop = null;
+    autoArmed = false;
+    suppressAutoUntil = 0;
+    initialPositionSettled = false;
+    userInteracted = false;
+    resetHistoryBackoff();
+  }
+
+  function syncConversationScope() {
+    if (!scope.sync()) return false;
+    clearHistoryState();
+    return true;
+  }
+
+  function historyMatchesCurrentConversation() {
+    const id = scope.currentId();
+    return !!history && !!id && historyConversationId === id;
   }
 
   function canAutoLoad() {
@@ -292,13 +311,6 @@
     shellObserver.observe(root, { childList: true, subtree: true });
   }
 
-  function stopShellObserver() {
-    if (shellObserver) shellObserver.disconnect();
-    shellObserver = null;
-    if (shellRefreshRaf) cancelAnimationFrame(shellRefreshRaf);
-    shellRefreshRaf = 0;
-  }
-
   function onNativeScroll() {
     if (!nativeScroller) return;
     if (syncConversationScope()) {
@@ -332,42 +344,61 @@
     }
   }
 
+  function textSignature(value) {
+    const text = String(value || "");
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index++) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${text.length}:${hash >>> 0}`;
+  }
+
   function snapshotKey(value) {
     if (!value || !Array.isArray(value.messages)) return "none";
     const messages = value.messages;
     const first = messages[0] || {};
     const last = messages[messages.length - 1] || {};
-    return [value.conversationId || "", messages.length, Number(value.nativeVisibleCount) || 0, Number(value.pageSize) || 0,
-      first.id || "", first.role || "", last.id || "", last.role || "", String(last.text || "")].join("\u001f");
+    return [
+      value.conversationId || "",
+      messages.length,
+      Number(value.nativeVisibleCount) || 0,
+      Number(value.pageSize) || 0,
+      first.id || "",
+      first.role || "",
+      last.id || "",
+      last.role || "",
+      textSignature(last.text)
+    ].join("\u001f");
   }
 
-  function applyHistory(value, expectedConversationId = null) {
-    const nextHistory = value && Array.isArray(value.messages) ? value : null;
-    const nextConversationId = value && typeof value.conversationId === "string" && value.conversationId
-      ? value.conversationId
-      : expectedConversationId;
-    const currentId = conversationId();
-    if (!nextHistory || !nextConversationId || !currentId || nextConversationId !== currentId) return false;
-
-    if (activeConversationId !== currentId) {
-      activeConversationId = currentId;
-      clear();
+  function applyHistory(value, token) {
+    if (!scope.isCurrent(token) || !token.id || !value || !Array.isArray(value.messages)) return false;
+    const replyId = typeof value.conversationId === "string" && value.conversationId ? value.conversationId : token.id;
+    if (replyId !== token.id) {
+      recordIssue("conversation-mismatch", "History reply belonged to a different conversation.", {
+        requestedConversationId: token.id,
+        replyConversationId: replyId
+      });
+      return false;
     }
 
-    const nextKey = snapshotKey({ ...nextHistory, conversationId: nextConversationId });
+    const nextHistory = value;
+    const nextKey = snapshotKey({ ...nextHistory, conversationId: replyId });
     reader.setMode(settings.mode);
     resetHistoryBackoff();
-    if (history && historyConversationId === nextConversationId && historyKey === nextKey) {
+
+    if (history && historyConversationId === replyId && historyKey === nextKey) {
       history = nextHistory;
-      historyConversationId = nextConversationId;
       if (settings.enabled) attachNativeWatch();
       return true;
     }
 
     history = nextHistory;
-    historyConversationId = nextConversationId;
+    historyConversationId = replyId;
     historyKey = nextKey;
     initialPositionSettled = false;
+    userInteracted = false;
     reader.setHistory(history);
     if (historyWatchdog) clearTimeout(historyWatchdog);
     historyWatchdog = 0;
@@ -384,52 +415,25 @@
     return true;
   }
 
-  function clear() {
-    if (historyWatchdog) clearTimeout(historyWatchdog);
-    historyWatchdog = 0;
-    detachNativeWatch();
-    stopShellObserver();
-    reader.destroy();
-    history = null;
-    historyConversationId = null;
-    historyKey = "none";
-    initialPositionSettled = false;
-    historyRequestGeneration++;
-    historyRequestPromise = null;
-    resetHistoryBackoff();
-  }
-
-  function syncConversationScope() {
-    const nextId = conversationId();
-    if (nextId === activeConversationId) return false;
-    activeConversationId = nextId;
-    clear();
-    return true;
-  }
-
-  async function performHistoryRequest(id, generation) {
-    if (!id) return false;
-
+  async function performHistoryRequest(token) {
     try {
       const value = await ext.runtime.sendMessage({
         type: "cg-get-window-history",
-        conversationId: id,
+        conversationId: token.id,
         maxDisplayMessages: settings.maxDisplayMessages
       });
-      if (generation !== historyRequestGeneration || conversationId() !== id || activeConversationId !== id) return false;
-      // Any response means the receiver is alive. Archive-not-found is not a
-      // transport failure and therefore must not keep the retry cooldown active.
+      if (!scope.isCurrent(token)) return false;
+
       resetHistoryBackoff();
       if (value && value.ok === false) {
-        if (value.reason !== "archive-not-found" && value.reason !== "missing-conversation-id" && value.reason !== "conversation-mismatch") {
+        if (!["archive-not-found", "missing-conversation-id", "conversation-mismatch"].includes(value.reason)) {
           recordIssue(value.reason || "background-history-failed", value.error || value.reason || "History request failed");
         }
         return false;
       }
-      if (!value || !Array.isArray(value.messages)) return false;
-      return applyHistory(value, id);
+      return applyHistory(value, token);
     } catch (error) {
-      if (generation !== historyRequestGeneration || conversationId() !== id || activeConversationId !== id) return false;
+      if (!scope.isCurrent(token)) return false;
       const retryInMs = noteHistoryFailure();
       recordIssue("runtime-request-failed", error, { failureStreak: historyFailureStreak, retryInMs });
       return false;
@@ -439,31 +443,32 @@
   function requestHistory() {
     if (!settings.enabled) return Promise.resolve(false);
     syncConversationScope();
-    const id = activeConversationId;
-    if (!id) return Promise.resolve(false);
+    const token = scope.snapshot();
+    if (!token.id) return Promise.resolve(false);
 
-    const transient = transientHistory();
-    if (transient) return Promise.resolve(applyHistory(transient, id));
+    const transient = transientHistory(token);
+    if (transient) return Promise.resolve(applyHistory(transient, token));
 
-    if (historyRequestPromise) return historyRequestPromise;
+    if (historyRequest && scope.isCurrent(historyRequest.token)) return historyRequest.promise;
     if (performance.now() < historyRetryAt) return Promise.resolve(false);
 
-    const generation = historyRequestGeneration;
-    const promise = performHistoryRequest(id, generation);
-    historyRequestPromise = promise;
-    promise.finally(() => {
-      if (historyRequestPromise === promise) historyRequestPromise = null;
+    const request = { token, promise: null };
+    request.promise = performHistoryRequest(token).finally(() => {
+      if (historyRequest === request) historyRequest = null;
     });
-    return promise;
+    historyRequest = request;
+    return request.promise;
   }
 
   function scheduleHistoryWatchdog(reason) {
-    if (history || !settings.enabled || !conversationId()) return;
+    const token = scope.snapshot();
+    if (history || !settings.enabled || !token.id) return;
     if (historyWatchdog) clearTimeout(historyWatchdog);
     historyWatchdog = setTimeout(() => {
       historyWatchdog = 0;
-      if (!history && settings.enabled && conversationId()) {
+      if (scope.isCurrent(token) && !history && settings.enabled) {
         recordIssue("missing-after-trim", "Conversation trimming succeeded but no archived history reached the UI.", {
+          conversationId: token.id,
           mode: settings.mode,
           limit: settings.maxDisplayMessages,
           trigger: reason || "trimmed-stats"
@@ -477,11 +482,11 @@
       return {
         packageTarget: PACKAGE_TARGET,
         runtimeBrowser: RUNTIME_BROWSER,
-        activeConversationId,
+        conversationId: scope.currentId(),
         historyConversationId,
         historyPresent: !!history,
         historySource: history && history.source ? history.source : null,
-        requestInFlight: !!historyRequestPromise,
+        requestInFlight: !!historyRequest,
         failureStreak: historyFailureStreak,
         retryInMs: historyRetryAt > performance.now() ? Math.ceil(historyRetryAt - performance.now()) : 0
       };
@@ -519,9 +524,6 @@
   ext.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     const settingsChanged = !!(changes.enabled || changes.mode || changes.maxDisplayMessages);
-    // Diagnostics, counters, and archive bookkeeping also write storage.local.
-    // Reacting to those writes here creates a request -> diagnostic -> storage
-    // feedback loop when the background receiver is unavailable.
     if (!settingsChanged) return;
 
     const next = { ...settings };
@@ -531,7 +533,7 @@
     applySavedSettings(next);
     reader.setMode(settings.mode);
     resetHistoryBackoff();
-    if (!settings.enabled) clear();
+    if (!settings.enabled) clearHistoryState();
     else requestHistory();
   });
 
@@ -542,8 +544,9 @@
       sendResponse(result);
       return false;
     }
-    if (IS_FIREFOX && message && message.type === "cg-window-history") {
-      applyHistory(message.history, message.history && message.history.conversationId);
+    if (IS_FIREFOX && message && message.type === "cg-window-history" && message.history) {
+      const token = scope.snapshot();
+      if (message.history.conversationId === token.id) applyHistory(message.history, token);
     }
     return undefined;
   });
