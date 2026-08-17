@@ -4,11 +4,7 @@
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const DOM_GATE = globalThis.CGAntiCurseDomReady;
-
-  function conversationId() {
-    const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/);
-    return match ? decodeURIComponent(match[1]) : null;
-  }
+  const scope = globalThis.CGConversationScope.create();
 
   function findScroller() {
     const marked = document.querySelector("[data-scroll-root]");
@@ -23,6 +19,7 @@
       reason: value.reason || null,
       error: value.error || null,
       source: value.source || null,
+      conversationId: value.conversationId || null,
       messageCount: Array.isArray(value.messages) ? value.messages.length : 0,
       nativeVisibleCount: Number.isFinite(Number(value.nativeVisibleCount)) ? Number(value.nativeVisibleCount) : null,
       pageSize: Number.isFinite(Number(value.pageSize)) ? Number(value.pageSize) : null,
@@ -64,7 +61,7 @@
       archiveExportLevel: "progress",
       cgLastIssue: null
     });
-    const id = conversationId();
+    const id = scope.currentId();
     const scroller = findScroller();
     const thread = document.querySelector("#thread");
     const host = document.querySelector("#cg-window-history-host");
