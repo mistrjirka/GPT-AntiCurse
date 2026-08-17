@@ -135,6 +135,7 @@ async function getWindowHistory(message, sender) {
 
   return {
     ok: true,
+    conversationId,
     messages,
     nativeVisibleCount: rawVisibleWindowCount(messages, limit),
     pageSize: limit,
