@@ -131,9 +131,17 @@
       return false;
     }
 
-    latestNetworkArchive = archive;
-    confirmConversation(archive.id);
-    window.dispatchEvent(new Event(NETWORK_ARCHIVE_EVENT));
+    resetForConversationChange();
+    const currentId = scope.currentId();
+    // An out-of-order response for an older SPA route may still be useful as a
+    // persistent backup, but it must never replace the transient archive used by
+    // the currently displayed conversation. An unbound `/` route is allowed so
+    // a newly-created chat can be promoted when ChatGPT changes the URL to /c/id.
+    if (!currentId || archive.id === currentId) {
+      latestNetworkArchive = archive;
+      confirmConversation(archive.id);
+      window.dispatchEvent(new Event(NETWORK_ARCHIVE_EVENT));
+    }
 
     if (!archiveSettingsReady) {
       pendingNetworkArchive = archive;
