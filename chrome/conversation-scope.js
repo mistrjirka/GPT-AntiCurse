@@ -2,28 +2,38 @@
 (function (global) {
   "use strict";
 
-  function defaultUrl() {
-    // Chromium isolated worlds expose page globals such as `location` through
-    // lexical host bindings even when the `globalThis` proxy does not surface
-    // the same property. Use that binding first; the explicit global fallback
-    // keeps this helper usable in unit/non-DOM contexts too.
-    if (typeof location !== "undefined" && location && location.href) return location.href;
-    return global.location && global.location.href;
+  function defaultConversationId() {
+    // Chromium isolated worlds reliably expose page globals through lexical host
+    // bindings. Avoid reading browser-owned properties through the globalThis
+    // proxy; extension-owned test contexts can inject getId/getUrl instead.
+    if (typeof CGArchive !== "undefined" &&
+        CGArchive && typeof CGArchive.conversationIdFromUrl === "function" &&
+        typeof location !== "undefined" && location) {
+      return CGArchive.conversationIdFromUrl(location.href);
+    }
+    return null;
   }
 
   function create(options = {}) {
-    const getUrl = typeof options.getUrl === "function" ? options.getUrl : defaultUrl;
-    const parseId = typeof options.parseId === "function"
-      ? options.parseId
-      : (url) => global.CGArchive && typeof global.CGArchive.conversationIdFromUrl === "function"
-        ? global.CGArchive.conversationIdFromUrl(url)
-        : null;
+    let getId;
+    if (typeof options.getId === "function") {
+      getId = options.getId;
+    } else if (typeof options.getUrl === "function") {
+      const parseId = typeof options.parseId === "function"
+        ? options.parseId
+        : (url) => global.CGArchive && typeof global.CGArchive.conversationIdFromUrl === "function"
+          ? global.CGArchive.conversationIdFromUrl(url)
+          : null;
+      getId = () => parseId(options.getUrl());
+    } else {
+      getId = defaultConversationId;
+    }
 
-    let id = parseId(getUrl());
+    let id = getId();
     let generation = 0;
 
     function sync() {
-      const next = parseId(getUrl());
+      const next = getId();
       if (next === id) return false;
       id = next;
       generation++;
