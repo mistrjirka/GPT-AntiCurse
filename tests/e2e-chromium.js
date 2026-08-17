@@ -172,6 +172,19 @@ async function configure(worker, mode) {
   }, { mode });
 }
 
+async function contentDebug(worker) {
+  return worker.evaluate(async () => {
+    const tabs = await chrome.tabs.query({ url: "https://chatgpt.com/*" });
+    const tab = tabs[tabs.length - 1];
+    if (!tab) return { ok: false, error: "fixture tab not found" };
+    try {
+      return await chrome.tabs.sendMessage(tab.id, { type: "cg-get-debug-state" });
+    } catch (error) {
+      return { ok: false, error: String(error && error.message || error) };
+    }
+  });
+}
+
 async function openFixture(context) {
   const page = await context.newPage();
   await page.goto("https://chatgpt.com/c/e2e", { waitUntil: "domcontentloaded" });
@@ -205,7 +218,12 @@ async function recentPagingTest(context, worker) {
   await assertTrimInvariant(page);
 
   const button = page.locator("#cg-window-history-host .cg-history-previous");
-  await button.waitFor({ state: "visible" });
+  try {
+    await button.waitFor({ state: "visible" });
+  } catch (error) {
+    console.error("history debug", JSON.stringify(await contentDebug(worker)));
+    throw error;
+  }
   assert.equal(await button.textContent(), "Load previous 8");
 
   const marker = page.locator("#cg-window-history-host .cg-history-marker");
