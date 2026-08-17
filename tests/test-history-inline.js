@@ -7,6 +7,7 @@ function source(relative) { return fs.readFileSync(path.join(__dirname, "..", re
 const markdown = source("firefox/history-native.js");
 const virtualized = source("firefox/history-virtualized.js");
 const windowed = source("firefox/windowed.js");
+const conversationScope = source("firefox/conversation-scope.js");
 const domReady = source("firefox/dom-ready.js");
 const historyHydration = source("firefox/history-hydration-safe.js");
 const firefoxContent = source("firefox/content.js");
@@ -48,6 +49,11 @@ assert(historyHydration.includes('reason: "hydration-pending"'), "manual history
 assert(firefoxContent.includes("DOM_GATE && !DOM_GATE.isReady()"), "Firefox status badge must not write DOM during hydration");
 assert(chromeContent.includes("DOM_GATE && !DOM_GATE.isReady()"), "Chromium status badge must not write DOM during hydration");
 
+assert(conversationScope.includes("function snapshot()"), "conversation scope must expose immutable async tokens");
+assert(conversationScope.includes("function isCurrent(token)"), "conversation scope must reject tokens after SPA navigation");
+assert(conversationScope.includes("generation++"), "conversation scope must invalidate prior async work when the route changes");
+assert(windowed.includes("CGConversationScope.create()"), "history controller must use the shared conversation scope");
+assert(windowed.includes("scope.isCurrent(token)"), "history replies must be checked against their original conversation scope");
 assert(windowed.includes('settings.mode === "windowed-visible"'), "auto mode must remain explicit");
 assert(windowed.includes("function snapshotKey"), "history controller must identify equivalent snapshots");
 assert(windowed.includes("historyKey === nextKey"), "equivalent history deliveries must not reset loaded pages");
@@ -60,9 +66,11 @@ assert(windowed.includes("userInteracted"), "initial scroll correction must not 
 assert(windowed.includes("missing-after-trim"), "trim-without-history must become a visible diagnostic rather than a silent missing button");
 
 assert.equal(firefoxArchiveCapture, chromeArchiveCapture, "archive tail capture logic must stay byte-identical across browsers");
-assert(firefoxArchiveCapture.includes("function conversationId()"), "tail capture must derive its conversation id locally from the current page");
-assert(firefoxArchiveCapture.includes('location.pathname.match(/(?:^|\\/)c\\/([^/?#]+)/)'), "tail capture must parse the current /c/<id> pathname itself");
-assert(!/\bCGArchive\b/.test(firefoxArchiveCapture), "tail capture must not depend on a free archive helper global");
+assert(firefoxArchiveCapture.includes("CGConversationScope.create()"), "tail capture must use the shared conversation scope instead of a second parser");
+assert(firefoxArchiveCapture.includes("observedScope"), "DOM observers must stay bound to the conversation generation they were attached to");
+assert(firefoxArchiveCapture.includes("conversationConfirmed"), "SPA tail capture must wait until the current conversation is confirmed");
+assert(!firefoxArchiveCapture.includes("currentConversationId"), "tail capture must not keep a sticky previous-conversation id fallback");
+assert(!/location\.pathname\.match/.test(firefoxArchiveCapture), "tail capture must not duplicate conversation URL parsing");
 assert(firefoxArchiveCapture.includes('type: "cg-merge-rendered-archive"'), "tail capture must still merge rendered updates through the background archive service");
 
 assert(chromeBackground.includes('message.type === "cg-get-window-history"'), "Chromium service worker must serve durable archived history");
@@ -89,12 +97,17 @@ assert(!chromeMainScripts.js.includes("history-replay-main.js"), "Chromium MAIN 
 assert(!chromeUi.js.includes("history-request.js"), "Chromium isolated world must not use page-global history replay timers");
 assert(!chromeUi.js.includes("history-overlay.js"), "superseded shadow/inline history layer must not be packaged");
 assert(chromeUi.js.indexOf("diagnostics.js") < chromeUi.js.indexOf("content.js"), "Chromium diagnostics must exist before code can report failures");
+assert(chromeUi.js.indexOf("archive.js") < chromeUi.js.indexOf("conversation-scope.js"), "conversation scope must load after the canonical conversation-id parser");
+assert(chromeUi.js.indexOf("conversation-scope.js") < chromeUi.js.indexOf("archive-capture.js"), "conversation scope must exist before archive capture");
+assert(chromeUi.js.indexOf("conversation-scope.js") < chromeUi.js.indexOf("windowed.js"), "conversation scope must exist before history control");
 assert(chromeUi.js.indexOf("history-native.js") < chromeUi.js.indexOf("history-virtualized.js"), "Markdown helper must load before the virtualized renderer");
 assert(chromeUi.js.indexOf("history-fidelity.js") < chromeUi.js.indexOf("history-hydration-safe.js"), "Chromium hydration wrapper must wrap the final history renderer");
 assert(chromeUi.js.indexOf("history-hydration-safe.js") < chromeUi.js.indexOf("windowed.js"), "Chromium hydration wrapper must load before the history controller");
 assert(chromeUi.js.indexOf("windowed.js") < chromeUi.js.indexOf("debug-state.js"), "Chromium debug state must observe the final history controller stack");
 assert(firefoxUi.js.indexOf("diagnostics.js") < firefoxUi.js.indexOf("content.js"), "Firefox diagnostics must exist before code can report failures");
 assert(!firefoxUi.js.includes("history-overlay.js"), "Firefox must not package the superseded history layer");
+assert(firefoxUi.js.indexOf("archive.js") < firefoxUi.js.indexOf("conversation-scope.js"), "Firefox conversation scope must load after the canonical parser");
+assert(firefoxUi.js.indexOf("conversation-scope.js") < firefoxUi.js.indexOf("archive-capture.js"), "Firefox conversation scope must exist before archive capture");
 assert(firefoxUi.js.indexOf("history-native.js") < firefoxUi.js.indexOf("history-virtualized.js"), "Firefox Markdown helper must load before virtualized history");
 assert(firefoxUi.js.indexOf("history-fidelity.js") < firefoxUi.js.indexOf("history-hydration-safe.js"), "Firefox hydration wrapper must wrap the final history renderer");
 assert(firefoxUi.js.indexOf("history-hydration-safe.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox hydration wrapper must load before the history controller");
