@@ -61,7 +61,6 @@ function makeHarness({ packageTarget = "chromium", runtimeBrowser = "chromium", 
 
   const context = {
     chrome: extensionApi,
-    // Chrome 148+ exposes the same WebExtensions APIs under `browser` too.
     browser: extensionApi,
     navigator: { userAgent: runtimeBrowser === "firefox" ? "Mozilla/5.0 Firefox/150.0" : "Mozilla/5.0 Chrome/151.0.0.0 Safari/537.36" },
     location: { href: "https://chatgpt.com/c/test-conversation", pathname: "/c/test-conversation" },
@@ -123,17 +122,12 @@ async function settle() {
 }
 
 (async () => {
-  // Scope tokens are invalidated by SPA URL changes without any sticky fallback.
   {
     let url = "https://chatgpt.com/c/a";
-    const sandbox = {
-      location: { get href() { return url; } },
-      CGArchive: { conversationIdFromUrl },
-      module: { exports: {} }
-    };
+    const sandbox = { module: { exports: {} } };
     sandbox.globalThis = sandbox;
     vm.runInNewContext(SCOPE, sandbox, { filename: "conversation-scope.js" });
-    const scope = sandbox.CGConversationScope.create({ getUrl: () => url });
+    const scope = sandbox.CGConversationScope.create({ getId: () => conversationIdFromUrl(url) });
     const a = scope.snapshot();
     assert.equal(a.id, "a");
     url = "https://chatgpt.com/c/b";
@@ -145,15 +139,12 @@ async function settle() {
   await settle();
   assert.equal(chromium.sendCount, 1, "initial Chrome history fallback should make one background request");
 
-  // Recreate the v0.5.16 failure mechanism: failed request -> diagnostic persisted
-  // to storage.local -> storage listener -> another failed request -> diagnostic...
   for (let index = 0; index < 1000; index++) {
     chromium.fireStorage({ cgLastIssue: { newValue: { code: "runtime-request-failed", index } } });
   }
   await settle();
   assert.equal(chromium.sendCount, 1, "diagnostic storage writes must never retrigger history lookup");
 
-  // Genuine setting changes may retry, but overlapping triggers are single-flight.
   chromium.fireStorage({ maxDisplayMessages: { newValue: 32 } });
   chromium.fireStorage({ mode: { newValue: "windowed-visible" } });
   await settle();
@@ -180,7 +171,6 @@ async function settle() {
     "Firefox package/runtime diagnostics must stay distinct and correct"
   );
 
-  // A direct Firefox push for another conversation must be ignored.
   firefox.fireRuntime({
     type: "cg-window-history",
     history: {
@@ -195,8 +185,6 @@ async function settle() {
   });
   assert.equal(firefox.context.CGAntiCurseHistoryDebug.debug().historyConversationId, "test-conversation");
 
-  // This is the signature seen in the user's Chrome report: Firefox package
-  // identity while the actual browser UA is Chromium. Keep failed requests bounded.
   const firefoxInChrome = makeHarness({ packageTarget: "firefox", runtimeBrowser: "chromium" });
   await settle();
   const mixedState = firefoxInChrome.context.CGAntiCurseHistoryDebug.debug();
@@ -209,8 +197,6 @@ async function settle() {
   await settle();
   assert.equal(firefoxInChrome.sendCount, 1, "mixed package/runtime diagnostics must not create a feedback storm");
 
-  // Critical regression: A starts loading, the tab navigates to B, then A resolves
-  // late. The late A response must never become B's history.
   const pending = [];
   const routed = makeHarness({
     historyResponder(message) {
