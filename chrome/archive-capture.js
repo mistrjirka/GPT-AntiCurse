@@ -352,6 +352,10 @@
 
   ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message) return false;
+    if (message.type === "cg-conversation-scope" && message.conversationId) {
+      confirmConversation(message.conversationId);
+      return false;
+    }
     if (message.type === "cg-window-history" && message.history && message.history.conversationId) {
       confirmConversation(message.history.conversationId);
       return false;
