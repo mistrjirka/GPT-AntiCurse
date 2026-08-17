@@ -52,6 +52,8 @@ assert(chromeContent.includes("DOM_GATE && !DOM_GATE.isReady()"), "Chromium stat
 assert(conversationScope.includes("function snapshot()"), "conversation scope must expose immutable async tokens");
 assert(conversationScope.includes("function isCurrent(token)"), "conversation scope must reject tokens after SPA navigation");
 assert(conversationScope.includes("generation++"), "conversation scope must invalidate prior async work when the route changes");
+assert(conversationScope.includes("location.pathname"), "page conversation scope must resolve the active ChatGPT route directly");
+assert(!conversationScope.includes("CGArchive"), "page conversation scope must not depend on archive/network parsing modules");
 assert(windowed.includes("CGConversationScope.create()"), "history controller must use the shared conversation scope");
 assert(windowed.includes("scope.isCurrent(token)"), "history replies must be checked against their original conversation scope");
 assert(windowed.includes('settings.mode === "windowed-visible"'), "auto mode must remain explicit");
@@ -83,7 +85,7 @@ assert(chromeMain.includes("waitForTransformSafety"), "conversation transformati
 assert(chromeMain.includes('window.addEventListener("load"'), "Chromium transformation must cross the page load boundary on SSR loads");
 assert((chromeMain.match(/requestAnimationFrame/g) || []).length >= 2, "Chromium transformation should cross two animation frames");
 assert(chromeMain.includes("requestIdleCallback"), "Chromium transformation should wait for an idle slice before changing an SSR conversation graph");
-assert(chromeMain.includes("publishArchive(data)"), "the untouched conversation must be archived before transformation");
+assert(chromeMain.includes("publishArchive(data, endpointUrl)"), "the untouched conversation must be archived against its response endpoint before transformation");
 assert(chromeMain.includes("startup-barrier-timeout"), "a hydration/settings timeout must fail open with an explicit reason");
 assert.equal((chromeMain.match(/Object\.defineProperty\(Response\.prototype/g) || []).length, 2, "only one module should own the two Response body wrappers");
 
@@ -97,7 +99,7 @@ assert(!chromeMainScripts.js.includes("history-replay-main.js"), "Chromium MAIN 
 assert(!chromeUi.js.includes("history-request.js"), "Chromium isolated world must not use page-global history replay timers");
 assert(!chromeUi.js.includes("history-overlay.js"), "superseded shadow/inline history layer must not be packaged");
 assert(chromeUi.js.indexOf("diagnostics.js") < chromeUi.js.indexOf("content.js"), "Chromium diagnostics must exist before code can report failures");
-assert(chromeUi.js.indexOf("archive.js") < chromeUi.js.indexOf("conversation-scope.js"), "conversation scope must load after the canonical conversation-id parser");
+assert(chromeUi.js.includes("conversation-scope.js"), "Chromium must package the shared page conversation scope");
 assert(chromeUi.js.indexOf("conversation-scope.js") < chromeUi.js.indexOf("archive-capture.js"), "conversation scope must exist before archive capture");
 assert(chromeUi.js.indexOf("conversation-scope.js") < chromeUi.js.indexOf("windowed.js"), "conversation scope must exist before history control");
 assert(chromeUi.js.indexOf("history-native.js") < chromeUi.js.indexOf("history-virtualized.js"), "Markdown helper must load before the virtualized renderer");
@@ -106,7 +108,7 @@ assert(chromeUi.js.indexOf("history-hydration-safe.js") < chromeUi.js.indexOf("w
 assert(chromeUi.js.indexOf("windowed.js") < chromeUi.js.indexOf("debug-state.js"), "Chromium debug state must observe the final history controller stack");
 assert(firefoxUi.js.indexOf("diagnostics.js") < firefoxUi.js.indexOf("content.js"), "Firefox diagnostics must exist before code can report failures");
 assert(!firefoxUi.js.includes("history-overlay.js"), "Firefox must not package the superseded history layer");
-assert(firefoxUi.js.indexOf("archive.js") < firefoxUi.js.indexOf("conversation-scope.js"), "Firefox conversation scope must load after the canonical parser");
+assert(firefoxUi.js.includes("conversation-scope.js"), "Firefox must package the shared page conversation scope");
 assert(firefoxUi.js.indexOf("conversation-scope.js") < firefoxUi.js.indexOf("archive-capture.js"), "Firefox conversation scope must exist before archive capture");
 assert(firefoxUi.js.indexOf("history-native.js") < firefoxUi.js.indexOf("history-virtualized.js"), "Firefox Markdown helper must load before virtualized history");
 assert(firefoxUi.js.indexOf("history-fidelity.js") < firefoxUi.js.indexOf("history-hydration-safe.js"), "Firefox hydration wrapper must wrap the final history renderer");
@@ -114,8 +116,6 @@ assert(firefoxUi.js.indexOf("history-hydration-safe.js") < firefoxUi.js.indexOf(
 assert(firefoxUi.js.indexOf("windowed.js") < firefoxUi.js.indexOf("debug-state.js"), "Firefox debug state must observe the final history controller stack");
 assert(!firefoxManifest.background.scripts.includes("archive-firefox-hook.js"), "Firefox must have one authoritative network archive path, not a duplicate trim wrapper");
 
-// Defaults are supplied at each read site; never run a read-then-write defaults
-// initializer at extension startup because it can overwrite a concurrent user/test write.
 assert(!chromeBackgroundEntry.includes("defaults.js"), "Chromium service worker must not run an eager defaults writer");
 assert(!firefoxManifest.background.scripts.includes("defaults.js"), "Firefox background must not run an eager defaults writer");
 assert(chromePopup.includes('normalizeMode(value)'), "Chromium popup must normalize legacy/unknown modes when consumed");
