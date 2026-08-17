@@ -24,7 +24,6 @@
   let archiveSettingsReady = false;
   let pendingNetworkArchive = null;
   let latestNetworkArchive = null;
-  let currentConversationId = null;
   let captureTimer = null;
   let lastFingerprint = "";
   let observedThread = null;
@@ -46,21 +45,22 @@
 
   function conversationId() {
     const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/);
-    if (match) currentConversationId = decodeURIComponent(match[1]);
-    return currentConversationId;
+    return match ? decodeURIComponent(match[1]) : null;
   }
 
   globalThis.CGAntiCurseArchiveBridge = {
     get(id) {
-      if (!latestNetworkArchive) return null;
-      if (id && latestNetworkArchive.id !== id) return null;
+      const requestedId = id || conversationId();
+      if (!requestedId || !latestNetworkArchive || latestNetworkArchive.id !== requestedId) return null;
       return latestNetworkArchive;
     },
     debug() {
+      const id = conversationId();
+      const currentArchive = latestNetworkArchive && latestNetworkArchive.id === id ? latestNetworkArchive : null;
       return {
-        conversationId: conversationId(),
-        transientArchive: !!latestNetworkArchive,
-        transientMessages: latestNetworkArchive && Array.isArray(latestNetworkArchive.messages) ? latestNetworkArchive.messages.length : 0,
+        conversationId: id,
+        transientArchive: !!currentArchive,
+        transientMessages: currentArchive && Array.isArray(currentArchive.messages) ? currentArchive.messages.length : 0,
         archiveEnabled,
         archiveSettingsReady,
         threadObserved: !!(observedThread && observedThread.isConnected),
@@ -91,7 +91,6 @@
       return false;
     }
 
-    currentConversationId = archive.id;
     latestNetworkArchive = archive;
     window.dispatchEvent(new Event(NETWORK_ARCHIVE_EVENT));
 
@@ -172,6 +171,7 @@
     if (!id) return { ok: false, reason: "not-a-conversation" };
 
     const messages = collectRenderedMessages();
+    if (conversationId() !== id) return { ok: false, reason: "conversation-changed", conversationId: id };
     if (!messages.length) return { ok: false, reason: "no-rendered-turns", conversationId: id };
 
     const nextFingerprint = fingerprint(id, messages);
