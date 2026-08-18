@@ -12,7 +12,7 @@
     return Promise.resolve(null);
   }
 
-  function queueFor(id, operation) {
+  function serializeForConversation(id, operation) {
     const previous = queues.get(id) || Promise.resolve();
     const recovered = previous.catch((error) => {
       // The previous caller already receives its own rejection. Recover only so
@@ -30,7 +30,7 @@
 
   async function saveNetworkArchive(archive) {
     if (!archive || !archive.id) return { ok: false, reason: "invalid-archive" };
-    return queueFor(archive.id, async () => {
+    return serializeForConversation(archive.id, async () => {
       const existing = await CGArchiveStore.get(archive.id);
       const merged = CGArchive.mergeNetworkArchive(existing, archive);
       await CGArchiveStore.put(merged);
@@ -52,7 +52,7 @@
       };
     }
 
-    return queueFor(id, async () => {
+    return serializeForConversation(id, async () => {
       const existing = await CGArchiveStore.get(id);
       const merged = CGArchive.mergeArchiveWithRendered(existing, message.messages, {
         id,
@@ -71,7 +71,7 @@
     // at any time, making such a cache look valid until it silently disappears.
     const id = message && message.conversationId;
     if (!id) return null;
-    return queueFor(id, () => CGArchiveStore.get(id));
+    return serializeForConversation(id, () => CGArchiveStore.get(id));
   }
 
   async function archiveSummary(message) {
@@ -86,11 +86,11 @@
       ok: true,
       summary: CGArchive.archiveSummary(archive),
       filename: CGArchive.archiveFilename(archive),
-      markdown: CGArchive.archiveToMarkdown(archive, { level: message.exportLevel })
+      markdown: CGArchiveExport.archiveToMarkdown(archive, { level: message.exportLevel })
     };
   }
 
-  function asyncResponse(promise, sendResponse, code) {
+  function respondAsync(promise, sendResponse, code) {
     promise.then(sendResponse).catch((error) => {
       recordIssue(code, error);
       sendResponse({ ok: false, reason: String(error && error.message ? error.message : error) });
@@ -100,10 +100,10 @@
 
   ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message) return false;
-    if (message.type === "cg-save-network-archive") return asyncResponse(saveNetworkArchive(message.archive), sendResponse, "save-network-failed");
-    if (message.type === "cg-merge-rendered-archive") return asyncResponse(mergeRenderedArchive(message), sendResponse, "merge-rendered-failed");
-    if (message.type === "cg-get-archive-summary") return asyncResponse(archiveSummary(message), sendResponse, "summary-read-failed");
-    if (message.type === "cg-export-archive") return asyncResponse(exportArchive(message), sendResponse, "export-read-failed");
+    if (message.type === "cg-save-network-archive") return respondAsync(saveNetworkArchive(message.archive), sendResponse, "save-network-failed");
+    if (message.type === "cg-merge-rendered-archive") return respondAsync(mergeRenderedArchive(message), sendResponse, "merge-rendered-failed");
+    if (message.type === "cg-get-archive-summary") return respondAsync(archiveSummary(message), sendResponse, "summary-read-failed");
+    if (message.type === "cg-export-archive") return respondAsync(exportArchive(message), sendResponse, "export-read-failed");
     return false;
   });
 
