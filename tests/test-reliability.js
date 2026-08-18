@@ -9,6 +9,10 @@ const source = (relative) => fs.readFileSync(path.join(ROOT, relative), "utf8");
 const chromeBackground = source("chrome/background.js");
 const chromeBackgroundEntry = source("chrome/background-entry.js");
 const firefoxBackground = source("firefox/background.js");
+const trimCore = source("chrome/trim.js");
+const trimLogical = source("chrome/trim-logical.js");
+const trimPipeline = source("chrome/trim-pipeline.js");
+const archiveCore = source("chrome/archive.js");
 const archiveStore = source("chrome/archive-store.js");
 const archiveBackground = source("chrome/archive-background.js");
 const archiveExport = source("chrome/archive-export.js");
@@ -18,18 +22,27 @@ const diagnostics = source("chrome/diagnostics.js");
 const debugState = source("chrome/debug-state.js");
 const windowed = source("chrome/windowed.js");
 const chromeContent = source("chrome/content.js");
+const firefoxContent = source("firefox/content.js");
 const chromeMain = source("chrome/main.js");
 const popup = source("chrome/popup.html");
 const backupPopup = source("chrome/backup-popup.js");
 const chromeManifest = JSON.parse(source("chrome/manifest.json"));
 const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
 
-assert(chromeBackground.includes("const operation = updateQueue.then"), "Chromium counter updates must expose each operation separately");
-assert(chromeBackground.includes("updateQueue = operation.catch"), "a failed Chromium counter write must not poison all later updates");
+assert(chromeBackground.includes("function serializeCounterOperation"), "Chromium counter increments and resets must share one serialized mutation path");
+assert(chromeBackground.includes("return serializeCounterOperation(async () =>"), "Chromium reset/update operations must be queued rather than writing around one another");
+assert(chromeBackground.includes("updateQueue = queued.catch"), "a failed Chromium counter operation must not poison later mutations");
 
 assert(chromeBackgroundEntry.includes('message.type !== "cg-background-health"'), "Chromium worker must expose a minimal boot-health receiver");
 assert(chromeBackgroundEntry.indexOf("cg-background-health") < chromeBackgroundEntry.indexOf("importScripts"), "Chromium boot-health receiver must register before imported worker modules");
 assert(chromeBackgroundEntry.includes('phase: "import-failed"'), "Chromium worker startup import failures must be observable");
+
+assert(trimCore.includes("global.CGTrimCore = api"), "raw graph trimming must publish an explicit immutable core module");
+assert(!trimCore.includes("global.CGTrim ="), "raw graph trimming must not claim the final production API");
+assert(trimLogical.includes("global.CGTrimLogical = api"), "logical budgeting must publish its own named policy module");
+assert(!trimLogical.includes("trim.trimConversation ="), "logical budgeting must not monkey-patch the core trimmer");
+assert(trimPipeline.includes("global.CGTrim = api"), "one explicit pipeline must compose the production trimmer");
+assert(trimPipeline.includes("trimConversation: logical.trimConversation"), "production trimming must select the logical policy explicitly");
 
 assert(archiveStore.includes("dbPromise = opening.catch"), "IndexedDB open failures must be recoverable");
 assert((archiveStore.match(/dbPromise = null/g) || []).length >= 3, "IndexedDB promise must reset on initial state, failure, and version change");
@@ -40,6 +53,7 @@ assert(archiveBackground.includes("message && message.conversationId"), "archive
 assert(archiveBackground.includes("CGArchiveExport.archiveToMarkdown"), "archive export must depend on the named export module explicitly");
 assert(archiveExport.includes("global.CGArchiveExport = api"), "archive export must publish its own named module");
 assert(!archiveExport.includes("A.archiveToMarkdown ="), "archive export must not monkey-patch the core archive module");
+assert(!archiveCore.includes("archiveToMarkdown"), "archive core must not retain a second Markdown exporter");
 
 assert(!archiveCapture.includes("setTimeout(startObserver"), "archive thread discovery must not poll the DOM forever");
 assert(archiveCapture.includes("discoveryObserver"), "archive thread discovery should be mutation-driven");
@@ -59,6 +73,11 @@ assert(firefoxBackground.includes("Early history delivery skipped; caching sessi
 assert(firefoxBackground.includes("history-cache-write-failed"), "Firefox session-cache failures must be visible diagnostics");
 assert(firefoxBackground.includes("settings-unavailable"), "Firefox settings-read failure must fail open explicitly");
 assert(firefoxBackground.includes('message.type === "cg-background-health"'), "Firefox event page must expose background health without changing routing");
+assert(firefoxBackground.includes("function serializeCounterOperation"), "Firefox counter increments and resets must share one mutation queue");
+assert(firefoxBackground.includes("return settingsReady.then(resetTotals)"), "Firefox reset must run through the serialized counter reset function");
+assert(firefoxBackground.includes("requestStartedAt > startedAt"), "Firefox stats/history must reject older overlapping requests");
+assert(firefoxBackground.includes("conversationId: conversationId || conversationIdFromEndpoint"), "Firefox stats must carry explicit conversation ownership");
+assert(firefoxBackground.includes("statsMatchConversation"), "Firefox cached stats reads must validate the requested conversation");
 
 assert(diagnostics.includes("cgIssueHistory"), "diagnostics must keep bounded local history, not only one last issue");
 assert(diagnostics.includes("MAX_HISTORY = 24"), "diagnostic history must be bounded");
@@ -74,7 +93,7 @@ assert(popup.includes('id="exportDebug"'), "popup must expose debug report downl
 assert(backupPopup.includes("cgIssueHistory"), "debug report must include recent diagnostic history");
 assert(backupPopup.includes("Debug report downloaded"), "debug report flow must give visible confirmation");
 assert(backupPopup.includes("packageTarget"), "debug report must distinguish package target");
-assert(backupPopup.includes("runtimeBrowser"), "debug report must distinguish actual runtime browser");
+assert(backupPopup.includes("runtimeBrowser"), "debug report must distinguish actual runtime browser separately");
 assert(backupPopup.includes("backgroundKind"), "debug report must expose manifest background architecture");
 assert(backupPopup.includes("backgroundHealth"), "debug report must actively probe background health");
 
@@ -92,6 +111,13 @@ assert(windowed.includes("historyRequest && scope.isCurrent(historyRequest.token
 assert(windowed.includes("HISTORY_RETRY_MAX_MS = 30000"), "history receiver failures need bounded exponential backoff");
 assert(windowed.includes("historyRetryAt"), "history retries must honor a cooldown after failures");
 
+assert(chromeContent.includes("CGConversationScope.create()"), "Chromium status state must be conversation-scoped");
+assert(chromeContent.includes("statsBelongToCurrentConversation"), "Chromium must reject stale stats before rendering or watchdog delivery");
+assert(chromeContent.includes("issueBelongsToCurrentConversation"), "Chromium must reject stale conversation-specific diagnostics");
+assert(chromeContent.includes("conversationId: lastStats && lastStats.conversationId"), "status events must preserve conversation ownership");
+assert(firefoxContent.includes("CGConversationScope.create()"), "Firefox status state must be conversation-scoped");
+assert(firefoxContent.includes("statsBelongToCurrentConversation"), "Firefox content must reject stale pushed/cached stats");
+
 assert(chromeContent.includes("RECOVERABLE_MAIN_CODES"), "valid later graphs must clear stale Chromium graph diagnostics");
 assert(chromeContent.includes('stats.reason === "below-limit"'), "below-limit valid graphs must count as recovery");
 assert(chromeContent.includes('DIAGNOSTICS.clear("chromium-main", lastIssue.code)'), "recovery must clear only the matching Chromium issue, not unrelated diagnostics");
@@ -101,7 +127,10 @@ assert(chromeMain.includes("shapeTopLevelKeys"), "unsupported-shape diagnostics 
 assert(chromeMain.includes("responseStatus"), "Chromium diagnostics must include HTTP status");
 assert(chromeMain.includes('reason: "http-status"'), "non-success HTTP responses must pass through instead of masquerading as schema incompatibility");
 assert(chromeMain.includes('archiveSkipped: "unsupported-shape"'), "unsupported response objects must not overwrite the transient archive");
+assert(chromeMain.includes("conversationId: conversationIdFromEndpoint(endpointUrl)"), "Chromium response stats must be bound to their endpoint conversation");
 
+assert(chromeManifest.content_scripts[0].js.includes("trim-pipeline.js"), "Chromium MAIN world must package the explicit trim compositor");
+assert(firefoxManifest.background.scripts.includes("trim-pipeline.js"), "Firefox background must package the explicit trim compositor");
 assert(chromeManifest.content_scripts[1].js.includes("debug-state.js"), "Chromium must package the debug-state content script");
 assert(firefoxManifest.content_scripts[0].js.includes("debug-state.js"), "Firefox must package the debug-state content script");
 assert.equal(chromeManifest.version, firefoxManifest.version, "Chrome and Firefox packages must use the same version");
