@@ -1,36 +1,37 @@
-# GPT AntiCurse v0.6.0
+# GPT AntiCurse v0.6.1
 
-Conversation-isolation and extension-packaging release.
+Internal-architecture and reliability cleanup after v0.6.0.
 
-## Prevent history from leaking between chats
+## Explicit module composition
 
-- Fixes archived history from one ChatGPT conversation being appended to another after SPA navigation.
-- Introduces a shared conversation scope token (`{id, generation}`) so asynchronous history work is invalidated when the active `/c/<id>` route changes.
-- Late history replies and late network archives from a previous conversation are rejected for the current page.
-- DOM backup capture remains bound to the conversation generation where its observer was attached and waits for the current conversation to be confirmed after navigation.
-- Rendered archive merges now validate that their source URL belongs to the same conversation.
+- Replaces order-dependent `CGHistoryOverlay` monkey-patching with named Markdown, virtualizer, fidelity, and hydration modules composed once by `history-overlay.js`.
+- Renames the old `history-native.js` helper to the more accurate `history-markdown.js`.
+- Makes Markdown export a separate `CGArchiveExport` module instead of mutating `CGArchive` at load time.
+- Clarifies archive/export helper names so functions describe their domain responsibility rather than generic operations such as `groups`, `analyze`, or `full`.
 
-## Simpler ownership model
+## Simpler Chromium interception
 
-- History requests now always carry an explicit conversation ID instead of falling back to mutable tab state.
-- Firefox tab/session history caches are conversation-aware and reject mismatched or out-of-order responses.
-- Chromium background history no longer infers ownership from `sender.tab.url`.
-- Chromium archives use the actual conversation response endpoint as source metadata rather than whichever page URL happens to be current when a slow response finishes.
+- `Response.json()` and `Response.text()` now share one conversation interception pipeline for endpoint validation, HTTP fail-open handling, hydration/settings waiting, archive publication, transformation, diagnostics, and tracing.
+- The two native Response wrappers remain explicit and preserve their format-specific parsing/serialization behavior.
 
-## Extension icons
+## Reliability fixes found during the cleanup
 
-- Packages the existing GPT AntiCurse icon at 16, 32, 48, and 128 px.
-- Declares the icon in both Chrome and Firefox manifests.
-- Adds the toolbar/action icon and the 128×128 store icon.
+- A rendered DOM backup fingerprint is now committed only after the background confirms persistence. Temporary merge failures can therefore retry unchanged content instead of being incorrectly treated as already saved.
+- Diagnostic clears are serialized with diagnostic writes, preventing an older pending write from resurrecting a diagnostic that was already cleared.
+- Adds behavioral regression coverage for the diagnostic write/clear ordering race.
+
+## Scope
+
+- No trimming or history-virtualization algorithm was changed.
+- The large scroll/history controller remains a single state machine because splitting its tightly coupled UI state into callback-heavy services would add indirection without reducing the underlying complexity.
 
 ## Regression coverage
 
-- Adds the critical A → B navigation race: chat A starts loading, the tab navigates to chat B, then A resolves late. B must remain the rendered history.
-- Adds manifest/icon packaging checks and conversation-scope tests.
-- Removes release-specific fixed-version assertions so package-version tests check browser parity and semantic versioning instead.
-- Chromium Recent/Auto, hydration, native-fidelity, Firefox interception/paging/native-fidelity, archive, lifecycle, retry-loop, and virtualization E2E tests remain release gates.
+- Chromium Recent/Auto, hydration-boundary, and native-fidelity E2E remain release gates.
+- Firefox interception/paging and native-fidelity E2E remain release gates.
+- Shared-source parity, syntax, packaging, archive/export, diagnostics, retry-loop, and virtualization tests remain release gates.
 
 ## Privacy
 
 - No telemetry or remote extension code.
-- Archived conversation processing remains local to the browser.
+- Conversation processing and archives remain local to the browser.
