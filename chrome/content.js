@@ -133,6 +133,17 @@ function recordDiagnostic(scope, code, error, extra) {
   return Promise.resolve(null);
 }
 
+function recordTrimmedTotals(stats) {
+  if (!stats || stats.mode !== "trimmed") return;
+  chrome.runtime.sendMessage({ type: "cg-record-stats", stats }).then((totals) => {
+    if (lastStats === stats && statsBelongToCurrentConversation(stats)) {
+      lastStats = { ...stats, totals };
+    }
+  }).catch((error) => {
+    console.warn("[GPT AntiCurse] Failed to update local counters", error);
+  });
+}
+
 function clearRecoveredMainIssue(stats) {
   const validGraph = stats && (
     stats.mode === "trimmed" ||
@@ -183,8 +194,12 @@ window.addEventListener("message", (event) => {
     return;
   }
 
-  if (msg.type !== "stats" || !statsBelongToCurrentConversation(msg.stats)) return;
-  lastStats = msg.stats || null;
+  if (msg.type !== "stats") return;
+  const stats = msg.stats || null;
+  recordTrimmedTotals(stats);
+  if (!statsBelongToCurrentConversation(stats)) return;
+
+  lastStats = stats;
   clearRecoveredMainIssue(lastStats);
   render(lastStats);
   window.dispatchEvent(new CustomEvent(STATS_EVENT, { detail: {
@@ -192,14 +207,6 @@ window.addEventListener("message", (event) => {
     reason: lastStats && lastStats.reason,
     conversationId: lastStats && lastStats.conversationId
   } }));
-
-  if (lastStats && lastStats.mode === "trimmed") {
-    chrome.runtime.sendMessage({ type: "cg-record-stats", stats: lastStats }).then((totals) => {
-      if (lastStats && statsBelongToCurrentConversation(lastStats)) lastStats = { ...lastStats, totals };
-    }).catch((error) => {
-      console.warn("[GPT AntiCurse] Failed to update local counters", error);
-    });
-  }
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
