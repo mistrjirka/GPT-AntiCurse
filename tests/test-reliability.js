@@ -21,9 +21,11 @@ const domReady = source("chrome/dom-ready.js");
 const diagnostics = source("chrome/diagnostics.js");
 const debugState = source("chrome/debug-state.js");
 const windowed = source("chrome/windowed.js");
+const historyVirtualized = source("chrome/history-virtualized.js");
 const chromeContent = source("chrome/content.js");
 const firefoxContent = source("firefox/content.js");
 const chromeMain = source("chrome/main.js");
+const chromePopupController = source("chrome/popup.js");
 const popup = source("chrome/popup.html");
 const backupPopup = source("chrome/backup-popup.js");
 const chromeManifest = JSON.parse(source("chrome/manifest.json"));
@@ -57,6 +59,9 @@ assert(!archiveCore.includes("archiveToMarkdown"), "archive core must not retain
 
 assert(!archiveCapture.includes("setTimeout(startObserver"), "archive thread discovery must not poll the DOM forever");
 assert(archiveCapture.includes("discoveryObserver"), "archive thread discovery should be mutation-driven");
+assert(archiveCapture.includes("disconnectDiscoveryObserver();\n    scheduleCapture(250)"), "whole-document discovery must disconnect once the thread is attached");
+assert(archiveCapture.includes("shellObserver.observe(shell, { childList: true })"), "thread replacement should use a narrow direct-child shell observer");
+assert(archiveCapture.includes("discoveryActive: !!discoveryObserver"), "debug state should expose whether broad discovery is temporarily active");
 assert(archiveCapture.includes("if (!archiveEnabled) return;"), "DOM backup observers must stay off when persistent backup is disabled");
 assert(!archiveCapture.includes(".innerText"), "tail backup extraction should not use innerText and force layout");
 assert(archiveCapture.includes("debug()"), "archive bridge must expose a content-free health snapshot");
@@ -78,6 +83,8 @@ assert(firefoxBackground.includes("return settingsReady.then(resetTotals)"), "Fi
 assert(firefoxBackground.includes("requestStartedAt > startedAt"), "Firefox stats/history must reject older overlapping requests");
 assert(firefoxBackground.includes("conversationId: conversationId || conversationIdFromEndpoint"), "Firefox stats must carry explicit conversation ownership");
 assert(firefoxBackground.includes("statsMatchConversation"), "Firefox cached stats reads must validate the requested conversation");
+const firefoxPublishStats = firefoxBackground.slice(firefoxBackground.indexOf("function publishStats"), firefoxBackground.indexOf("function publishConversationScope"));
+assert(firefoxPublishStats.indexOf("updateTotals(stats)") < firefoxPublishStats.indexOf("requestStartedAt > startedAt"), "Firefox cumulative totals must count completed trims before stale UI status is rejected");
 
 assert(diagnostics.includes("cgIssueHistory"), "diagnostics must keep bounded local history, not only one last issue");
 assert(diagnostics.includes("MAX_HISTORY = 24"), "diagnostic history must be bounded");
@@ -90,6 +97,10 @@ assert(debugState.includes("backendHistory"), "debug snapshot must actively prob
 assert(debugState.includes("historyController"), "debug snapshot must include history controller/backoff health");
 assert(!debugState.includes("message.text"), "debug state must not include archived conversation text");
 assert(popup.includes('id="exportDebug"'), "popup must expose debug report download");
+assert(popup.includes('id="primaryMetric"'), "popup primary metric must not be named as if it always contains a percentage");
+assert(popup.includes("Final answers only") && popup.includes("Readable conversation") && popup.includes("Full technical log"), "export detail choices should use user-facing names");
+assert(popup.includes("<summary>Technical details</summary>"), "engineering counters should stay behind a technical-details disclosure");
+assert(chromePopupController.includes('primaryMetric.textContent = formatBytes(removedBytes)'), "measured payload reduction should be the primary popup metric");
 assert(backupPopup.includes("cgIssueHistory"), "debug report must include recent diagnostic history");
 assert(backupPopup.includes("Debug report downloaded"), "debug report flow must give visible confirmation");
 assert(backupPopup.includes("packageTarget"), "debug report must distinguish package target");
@@ -115,8 +126,15 @@ assert(chromeContent.includes("CGConversationScope.create()"), "Chromium status 
 assert(chromeContent.includes("statsBelongToCurrentConversation"), "Chromium must reject stale stats before rendering or watchdog delivery");
 assert(chromeContent.includes("issueBelongsToCurrentConversation"), "Chromium must reject stale conversation-specific diagnostics");
 assert(chromeContent.includes("conversationId: lastStats && lastStats.conversationId"), "status events must preserve conversation ownership");
+assert(chromeContent.includes("STATUS_BADGE_SELECTOR"), "status DOM must have an explicit singleton selector");
+assert(chromeContent.includes("badgeObserver.observe(document.body, { childList: true })"), "status deduplication observer must be limited to direct body children");
+assert(!chromeContent.includes("innerHTML"), "dynamic status DOM should use node creation/textContent instead of innerHTML");
 assert(firefoxContent.includes("CGConversationScope.create()"), "Firefox status state must be conversation-scoped");
 assert(firefoxContent.includes("statsBelongToCurrentConversation"), "Firefox content must reject stale pushed/cached stats");
+
+assert(historyVirtualized.includes("HISTORY_HOST_SELECTOR"), "history overlay root must enforce a DOM singleton");
+assert(historyVirtualized.includes("function createHistoryHost()"), "history overlay shell should be built with explicit DOM nodes");
+assert(!historyVirtualized.includes("host.innerHTML"), "history overlay shell should not be assembled through innerHTML");
 
 assert(chromeContent.includes("RECOVERABLE_MAIN_CODES"), "valid later graphs must clear stale Chromium graph diagnostics");
 assert(chromeContent.includes('stats.reason === "below-limit"'), "below-limit valid graphs must count as recovery");
