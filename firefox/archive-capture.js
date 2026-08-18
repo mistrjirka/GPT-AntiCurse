@@ -30,6 +30,7 @@
   let observedScope = null;
   let threadObserver = null;
   let parentObserver = null;
+  let shellObserver = null;
   let discoveryObserver = null;
   let discoveryRaf = 0;
 
@@ -52,8 +53,10 @@
   function disconnectThreadObservers() {
     if (threadObserver) threadObserver.disconnect();
     if (parentObserver) parentObserver.disconnect();
+    if (shellObserver) shellObserver.disconnect();
     threadObserver = null;
     parentObserver = null;
+    shellObserver = null;
     observedThread = null;
     observedScope = null;
   }
@@ -312,6 +315,18 @@
       scheduleThreadAttachment();
     });
     parentObserver.observe(parent, { childList: true });
+
+    const shell = parent.parentElement;
+    if (shell) {
+      shellObserver = new MutationObserver(() => {
+        if (parent.isConnected && observedThread && observedThread.isConnected) return;
+        disconnectThreadObservers();
+        installDiscoveryObserver();
+        scheduleThreadAttachment();
+      });
+      shellObserver.observe(shell, { childList: true });
+    }
+
     disconnectDiscoveryObserver();
     scheduleCapture(250);
     return true;
