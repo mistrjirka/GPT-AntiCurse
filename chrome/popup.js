@@ -25,6 +25,10 @@ function formatBytes(value) {
   return `${number.toFixed(digits)} ${units[unitIndex]}`;
 }
 function messageLimit() { return Math.max(4, Math.min(500, Number(limitInput.value) || 64)); }
+function setDetailVisibility(labelId, valueId, visible) {
+  document.getElementById(labelId).hidden = !visible;
+  document.getElementById(valueId).hidden = !visible;
+}
 function updateControls() {
   modeHelp.textContent = modeSelect.value === "windowed-visible"
     ? "Automatically loads an older page when you reach the top."
@@ -104,7 +108,9 @@ function renderTotals(value) {
   const totals = { ...EMPTY_TOTALS, ...(value || {}) };
   document.getElementById("totalResponses").textContent = formatNumber(totals.responsesTrimmed);
   document.getElementById("totalRemoved").textContent = formatNumber(totals.nodesRemoved);
-  document.getElementById("totalBytes").textContent = formatBytes(totals.bytesRemoved);
+  const measuredBytes = Math.max(0, Number(totals.bytesRemoved) || 0);
+  setDetailVisibility("totalBytesLabel", "totalBytes", measuredBytes > 0);
+  if (measuredBytes > 0) document.getElementById("totalBytes").textContent = formatBytes(measuredBytes);
 }
 function renderTrimmedStats(stats) {
   const before = Math.max(0, Number(stats.mappingNodesBefore) || 0);
@@ -112,29 +118,49 @@ function renderTrimmedStats(stats) {
   const removed = Math.max(0, Number(stats.discardedNodes) || before - after);
   const percentage = before ? Math.max(0, Math.min(100, (removed / before) * 100)) : 0;
   document.getElementById("savedPct").textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}%`;
-  document.getElementById("summaryText").textContent = `${formatNumber(before)} → ${formatNumber(after)} nodes`;
+  document.getElementById("summaryText").textContent = "fewer internal nodes in this load";
   const logical = Number(stats.logicalDisplayAfter);
   document.getElementById("summarySub").textContent = Number.isFinite(logical)
-    ? `${formatNumber(logical)} recent conversation units · ${formatNumber(stats.displayAfter)} visible records`
-    : `${formatNumber(stats.displayAfter)} visible turns kept in ChatGPT`;
+    ? `Kept ${formatNumber(logical)} recent conversation units in ChatGPT. Older history stays available through AntiCurse.`
+    : `Kept ${formatNumber(stats.displayAfter)} visible messages in ChatGPT. Older history stays available through AntiCurse.`;
   document.getElementById("removedNodes").textContent = formatNumber(removed);
   document.getElementById("processing").textContent = Number.isFinite(Number(stats.processingMs)) ? `${stats.processingMs} ms` : "—";
-  document.getElementById("bytesSaved").textContent = Number.isFinite(Number(stats.originalBytes)) && Number.isFinite(Number(stats.outputBytes))
-    ? formatBytes(Math.max(0, stats.originalBytes - stats.outputBytes)) : "not measured";
+  const bytesMeasured = Number.isFinite(Number(stats.originalBytes)) && Number.isFinite(Number(stats.outputBytes));
+  setDetailVisibility("bytesSavedLabel", "bytesSaved", bytesMeasured);
+  if (bytesMeasured) document.getElementById("bytesSaved").textContent = formatBytes(Math.max(0, Number(stats.originalBytes) - Number(stats.outputBytes)));
   setStatus("Active", "active");
 }
 function renderStats(stats) {
-  if (!stats) return setStatus("Waiting");
+  if (!stats) {
+    setStatus("Waiting");
+    document.getElementById("savedPct").textContent = "—";
+    document.getElementById("summaryText").textContent = "Waiting for a ChatGPT conversation";
+    document.getElementById("summarySub").textContent = "Reload a conversation to measure its current load.";
+    setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
+    return;
+  }
   if (stats.mode === "trimmed") return renderTrimmedStats(stats);
   if (stats.mode === "error") {
     setStatus("Error", "error");
+    document.getElementById("savedPct").textContent = "—";
     document.getElementById("summaryText").textContent = "Original response kept";
     document.getElementById("summarySub").textContent = stats.error || stats.reason || "AntiCurse reported an interception error.";
+    setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
+    return;
+  }
+  if (stats.reason === "disabled") {
+    setStatus("Off");
+    document.getElementById("savedPct").textContent = "—";
+    document.getElementById("summaryText").textContent = "Performance guard is off";
+    document.getElementById("summarySub").textContent = "Enable it above and reload the conversation to optimize long chats.";
+    setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
     return;
   }
   setStatus("Ready", "active");
   document.getElementById("savedPct").textContent = "0%";
-  document.getElementById("summaryText").textContent = "No trimming needed";
+  document.getElementById("summaryText").textContent = "no trimming needed";
+  document.getElementById("summarySub").textContent = "This conversation is already within the configured window.";
+  setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
 }
 async function initialize() {
   const saved = await chrome.storage.local.get({ enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true, cgTotals: EMPTY_TOTALS, cgLastIssue: null });
