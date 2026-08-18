@@ -58,6 +58,11 @@
     observedScope = null;
   }
 
+  function disconnectDiscoveryObserver() {
+    if (discoveryObserver) discoveryObserver.disconnect();
+    discoveryObserver = null;
+  }
+
   function resetForConversationChange() {
     if (!scope.sync()) return false;
     cancelCapture();
@@ -70,9 +75,6 @@
 
   function conversationConfirmed(token) {
     if (!token || !token.id || !scope.isCurrent(token)) return false;
-    // Generation zero is the initial document: there cannot be a previous SPA
-    // conversation DOM in this content-script lifetime. Later generations wait
-    // for an intercepted response/history delivery before observing their DOM.
     return token.generation === 0 || confirmedConversationId === token.id;
   }
 
@@ -93,6 +95,7 @@
         archiveSettingsReady,
         conversationConfirmed: !!id && (scope.snapshot().generation === 0 || confirmedConversationId === id),
         threadObserved: !!(observedThread && observedThread.isConnected),
+        discoveryActive: !!discoveryObserver,
         capturePending: !!captureTimer
       };
     }
@@ -133,10 +136,6 @@
 
     resetForConversationChange();
     const currentId = scope.currentId();
-    // An out-of-order response for an older SPA route may still be useful as a
-    // persistent backup, but it must never replace the transient archive used by
-    // the currently displayed conversation. An unbound `/` route is allowed so
-    // a newly-created chat can be promoted when ChatGPT changes the URL to /c/id.
     if (!currentId || archive.id === currentId) {
       latestNetworkArchive = archive;
       confirmConversation(archive.id);
@@ -257,10 +256,21 @@
 
   function disconnectObservers() {
     disconnectThreadObservers();
-    if (discoveryObserver) discoveryObserver.disconnect();
-    discoveryObserver = null;
+    disconnectDiscoveryObserver();
     if (discoveryRaf) cancelAnimationFrame(discoveryRaf);
     discoveryRaf = 0;
+  }
+
+  function installDiscoveryObserver() {
+    if (discoveryObserver || !archiveEnabled || !document.documentElement || (observedThread && observedThread.isConnected)) return;
+    discoveryObserver = new MutationObserver(() => {
+      if (resetForConversationChange()) {
+        scheduleThreadAttachment();
+        return;
+      }
+      if (!observedThread || !observedThread.isConnected) scheduleThreadAttachment();
+    });
+    discoveryObserver.observe(document.documentElement, { childList: true, subtree: true });
   }
 
   function attachThreadObserver() {
@@ -271,7 +281,10 @@
 
     const thread = document.querySelector("#thread");
     if (!thread || !thread.parentElement) return false;
-    if (thread === observedThread && observedScope && scope.isCurrent(observedScope) && threadObserver) return true;
+    if (thread === observedThread && observedScope && scope.isCurrent(observedScope) && threadObserver) {
+      disconnectDiscoveryObserver();
+      return true;
+    }
 
     disconnectThreadObservers();
     observedThread = thread;
@@ -279,6 +292,8 @@
     threadObserver = new MutationObserver((records) => {
       if (!scope.isCurrent(observedScope)) {
         resetForConversationChange();
+        installDiscoveryObserver();
+        scheduleThreadAttachment();
         return;
       }
       if (records.some(touchesConversation)) scheduleCapture();
@@ -287,9 +302,14 @@
 
     const parent = thread.parentElement;
     parentObserver = new MutationObserver(() => {
-      if (resetForConversationChange() || document.querySelector("#thread") !== observedThread) scheduleThreadAttachment();
+      const changed = resetForConversationChange() || document.querySelector("#thread") !== observedThread;
+      if (!changed) return;
+      disconnectThreadObservers();
+      installDiscoveryObserver();
+      scheduleThreadAttachment();
     });
     parentObserver.observe(parent, { childList: true });
+    disconnectDiscoveryObserver();
     scheduleCapture(250);
     return true;
   }
@@ -298,22 +318,14 @@
     if (!archiveEnabled || discoveryRaf) return;
     discoveryRaf = requestAnimationFrame(() => {
       discoveryRaf = 0;
-      attachThreadObserver();
+      if (!attachThreadObserver()) installDiscoveryObserver();
     });
-  }
-
-  function installDiscoveryObserver() {
-    if (discoveryObserver || !archiveEnabled || !document.documentElement) return;
-    discoveryObserver = new MutationObserver(() => {
-      if (resetForConversationChange() || !observedThread || !observedThread.isConnected) scheduleThreadAttachment();
-    });
-    discoveryObserver.observe(document.documentElement, { childList: true, subtree: true });
   }
 
   function startObserver() {
     if (!archiveEnabled) return;
-    installDiscoveryObserver();
     scheduleThreadAttachment();
+    installDiscoveryObserver();
   }
 
   window.addEventListener("message", (event) => {
