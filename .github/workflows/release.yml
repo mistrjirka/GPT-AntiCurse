@@ -80,6 +80,7 @@ jobs:
             tests/test-history-fidelity.js
             tests/test-history-request-loop.js
             tests/test-packaging.js
+            tests/test-firefox-android.js
             tests/test-no-silent-catches.js
             tests/test-chrome-host-access.js
             tests/test-reliability.js
