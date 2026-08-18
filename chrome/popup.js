@@ -117,17 +117,25 @@ function renderTrimmedStats(stats) {
   const after = Math.max(0, Number(stats.mappingNodesAfter) || 0);
   const removed = Math.max(0, Number(stats.discardedNodes) || before - after);
   const percentage = before ? Math.max(0, Math.min(100, (removed / before) * 100)) : 0;
-  document.getElementById("savedPct").textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}%`;
-  document.getElementById("summaryText").textContent = "fewer internal nodes in this load";
   const logical = Number(stats.logicalDisplayAfter);
-  document.getElementById("summarySub").textContent = Number.isFinite(logical)
-    ? `Kept ${formatNumber(logical)} recent conversation units in ChatGPT. Older history stays available through AntiCurse.`
-    : `Kept ${formatNumber(stats.displayAfter)} visible messages in ChatGPT. Older history stays available through AntiCurse.`;
+  const recent = Number.isFinite(logical) ? logical : Math.max(0, Number(stats.displayAfter) || 0);
+  const bytesMeasured = Number.isFinite(Number(stats.originalBytes)) && Number.isFinite(Number(stats.outputBytes));
+  const removedBytes = bytesMeasured ? Math.max(0, Number(stats.originalBytes) - Number(stats.outputBytes)) : null;
+
+  if (bytesMeasured) {
+    document.getElementById("savedPct").textContent = formatBytes(removedBytes);
+    document.getElementById("summaryText").textContent = "response data removed from page state";
+    document.getElementById("summarySub").textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}% fewer internal nodes · kept ${formatNumber(recent)} recent conversation units in ChatGPT.`;
+    document.getElementById("bytesSaved").textContent = `${formatBytes(removedBytes)} (${formatBytes(stats.originalBytes)} → ${formatBytes(stats.outputBytes)})`;
+  } else {
+    document.getElementById("savedPct").textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}%`;
+    document.getElementById("summaryText").textContent = "fewer internal nodes in this load";
+    document.getElementById("summarySub").textContent = `Kept ${formatNumber(recent)} recent conversation units in ChatGPT. Older history stays available through AntiCurse.`;
+  }
+
   document.getElementById("removedNodes").textContent = formatNumber(removed);
   document.getElementById("processing").textContent = Number.isFinite(Number(stats.processingMs)) ? `${stats.processingMs} ms` : "—";
-  const bytesMeasured = Number.isFinite(Number(stats.originalBytes)) && Number.isFinite(Number(stats.outputBytes));
   setDetailVisibility("bytesSavedLabel", "bytesSaved", bytesMeasured);
-  if (bytesMeasured) document.getElementById("bytesSaved").textContent = formatBytes(Math.max(0, Number(stats.originalBytes) - Number(stats.outputBytes)));
   setStatus("Active", "active");
 }
 function renderStats(stats) {
