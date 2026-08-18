@@ -18,9 +18,9 @@
   const debugButton = document.getElementById("exportDebug");
   const feedback = document.getElementById("feedback");
   const EXPORT_HELP = {
-    clean: "Tasks and final answers only",
-    progress: "Also visible progress and a checklist",
-    full: "Also exact tool calls and plan payloads"
+    clean: "User messages and final assistant answers only. Best for a compact shareable transcript.",
+    progress: "Recommended. Keeps readable assistant progress and plans, but omits raw tool-call noise.",
+    full: "Includes raw tool calls and plan payloads. Best for debugging or technical continuation."
   };
 
   function buttons(on) { exportButton.disabled = !on; continueButton.disabled = !on; }
@@ -89,16 +89,19 @@
 
   function render(value) {
     if (!value) {
-      setArchiveStatus(toggle.checked ? "Not saved" : "Off", toggle.checked ? "missing" : "off");
+      setArchiveStatus(toggle.checked ? "No backup" : "Off", toggle.checked ? "missing" : "off");
       summary.textContent = toggle.checked
-        ? "Open or reload a ChatGPT conversation to create its optional persistent backup."
-        : "Persistent backup is off. On-page history loading still works for the current tab.";
+        ? "Reload this chat once to create a persistent local backup for export."
+        : "Persistent backup is off. Current-tab history still works, but nothing is kept for export across reloads.";
       buttons(false);
       return;
     }
-    setArchiveStatus(value.complete === false ? "Partial" : "Saved", value.complete === false ? "partial" : "saved");
+    const partial = value.complete === false;
+    setArchiveStatus(partial ? "Partial" : "Ready", partial ? "partial" : "saved");
     const updated = value.updatedAt ? new Date(value.updatedAt).toLocaleString() : "unknown time";
-    summary.textContent = `${value.messageCount} turns · ${value.characters} chars · ${updated}`;
+    summary.textContent = partial
+      ? `${value.messageCount} visible messages backed up locally · older history may be missing · Updated ${updated}`
+      : `${value.messageCount} messages backed up locally · Updated ${updated}`;
     buttons(true);
   }
 
@@ -144,7 +147,7 @@
     }
     download(result.markdown, result.filename);
     render(result.summary);
-    feedback.textContent = `${exportLevel.options[exportLevel.selectedIndex].text} Markdown exported locally.`;
+    feedback.textContent = `${exportLevel.options[exportLevel.selectedIndex].text} exported locally.`;
     if (openNew) {
       await ext.tabs.create({ url: "https://chatgpt.com/" });
       window.close();
