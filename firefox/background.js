@@ -216,17 +216,21 @@ function statsForRequest(details, stats, conversationId = null) {
 
 function publishStats(tabId, rawStats, requestStartedAt) {
   if (tabId < 0) return false;
+  const stats = rawStats || {};
+  // Cumulative totals describe real completed optimization work, not whichever
+  // response currently owns the tab UI. Count it even if a newer SPA response
+  // makes this status too old to publish.
+  updateTotals(stats).catch((error) => recordIssue("counters", "firefox-persist-failed", error));
+
   const startedAt = Number(requestStartedAt) || 0;
   const previous = lastStatsByTab.get(tabId);
   if (previous && previous.requestStartedAt > startedAt) return false;
 
-  const stats = rawStats || {};
   lastStatsByTab.set(tabId, { requestStartedAt: startedAt, stats });
   cacheSession(STATS_KEY_PREFIX, tabId, stats, "stats-cache-write-failed");
   updateActionBadge(tabId, stats);
   browser.tabs.sendMessage(tabId, { type: "cg-stats", stats })
     .catch((error) => console.debug("[GPT AntiCurse] Early stats delivery skipped", error));
-  updateTotals(stats).catch((error) => recordIssue("counters", "firefox-persist-failed", error));
   return true;
 }
 
