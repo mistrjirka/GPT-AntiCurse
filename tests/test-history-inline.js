@@ -138,7 +138,8 @@ assert(!popupHtml.includes("visible-history"), "All visible history must not rem
 assert(!popupHtml.includes("latest-visible"), "Latest visible only must not remain user-facing");
 assert(!popupHtml.includes('id="loadPrevious"'), "popup should not duplicate the on-page Load previous control");
 
-assert(sizing.includes("width:360px") || sizing.includes("width: 360px"), "popup must have an explicit body width");
-assert(sizing.includes("min-width:360px") || sizing.includes("min-width: 360px"), "popup must have a Firefox-safe minimum width");
-assert(!sizing.includes("100vw"), "popup sizing override must not depend on an unresolved viewport width");
+assert(sizing.includes("width:min(360px,100vw)") || sizing.includes("width: min(360px, 100vw)"), "popup must keep its compact desktop width while allowing narrow viewports to shrink");
+assert(sizing.includes("min-width:0") || sizing.includes("min-width: 0"), "popup must not force a 360px minimum width on Firefox Android");
+assert(sizing.includes("max-width:360px") || sizing.includes("max-width: 360px"), "desktop popup width must remain capped at 360px");
+assert(sizing.includes("100vw"), "popup sizing must be able to follow a narrow Android viewport");
 console.log("inline history/UI tests: PASS");
