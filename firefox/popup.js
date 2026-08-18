@@ -12,6 +12,7 @@ const limitInput = document.getElementById("limit");
 const noticeInput = document.getElementById("showNotice");
 const feedback = document.getElementById("feedback");
 const lastIssueElement = document.getElementById("lastIssue");
+const primaryMetric = document.getElementById("primaryMetric");
 
 function normalizeMode(value) { return value === "windowed-visible" ? "windowed-visible" : "recent"; }
 function formatNumber(value) { const number = Number(value); return numberFormat.format(Number.isFinite(number) ? number : 0); }
@@ -95,12 +96,12 @@ function renderTrimmedStats(stats) {
   const removedBytes = bytesMeasured ? Math.max(0, Number(stats.originalBytes) - Number(stats.outputBytes)) : null;
 
   if (bytesMeasured) {
-    document.getElementById("savedPct").textContent = formatBytes(removedBytes);
+    primaryMetric.textContent = formatBytes(removedBytes);
     document.getElementById("summaryText").textContent = "response data removed from page state";
     document.getElementById("summarySub").textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}% fewer internal nodes · kept ${formatNumber(recent)} recent conversation units in ChatGPT.`;
     document.getElementById("bytesSaved").textContent = `${formatBytes(removedBytes)} (${formatBytes(stats.originalBytes)} → ${formatBytes(stats.outputBytes)})`;
   } else {
-    document.getElementById("savedPct").textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}%`;
+    primaryMetric.textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}%`;
     document.getElementById("summaryText").textContent = "fewer internal nodes in this load";
     document.getElementById("summarySub").textContent = `Kept ${formatNumber(recent)} recent conversation units in ChatGPT. Older history stays available through AntiCurse.`;
   }
@@ -113,7 +114,7 @@ function renderTrimmedStats(stats) {
 function renderStats(stats) {
   if (!stats) {
     setStatus("Waiting");
-    document.getElementById("savedPct").textContent = "—";
+    primaryMetric.textContent = "—";
     document.getElementById("summaryText").textContent = "Waiting for a ChatGPT conversation";
     document.getElementById("summarySub").textContent = "Reload a conversation to measure its current load.";
     setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
@@ -122,7 +123,7 @@ function renderStats(stats) {
   if (stats.mode === "trimmed") return renderTrimmedStats(stats);
   if (stats.mode === "error") {
     setStatus("Error", "error");
-    document.getElementById("savedPct").textContent = "—";
+    primaryMetric.textContent = "—";
     document.getElementById("summaryText").textContent = "Original response kept";
     document.getElementById("summarySub").textContent = stats.error || stats.reason || "AntiCurse reported an interception error.";
     setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
@@ -130,14 +131,14 @@ function renderStats(stats) {
   }
   if (stats.reason === "disabled") {
     setStatus("Off");
-    document.getElementById("savedPct").textContent = "—";
+    primaryMetric.textContent = "—";
     document.getElementById("summaryText").textContent = "Performance guard is off";
     document.getElementById("summarySub").textContent = "Enable it above and reload the conversation to optimize long chats.";
     setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
     return;
   }
   setStatus("Ready", "active");
-  document.getElementById("savedPct").textContent = "0%";
+  primaryMetric.textContent = "0%";
   document.getElementById("summaryText").textContent = "no trimming needed";
   document.getElementById("summarySub").textContent = "This conversation is already within the configured window.";
   setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
