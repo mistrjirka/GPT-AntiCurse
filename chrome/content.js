@@ -2,7 +2,8 @@
 
 const CHANNEL = "__gpt_anticurse_v1__";
 const STATS_EVENT = "__gpt_anticurse_stats_ready__";
-const STATUS_BADGE_SELECTOR = '[id="cg-conversation-guard-status"]';
+const STATUS_BADGE_ID = "cg-conversation-guard-status";
+const STATUS_BADGE_SELECTOR = `[id="${STATUS_BADGE_ID}"]`;
 const DEFAULT_SETTINGS = { enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true };
 const RECOVERABLE_MAIN_CODES = new Set([
   "unsupported-conversation-shape",
@@ -17,6 +18,7 @@ let settingsReady = false;
 let lastStats = null;
 let lastIssue = null;
 let badge;
+let badgeObserver;
 let hideTimer;
 let renderQueuedForDomReady = false;
 
@@ -37,6 +39,33 @@ function statusBadges() {
   return Array.from(document.querySelectorAll(STATUS_BADGE_SELECTOR));
 }
 
+function reconcileBadges() {
+  const elements = statusBadges();
+  if (!currentSettings.showGuardNotice) {
+    for (const element of elements) element.remove();
+    badge = null;
+    return null;
+  }
+  if (!badge || !document.documentElement.contains(badge)) badge = elements[0] || null;
+  for (const element of elements) {
+    if (element !== badge) element.remove();
+  }
+  return badge;
+}
+
+function installBadgeObserver() {
+  if (badgeObserver || !document.body) return;
+  badgeObserver = new MutationObserver((records) => {
+    const badgeAdded = records.some((record) => Array.from(record.addedNodes || []).some(
+      (node) => node.nodeType === Node.ELEMENT_NODE && node.id === STATUS_BADGE_ID
+    ));
+    if (badgeAdded) reconcileBadges();
+  });
+  // AntiCurse status badges are direct body children. Keep this observer narrow
+  // so ordinary ChatGPT subtree mutations never reach it.
+  badgeObserver.observe(document.body, { childList: true });
+}
+
 function removeBadge() {
   clearTimeout(hideTimer);
   for (const element of statusBadges()) element.remove();
@@ -44,18 +73,35 @@ function removeBadge() {
 }
 
 function ensureBadge() {
-  const existing = statusBadges();
-  if (!badge || !document.documentElement.contains(badge)) badge = existing[0] || null;
-  if (!badge) {
-    badge = document.createElement("div");
-    badge.id = "cg-conversation-guard-status";
-    (document.body || document.documentElement).appendChild(badge);
-  }
-  for (const element of existing) {
-    if (element !== badge) element.remove();
-  }
+  installBadgeObserver();
+  reconcileBadges();
+  if (badge) return badge;
+  badge = document.createElement("div");
+  badge.id = STATUS_BADGE_ID;
   badge.title = "GPT AntiCurse";
+  (document.body || document.documentElement).appendChild(badge);
+  reconcileBadges();
   return badge;
+}
+
+function span(className, text) {
+  const element = document.createElement("span");
+  if (className) element.className = className;
+  if (text != null) element.textContent = text;
+  return element;
+}
+
+function renderTrimmedBadge(element, metric, recent, compact = false) {
+  const children = [span("cg-dot"), document.createElement("strong"), span("cg-accent", metric)];
+  children[1].textContent = "AntiCurse";
+  if (!compact) children.push(span("cg-sep", "•"), span("", `${recent.toLocaleString()} recent`));
+  element.replaceChildren(...children);
+}
+
+function renderSimpleBadge(element, text) {
+  const strong = document.createElement("strong");
+  strong.textContent = "AntiCurse";
+  element.replaceChildren(span("cg-dot"), strong, span("", text));
 }
 
 function pctRemoved(stats) {
@@ -118,6 +164,7 @@ function render(stats) {
     queueRenderAfterDomReady();
     return;
   }
+  installBadgeObserver();
   if (!currentSettings.showGuardNotice) {
     removeBadge();
     return;
@@ -136,13 +183,13 @@ function render(stats) {
     const logical = Number(lastStats.logicalDisplayAfter);
     const recent = Number.isFinite(logical) ? logical : visible;
     const metric = savedBytes != null ? `${formatBytes(savedBytes)} trimmed` : `${savedPercent}% trimmed`;
-    el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${metric}</span><span class="cg-sep">•</span><span>${recent.toLocaleString()} recent</span>`;
+    renderTrimmedBadge(el, metric, recent);
     el.title = `${savedBytes != null ? `${formatBytes(savedBytes)} of response payload removed before ChatGPT page code processed it\n` : ""}Removed ${removed.toLocaleString()} internal mapping nodes (${savedPercent}%)\nKept ${recent.toLocaleString()} recent conversation units\nFilter processing: ${lastStats.processingMs} ms`;
 
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
       if (el && el.dataset.mode === "trimmed" && currentSettings.showGuardNotice && !renderIssueIfNeeded()) {
-        el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${metric}</span>`;
+        renderTrimmedBadge(el, metric, recent, true);
         el.classList.add("cg-compact");
       }
     }, 9000);
@@ -150,7 +197,7 @@ function render(stats) {
     el.textContent = "AntiCurse error — original response kept";
     el.title = lastStats.error || "Unknown interception error";
   } else {
-    el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span>no trimming needed</span>`;
+    renderSimpleBadge(el, "no trimming needed");
   }
 }
 
