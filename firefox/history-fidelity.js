@@ -9,6 +9,7 @@
 (function (global) {
   "use strict";
 
+  const SVG_NS = "http://www.w3.org/2000/svg";
   const FALLBACK = Object.freeze({
     section: "text-token-text-primary w-full focus:outline-none",
     outer: "text-base my-auto mx-auto [--thread-content-margin:var(--thread-content-margin-xs,calc(var(--spacing)*4))] @w-sm/main:[--thread-content-margin:var(--thread-content-margin-sm,calc(var(--spacing)*6))] @w-lg/main:[--thread-content-margin:var(--thread-content-margin-lg,calc(var(--spacing)*16))] px-(--thread-content-margin)",
@@ -185,11 +186,23 @@
     return { kind: "content" };
   }
 
+  function svgNode(tagName, attributes) {
+    const node = document.createElementNS(SVG_NS, tagName);
+    for (const [name, value] of Object.entries(attributes || {})) node.setAttribute(name, value);
+    return node;
+  }
+
   function activityIcon() {
     const span = document.createElement("span");
     span.className = "cg-history-activity-icon mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center text-token-text-tertiary";
     span.setAttribute("aria-hidden", "true");
-    span.innerHTML = '<svg viewBox="0 0 20 20" width="20" height="20" fill="none" aria-hidden="true"><path d="M14.9 6.2A6 6 0 1 0 16 10" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"/><path d="M14.9 3.9v2.7h-2.7" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="10" r="1.35" fill="currentColor"/></svg>';
+    const svg = svgNode("svg", { viewBox: "0 0 20 20", width: "20", height: "20", fill: "none", "aria-hidden": "true" });
+    svg.append(
+      svgNode("path", { d: "M14.9 6.2A6 6 0 1 0 16 10", stroke: "currentColor", "stroke-width": "1.55", "stroke-linecap": "round" }),
+      svgNode("path", { d: "M14.9 3.9v2.7h-2.7", stroke: "currentColor", "stroke-width": "1.55", "stroke-linecap": "round", "stroke-linejoin": "round" }),
+      svgNode("circle", { cx: "10", cy: "10", r: "1.35", fill: "currentColor" })
+    );
+    span.append(svg);
     return span;
   }
 
@@ -245,7 +258,7 @@
 
   function enhanceUser(group, oldMessage, template) {
     const oldMarkdown = oldMessage.querySelector(".cg-history-markdown");
-    const sourceText = oldMarkdown ? oldMarkdown.innerText : oldMessage.innerText;
+    const sourceText = oldMarkdown ? oldMarkdown.textContent : oldMessage.textContent;
 
     const grow = document.createElement("div");
     grow.className = template.grow;
