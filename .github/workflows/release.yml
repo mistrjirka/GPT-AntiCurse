@@ -39,12 +39,13 @@ jobs:
           cmp firefox/archive-background.js chrome/archive-background.js
           cmp firefox/archive-capture.js chrome/archive-capture.js
           cmp firefox/dom-ready.js chrome/dom-ready.js
-          cmp firefox/history-native.js chrome/history-native.js
+          cmp firefox/history-markdown.js chrome/history-markdown.js
           cmp firefox/history-virtualized.js chrome/history-virtualized.js
           cmp firefox/history-virtualized.css chrome/history-virtualized.css
           cmp firefox/history-fidelity.js chrome/history-fidelity.js
           cmp firefox/history-fidelity.css chrome/history-fidelity.css
           cmp firefox/history-hydration-safe.js chrome/history-hydration-safe.js
+          cmp firefox/history-overlay.js chrome/history-overlay.js
           cmp firefox/windowed.js chrome/windowed.js
           cmp firefox/debug-state.js chrome/debug-state.js
           cmp firefox/content.css chrome/content.css
@@ -69,6 +70,7 @@ jobs:
             tests/test-trim-logical.js
             tests/test-archive.js
             tests/test-archive-export.js
+            tests/test-diagnostics.js
             tests/test-history-inline.js
             tests/test-history-virtualized.js
             tests/test-history-fidelity.js
