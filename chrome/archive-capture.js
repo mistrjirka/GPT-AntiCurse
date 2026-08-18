@@ -222,7 +222,6 @@
 
     const nextFingerprint = fingerprint(token.id, messages);
     if (!force && nextFingerprint === lastFingerprint) return { ok: true, reason: "unchanged", conversationId: token.id };
-    lastFingerprint = nextFingerprint;
 
     const result = await ext.runtime.sendMessage({
       type: "cg-merge-rendered-archive",
@@ -232,6 +231,7 @@
       messages
     });
     if (!result || result.ok !== true) throw new Error(result && result.reason ? result.reason : "Background did not confirm rendered archive merge.");
+    lastFingerprint = nextFingerprint;
     return result;
   }
 

@@ -107,7 +107,7 @@ Temporary installations disappear after Firefox restarts.
 For a local/development installation:
 
 1. Unzip the Chrome package.
-2. Open `chrome://extensions`.
+2. Open `chrome://extensions/`.
 3. Enable **Developer mode**.
 4. Choose **Load unpacked** and select the extracted package directory.
 
@@ -193,15 +193,16 @@ Important files include:
 
 - `trim.js` — browser-independent conversation graph trimming.
 - `trim-logical.js` — logical Recent-N budgeting around the core trimmer.
-- `archive.js` / `archive-store.js` — local conversation archive handling.
-- `archive-export.js` — Clean, Progress, and Full Markdown exports.
-- `history-native.js` — lightweight archived message rendering.
+- `archive.js` / `archive-store.js` — archive normalization/merging and durable local storage.
+- `archive-export.js` — named Clean, Progress, and Full Markdown export module.
+- `history-markdown.js` — lightweight Markdown rendering for archived turns.
 - `history-virtualized.js` — bounded archived-history DOM window and spacers.
-- `history-fidelity.js` — adapts archived turns to the current native ChatGPT visual shell.
-- `windowed.js` — recent/auto history controller and scroll-root handling.
+- `history-fidelity.js` — decorator that adapts archived turns to the current native ChatGPT visual shell.
+- `history-hydration-safe.js` — decorator that prevents archived DOM changes before hydration settles.
+- `history-overlay.js` — explicit composition point for the virtual renderer and its decorators.
+- `windowed.js` — recent/auto history controller, conversation scoping, and scroll-root handling.
 - `firefox/background.js` — Firefox response interception.
-- `chrome/main.js` — Chromium conversation-response transformation.
-- `chrome/main-settings-barrier.js` — Chromium startup/settings synchronization.
+- `chrome/main.js` — Chromium conversation-response transformation and startup/hydration safety barrier.
 
 There is no minification, transpilation, bundling, `eval`, `new Function`, or remotely loaded JavaScript in the extension.
 

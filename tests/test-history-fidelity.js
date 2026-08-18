@@ -5,6 +5,7 @@ const path = require("path");
 const source = (relative) => fs.readFileSync(path.join(__dirname, "..", relative), "utf8");
 
 const fidelity = source("firefox/history-fidelity.js");
+const overlay = source("firefox/history-overlay.js");
 const css = source("firefox/history-fidelity.css");
 const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
 const chromeManifest = JSON.parse(source("chrome/manifest.json"));
@@ -27,6 +28,12 @@ assert(fidelity.includes("Ran command in Development Sandbox"), "Development San
 assert(fidelity.includes("row.title"), "raw tool payload should remain inspectable without occupying transcript layout");
 assert(!fidelity.includes("setAttribute(\"data-message-author-role\""), "synthetic turns must not impersonate React-owned messages");
 assert(!fidelity.includes("setAttribute(\"data-turn-id\""), "synthetic turns must not impersonate React-owned turn containers");
+assert(fidelity.includes("function wrap(base)"), "fidelity must expose an explicit decorator");
+assert(fidelity.includes("global.CGHistoryFidelity"), "fidelity must have a named module API");
+assert(!fidelity.includes("global.CGHistoryOverlay ="), "fidelity must not silently replace the final overlay global");
+assert(overlay.includes("CGHistoryFidelity"), "the final compositor must apply fidelity explicitly");
+assert(overlay.includes("CGHistoryHydration"), "the final compositor must apply hydration explicitly");
+assert(overlay.includes("global.CGHistoryOverlay = overlay"), "one module should own final overlay publication");
 
 assert(css.includes("--thread-content-margin"), "archived turns must follow native responsive thread margins");
 assert(css.includes("--thread-content-max-width"), "archived turns must follow native responsive content width");
@@ -35,8 +42,10 @@ assert(css.includes("--user-chat-width"), "archived user bubbles must follow nat
 for (const manifest of [firefoxManifest, chromeManifest]) {
   const scripts = manifest.content_scripts.find((entry) => entry.js.includes("windowed.js")).js;
   const styles = manifest.content_scripts.find((entry) => Array.isArray(entry.css) && entry.css.includes("content.css")).css;
-  assert(scripts.indexOf("history-virtualized.js") < scripts.indexOf("history-fidelity.js"), "fidelity wrapper must load after the virtual renderer");
-  assert(scripts.indexOf("history-fidelity.js") < scripts.indexOf("windowed.js"), "fidelity wrapper must be installed before the controller creates history");
+  assert(scripts.indexOf("history-virtualized.js") < scripts.indexOf("history-fidelity.js"), "fidelity module must load after the virtual renderer");
+  assert(scripts.indexOf("history-fidelity.js") < scripts.indexOf("history-hydration-safe.js"), "fidelity must be available before hydration composition");
+  assert(scripts.indexOf("history-hydration-safe.js") < scripts.indexOf("history-overlay.js"), "decorators must load before final composition");
+  assert(scripts.indexOf("history-overlay.js") < scripts.indexOf("windowed.js"), "final overlay must exist before the history controller");
   assert(styles.indexOf("history-fidelity.css") === styles.length - 1, "fidelity CSS must override older fallback geometry last");
 }
 

@@ -1,4 +1,4 @@
-/* Lightweight Markdown renderer used by the active virtualized history view. */
+/* Lightweight Markdown renderer used by archived history. */
 (function (global) {
   "use strict";
 
@@ -34,7 +34,8 @@
           } else {
             parent.append(document.createTextNode(token));
           }
-        } catch (_) {
+        } catch (error) {
+          void error;
           parent.append(document.createTextNode(token));
         }
       }
@@ -168,5 +169,5 @@
     }
   }
 
-  global.CGHistoryOverlay = { renderMarkdown };
+  global.CGHistoryMarkdown = { renderMarkdown };
 })(globalThis);

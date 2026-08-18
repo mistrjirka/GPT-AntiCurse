@@ -11,6 +11,7 @@ const chromeBackgroundEntry = source("chrome/background-entry.js");
 const firefoxBackground = source("firefox/background.js");
 const archiveStore = source("chrome/archive-store.js");
 const archiveBackground = source("chrome/archive-background.js");
+const archiveExport = source("chrome/archive-export.js");
 const archiveCapture = source("chrome/archive-capture.js");
 const domReady = source("chrome/dom-ready.js");
 const diagnostics = source("chrome/diagnostics.js");
@@ -36,6 +37,9 @@ assert(archiveStore.includes("db.onversionchange"), "IndexedDB connections must 
 
 assert(!archiveBackground.includes("activeByTab"), "MV3 archive lookup must not depend on an ephemeral tab->conversation global cache");
 assert(archiveBackground.includes("message && message.conversationId"), "archive reads must use an explicit durable conversation id");
+assert(archiveBackground.includes("CGArchiveExport.archiveToMarkdown"), "archive export must depend on the named export module explicitly");
+assert(archiveExport.includes("global.CGArchiveExport = api"), "archive export must publish its own named module");
+assert(!archiveExport.includes("A.archiveToMarkdown ="), "archive export must not monkey-patch the core archive module");
 
 assert(!archiveCapture.includes("setTimeout(startObserver"), "archive thread discovery must not poll the DOM forever");
 assert(archiveCapture.includes("discoveryObserver"), "archive thread discovery should be mutation-driven");
@@ -58,7 +62,9 @@ assert(firefoxBackground.includes('message.type === "cg-background-health"'), "F
 
 assert(diagnostics.includes("cgIssueHistory"), "diagnostics must keep bounded local history, not only one last issue");
 assert(diagnostics.includes("MAX_HISTORY = 24"), "diagnostic history must be bounded");
-assert(diagnostics.includes("writeQueue = operation.catch"), "diagnostic persistence must recover after a failed write");
+assert(diagnostics.includes("function serializeWrite"), "diagnostic record/clear mutations must share one serialized write path");
+assert(diagnostics.includes("writeQueue = pending.catch"), "a failed diagnostic mutation must not poison later writes");
+assert(diagnostics.includes("return serializeWrite(async () =>"), "diagnostic clear must be ordered with pending diagnostic writes");
 
 assert(debugState.includes('type !== "cg-get-debug-state"'), "content script must expose on-demand health snapshots");
 assert(debugState.includes("backendHistory"), "debug snapshot must actively probe the history backend");
@@ -72,8 +78,6 @@ assert(backupPopup.includes("runtimeBrowser"), "debug report must distinguish ac
 assert(backupPopup.includes("backgroundKind"), "debug report must expose manifest background architecture");
 assert(backupPopup.includes("backgroundHealth"), "debug report must actively probe background health");
 
-// Package identity controls architecture. Runtime UA is diagnostics only. This
-// preserves Firefox behavior while also making Chrome-with-Firefox-package cases explicit.
 assert(windowed.includes("extensionManifest.browser_specific_settings"), "history routing must keep using packaged manifest identity");
 assert(windowed.includes("PACKAGE_TARGET"), "history debug must report package identity");
 assert(windowed.includes("RUNTIME_BROWSER"), "history debug must report actual runtime browser separately");
@@ -81,8 +85,6 @@ assert(!windowed.includes("getBrowserInfo"), "content-script routing must not de
 assert(!backupPopup.includes("getBrowserInfo"), "popup diagnostics must not depend on getBrowserInfo availability");
 assert(!windowed.includes('const IS_FIREFOX = typeof browser !== "undefined";'), "Chrome browser alias must not force the Firefox history path");
 
-// Failed history request -> diagnostic -> storage.local used to recursively
-// retrigger history lookup. Only actual history settings may now trigger it.
 assert(windowed.includes("const settingsChanged = !!(changes.enabled || changes.mode || changes.maxDisplayMessages)"), "history must filter storage changes to actual history settings");
 assert(windowed.includes("if (!settingsChanged) return;"), "diagnostic/counter/archive storage writes must not retrigger history requests");
 assert(windowed.includes("let historyRequest = null"), "history controller must keep an explicit single in-flight request slot");

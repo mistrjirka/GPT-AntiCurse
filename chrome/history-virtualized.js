@@ -7,8 +7,8 @@
 (function (global) {
   "use strict";
 
-  const prior = global.CGHistoryOverlay;
-  const renderMarkdown = prior && prior.renderMarkdown;
+  const markdown = global.CGHistoryMarkdown;
+  const renderMarkdown = markdown && markdown.renderMarkdown;
   if (typeof renderMarkdown !== "function") return;
 
   const DEFAULT_PAGE_SIZE = 64;
@@ -91,18 +91,18 @@
     const container = document.createElement("div");
     container.className = `cg-history-message min-h-8 text-message relative flex w-full flex-col gap-2 text-start break-words whitespace-normal ${message.role === "user" ? "items-end" : "items-start"}`;
 
-    const markdown = document.createElement("div");
-    markdown.className = "cg-history-markdown markdown prose dark:prose-invert wrap-break-word dark markdown-new-styling";
-    renderMarkdown(markdown, message.text);
+    const markdownElement = document.createElement("div");
+    markdownElement.className = "cg-history-markdown markdown prose dark:prose-invert wrap-break-word dark markdown-new-styling";
+    renderMarkdown(markdownElement, message.text);
 
     if (message.role === "user") {
       const bubble = document.createElement("div");
       bubble.className = "cg-history-user-bubble corner-superellipse/0.98 relative min-w-0 overflow-hidden rounded-[22px] px-4 py-2.5 leading-6 user-message-bubble-color";
-      bubble.append(markdown);
+      bubble.append(markdownElement);
       container.append(bubble);
     } else {
-      markdown.classList.add("w-full");
-      container.append(markdown);
+      markdownElement.classList.add("w-full");
+      container.append(markdownElement);
     }
 
     width.append(container);
@@ -418,7 +418,7 @@
     }
   }
 
-  global.CGHistoryOverlay = {
+  global.CGHistoryVirtualized = {
     create(options) { return new VirtualHistory(options); },
     renderMarkdown,
     logicalUnitCount,

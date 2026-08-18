@@ -2,10 +2,10 @@
  * Chromium MAIN-world conversation interceptor.
  *
  * Manifest V3 Chromium does not expose Firefox's filterResponseData() API to
- * ordinary extensions. AntiCurse therefore installs one document-start wrapper
+ * ordinary extensions. AntiCurse therefore installs document-start wrappers
  * around Response.json()/text(), scoped strictly to ChatGPT's conversation GET.
  *
- * The wrapper has a single ordered pipeline:
+ * Both wrappers feed one ordered pipeline:
  *   1. wait for authoritative settings and, when enabled, the hydration boundary;
  *   2. read the untouched conversation;
  *   3. publish one minimal visible-history archive to the isolated world;
@@ -301,51 +301,103 @@
     });
   }
 
+  const JSON_BODY = Object.freeze({
+    transport: "chromium-response-json",
+    decode(body) {
+      return { data: body, trace: {} };
+    },
+    originalBytes() {
+      return undefined;
+    },
+    encode(_originalBody, _originalData, transformed) {
+      return transformed;
+    }
+  });
+
+  const TEXT_BODY = Object.freeze({
+    transport: "chromium-response-text",
+    parseFailureCode: "conversation-json-parse-failed",
+    decode(text) {
+      const parseStarted = performance.now();
+      let body = text;
+      if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
+      const data = JSON.parse(body);
+      return { data, trace: { jsonParseMs: elapsed(parseStarted) } };
+    },
+    originalBytes(text) {
+      return new TextEncoder().encode(text).byteLength;
+    },
+    encode(originalText, originalData, transformed) {
+      return transformed === originalData ? originalText : JSON.stringify(transformed);
+    }
+  });
+
+  async function interceptConversationResponse(response, readBody, bodyAdapter) {
+    if (!isConversationDocument(response.url)) return readBody();
+
+    const endpointUrl = response.url;
+    const meta = responseMeta(response);
+    if (!meta.responseOk) {
+      const readStarted = performance.now();
+      const body = await readBody();
+      publishStats({
+        mode: "passthrough",
+        transport: bodyAdapter.transport,
+        reason: "http-status",
+        responseReadMs: elapsed(readStarted),
+        ...meta
+      });
+      return body;
+    }
+
+    const interceptStarted = performance.now();
+    const safeToTransform = await waitForTransformSafety();
+    const safetyWaitMs = elapsed(interceptStarted);
+    const readStarted = performance.now();
+    const originalBody = await readBody();
+    const responseReadMs = elapsed(readStarted);
+
+    let decoded;
+    try {
+      decoded = bodyAdapter.decode(originalBody);
+    } catch (error) {
+      publishDiagnostic(bodyAdapter.parseFailureCode || "conversation-body-decode-failed", error, {
+        ...meta,
+        safetyWaitMs,
+        responseReadMs
+      });
+      return originalBody;
+    }
+
+    const data = decoded.data;
+    const trace = {
+      ...meta,
+      safetyWaitMs,
+      responseReadMs,
+      ...(decoded.trace || {}),
+      ...publishArchive(data, endpointUrl)
+    };
+
+    if (!settings.enabled || !safeToTransform) {
+      reportStartupPassthrough(bodyAdapter.transport, trace);
+      return originalBody;
+    }
+
+    try {
+      const transformed = transformConversation(data, bodyAdapter.originalBytes(originalBody), trace);
+      return bodyAdapter.encode(originalBody, data, transformed);
+    } catch (error) {
+      reportTransformError(bodyAdapter.transport, error, trace);
+      return originalBody;
+    }
+  }
+
   const nativeJson = Response.prototype.json;
   Object.defineProperty(Response.prototype, "json", {
     configurable: true,
     writable: true,
-    value: async function antiCurseJson() {
-      if (!isConversationDocument(this.url)) return nativeJson.call(this);
-
-      const endpointUrl = this.url;
-      const meta = responseMeta(this);
-      if (!meta.responseOk) {
-        const readStarted = performance.now();
-        const data = await nativeJson.call(this);
-        publishStats({
-          mode: "passthrough",
-          transport: "chromium-response-json",
-          reason: "http-status",
-          responseReadMs: elapsed(readStarted),
-          ...meta
-        });
-        return data;
-      }
-
-      const interceptStarted = performance.now();
-      const safeToTransform = await waitForTransformSafety();
-      const safetyWaitMs = elapsed(interceptStarted);
-      const readStarted = performance.now();
-      const data = await nativeJson.call(this);
-      const trace = {
-        ...meta,
-        safetyWaitMs,
-        responseReadMs: elapsed(readStarted),
-        ...publishArchive(data, endpointUrl)
-      };
-
-      if (!settings.enabled || !safeToTransform) {
-        reportStartupPassthrough("chromium-response-json", trace);
-        return data;
-      }
-
-      try {
-        return transformConversation(data, undefined, trace);
-      } catch (error) {
-        reportTransformError("chromium-response-json", error, trace);
-        return data;
-      }
+    value: function antiCurseJson() {
+      return interceptConversationResponse(this, () => nativeJson.call(this), JSON_BODY);
     }
   });
 
@@ -353,62 +405,8 @@
   Object.defineProperty(Response.prototype, "text", {
     configurable: true,
     writable: true,
-    value: async function antiCurseText() {
-      if (!isConversationDocument(this.url)) return nativeText.call(this);
-
-      const endpointUrl = this.url;
-      const meta = responseMeta(this);
-      if (!meta.responseOk) {
-        const readStarted = performance.now();
-        const text = await nativeText.call(this);
-        publishStats({
-          mode: "passthrough",
-          transport: "chromium-response-text",
-          reason: "http-status",
-          responseReadMs: elapsed(readStarted),
-          ...meta
-        });
-        return text;
-      }
-
-      const interceptStarted = performance.now();
-      const safeToTransform = await waitForTransformSafety();
-      const safetyWaitMs = elapsed(interceptStarted);
-      const readStarted = performance.now();
-      const text = await nativeText.call(this);
-      const responseReadMs = elapsed(readStarted);
-      let data;
-      let jsonParseMs;
-      try {
-        const parseStarted = performance.now();
-        let body = text;
-        if (body.charCodeAt(0) === 0xfeff) body = body.slice(1);
-        data = JSON.parse(body);
-        jsonParseMs = elapsed(parseStarted);
-      } catch (error) {
-        publishDiagnostic("conversation-json-parse-failed", error, { ...meta, safetyWaitMs, responseReadMs });
-        return text;
-      }
-
-      const trace = {
-        ...meta,
-        safetyWaitMs,
-        responseReadMs,
-        jsonParseMs,
-        ...publishArchive(data, endpointUrl)
-      };
-      if (!settings.enabled || !safeToTransform) {
-        reportStartupPassthrough("chromium-response-text", trace);
-        return text;
-      }
-
-      try {
-        const transformed = transformConversation(data, new TextEncoder().encode(text).byteLength, trace);
-        return transformed === data ? text : JSON.stringify(transformed);
-      } catch (error) {
-        reportTransformError("chromium-response-text", error, trace);
-        return text;
-      }
+    value: function antiCurseText() {
+      return interceptConversationResponse(this, () => nativeText.call(this), TEXT_BODY);
     }
   });
 

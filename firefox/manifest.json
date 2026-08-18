@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GPT AntiCurse",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Makes very long ChatGPT conversations responsive by shrinking invisible conversation state before page JavaScript processes it.",
   "icons": {
     "16": "icons/icon16.png",
@@ -17,7 +17,7 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["dom-ready.js", "diagnostics.js", "archive.js", "conversation-scope.js", "content.js", "history-native.js", "history-virtualized.js", "history-fidelity.js", "history-hydration-safe.js", "archive-capture.js", "windowed.js", "debug-state.js"],
+      "js": ["dom-ready.js", "diagnostics.js", "archive.js", "conversation-scope.js", "content.js", "history-markdown.js", "history-virtualized.js", "history-fidelity.js", "history-hydration-safe.js", "history-overlay.js", "archive-capture.js", "windowed.js", "debug-state.js"],
       "css": ["content.css", "history-virtualized.css", "history-fidelity.css"],
       "run_at": "document_start"
     }

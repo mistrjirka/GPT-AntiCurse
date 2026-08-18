@@ -8,10 +8,10 @@ function source(relative) {
   return fs.readFileSync(path.join(__dirname, "..", relative), "utf8");
 }
 
-global.CGHistoryOverlay = { renderMarkdown() {} };
+global.CGHistoryMarkdown = { renderMarkdown() {} };
 require("../firefox/history-virtualized.js");
 
-const H = global.CGHistoryOverlay;
+const H = global.CGHistoryVirtualized;
 const messages = [];
 for (let exchange = 0; exchange < 8; exchange++) {
   messages.push({ role: "user", text: `u${exchange}` });
@@ -35,22 +35,24 @@ assert(virtualSource.includes('turn.style.contentVisibility = "visible"'), "moun
 assert(virtualSource.includes("element.offsetHeight"), "page measurement should not depend on one layout API");
 assert(virtualSource.includes("element.scrollHeight"), "page measurement should have a second real-layout fallback");
 assert(!virtualSource.includes("data-message-author-role"), "synthetic turns must not impersonate ChatGPT native messages");
+assert(virtualSource.includes("global.CGHistoryVirtualized"), "virtual renderer must expose a named module instead of replacing the final overlay global");
+
+for (const browser of ["firefox", "chrome"]) {
+  const manifest = JSON.parse(source(`${browser}/manifest.json`));
+  const scripts = manifest.content_scripts.find((entry) => entry.js.includes("windowed.js")).js;
+  assert(scripts.indexOf("history-markdown.js") < scripts.indexOf("history-virtualized.js"));
+  assert(scripts.indexOf("history-virtualized.js") < scripts.indexOf("history-overlay.js"));
+  assert(scripts.indexOf("history-overlay.js") < scripts.indexOf("windowed.js"));
+  assert(manifest.content_scripts.find((entry) => entry.js.includes("windowed.js")).css.includes("history-virtualized.css"));
+}
 
 const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
-const firefoxContent = firefoxManifest.content_scripts[0].js;
-assert(firefoxContent.indexOf("history-native.js") < firefoxContent.indexOf("history-virtualized.js"));
-assert(firefoxContent.indexOf("history-virtualized.js") < firefoxContent.indexOf("windowed.js"));
 assert(firefoxManifest.background.scripts.indexOf("trim.js") < firefoxManifest.background.scripts.indexOf("trim-logical.js"));
 assert(firefoxManifest.background.scripts.indexOf("trim-logical.js") < firefoxManifest.background.scripts.indexOf("archive.js"));
-assert(firefoxManifest.content_scripts[0].css.includes("history-virtualized.css"));
 
 const chromeManifest = JSON.parse(source("chrome/manifest.json"));
 const chromeMain = chromeManifest.content_scripts[0].js;
-const chromeIsolated = chromeManifest.content_scripts[1].js;
 assert(chromeMain.indexOf("trim.js") < chromeMain.indexOf("trim-logical.js"));
 assert(chromeMain.indexOf("trim-logical.js") < chromeMain.indexOf("main.js"));
-assert(chromeIsolated.indexOf("history-native.js") < chromeIsolated.indexOf("history-virtualized.js"));
-assert(chromeIsolated.indexOf("history-virtualized.js") < chromeIsolated.indexOf("windowed.js"));
-assert(chromeManifest.content_scripts[1].css.includes("history-virtualized.css"));
 
 console.log("virtual history tests: PASS");
