@@ -1,31 +1,34 @@
-# GPT AntiCurse v0.5.18
+# GPT AntiCurse v0.6.0
 
-Archived-message fidelity fix for long conversations.
+Conversation-isolation and extension-packaging release.
 
-## Match current ChatGPT user-message styling
+## Prevent history from leaking between chats
 
-- Fixes autoloaded/archived user messages sometimes using a completely different visual style from native ChatGPT messages.
-- Root cause: the fidelity sampler assumed the first child inside a native user message was the text bubble. When the sampled native message had images or files, that first child was actually an attachment row.
-- The renderer now finds the real native text node (`whitespace-pre-wrap`) and walks up to the actual user text bubble (`user-message-bubble-color`) instead of depending on child order.
-- This works with attachment-first messages and long/collapsible user messages while keeping synthetic archived turns outside ChatGPT's React identity attributes.
+- Fixes archived history from one ChatGPT conversation being appended to another after SPA navigation.
+- Introduces a shared conversation scope token (`{id, generation}`) so asynchronous history work is invalidated when the active `/c/<id>` route changes.
+- Late history replies and late network archives from a previous conversation are rejected for the current page.
+- DOM backup capture remains bound to the conversation generation where its observer was attached and waits for the current conversation to be confirmed after navigation.
+- Rendered archive merges now validate that their source URL belongs to the same conversation.
 
-## Cleaner archived tool/search activity
+## Simpler ownership model
 
-- Additional legacy serialized tool payloads are recognized and rendered as compact activity rows instead of raw JSON paragraphs.
-- Covers provider-specific web-search payloads, tool discovery, batched commands, file reads, and file searches.
-- Raw payloads remain available in the activity-row title for debugging but no longer occupy the visible transcript.
+- History requests now always carry an explicit conversation ID instead of falling back to mutable tab state.
+- Firefox tab/session history caches are conversation-aware and reject mismatched or out-of-order responses.
+- Chromium background history no longer infers ownership from `sender.tab.url`.
+- Chromium archives use the actual conversation response endpoint as source metadata rather than whichever page URL happens to be current when a slow response finishes.
+
+## Extension icons
+
+- Packages the existing GPT AntiCurse icon at 16, 32, 48, and 128 px.
+- Declares the icon in both Chrome and Firefox manifests.
+- Adds the toolbar/action icon and the 128×128 store icon.
 
 ## Regression coverage
 
-- Chromium native-fidelity E2E now deliberately places an attachment row before every native user text bubble. The archived bubble must still inherit the actual native text-bubble and text-node classes.
-- The same E2E verifies provider-specific serialized web-search payloads become compact activity rows.
-- Existing Chromium Recent/Auto, hydration, Firefox interception/paging, Firefox native-fidelity, lifecycle, retry-loop, archive, and virtualization tests remain release gates.
-
-## Prior package/runtime confusion audit
-
-- No architecture changes in this release are based on treating Chrome debug reports as Firefox reports.
-- Browser package identity continues to decide the implementation path; runtime browser identity remains diagnostic metadata only.
-- The v0.5.17 retry protection remains valid independently because it prevents any temporary missing background receiver from turning diagnostics storage writes into an unbounded request loop.
+- Adds the critical A → B navigation race: chat A starts loading, the tab navigates to chat B, then A resolves late. B must remain the rendered history.
+- Adds manifest/icon packaging checks and conversation-scope tests.
+- Removes release-specific fixed-version assertions so package-version tests check browser parity and semantic versioning instead.
+- Chromium Recent/Auto, hydration, native-fidelity, Firefox interception/paging/native-fidelity, archive, lifecycle, retry-loop, and virtualization E2E tests remain release gates.
 
 ## Privacy
 
