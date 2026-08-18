@@ -1,16 +1,13 @@
 /*
  * Make AntiCurse-owned archived turns visually follow the native ChatGPT thread.
  *
- * This layer intentionally copies class names only. It never copies native IDs,
+ * This module copies class names only. It never copies native IDs,
  * data-message-author-role, data-turn-id, React state, buttons, or event handlers.
- * Loaded after history-virtualized.js and before windowed.js, it wraps the
- * virtual page factory and restyles each synthetic page before it is mounted.
+ * The final history compositor explicitly applies this decorator to the virtual
+ * renderer before the controller creates a reader.
  */
 (function (global) {
   "use strict";
-
-  const prior = global.CGHistoryOverlay;
-  if (!prior || typeof prior.create !== "function") return;
 
   const FALLBACK = Object.freeze({
     section: "text-token-text-primary w-full focus:outline-none",
@@ -24,6 +21,37 @@
     userBubble: "corner-superellipse/0.98 relative min-w-0 overflow-hidden rounded-[22px] px-4 py-2.5 leading-6 user-message-bubble-color max-w-(--user-chat-width,70%)",
     userText: "max-w-full min-w-0 [overflow-wrap:anywhere] whitespace-pre-wrap",
     activity: "text-token-text-tertiary flex items-start gap-2 text-start text-base leading-6"
+  });
+
+  const ACTION_LABELS = Object.freeze({
+    exec_command: "Ran command",
+    exec_commands: "Ran commands",
+    read_file: "Read file",
+    read_files: "Read files",
+    search_project: "Searched files",
+    search_many: "Searched files",
+    list_repositories: "Inspected Development Sandbox repositories",
+    list_projects: "Inspected Development Sandbox projects",
+    list_sessions: "Checked Development Sandbox sessions",
+    create_session: "Opened Development Sandbox session",
+    get_job: "Checked Development Sandbox job",
+    list_jobs: "Checked Development Sandbox jobs",
+    list_processes: "Checked Development Sandbox processes",
+    sandbox_health: "Checked Development Sandbox",
+    apply_patch: "Edited files in Development Sandbox",
+    replace_text: "Edited files in Development Sandbox",
+    write_file: "Wrote file in Development Sandbox",
+    git_status_diff: "Checked repository changes",
+    cleanup_jobs: "Cleaned Development Sandbox jobs"
+  });
+
+  const SANDBOX_LABELS = Object.freeze({
+    exec_command: "Ran command in Development Sandbox",
+    exec_commands: "Ran commands in Development Sandbox",
+    read_file: "Read file in Development Sandbox",
+    read_files: "Read files in Development Sandbox",
+    search_project: "Searched Development Sandbox",
+    search_many: "Searched Development Sandbox"
   });
 
   const copyClass = (element, fallback) => element && typeof element.className === "string" && element.className.trim()
@@ -108,30 +136,10 @@
     const value = String(path || "");
     const action = value.split("/").filter(Boolean).pop() || "tool";
     const sandbox = /asdk_app|development[_ -]?sandbox/i.test(value);
-    const labels = {
-      exec_command: sandbox ? "Ran command in Development Sandbox" : "Ran command",
-      exec_commands: sandbox ? "Ran commands in Development Sandbox" : "Ran commands",
-      read_file: sandbox ? "Read file in Development Sandbox" : "Read file",
-      read_files: sandbox ? "Read files in Development Sandbox" : "Read files",
-      search_project: sandbox ? "Searched Development Sandbox" : "Searched files",
-      search_many: sandbox ? "Searched Development Sandbox" : "Searched files",
-      list_repositories: "Inspected Development Sandbox repositories",
-      list_projects: "Inspected Development Sandbox projects",
-      list_sessions: "Checked Development Sandbox sessions",
-      create_session: "Opened Development Sandbox session",
-      get_job: "Checked Development Sandbox job",
-      list_jobs: "Checked Development Sandbox jobs",
-      list_processes: "Checked Development Sandbox processes",
-      sandbox_health: "Checked Development Sandbox",
-      apply_patch: "Edited files in Development Sandbox",
-      replace_text: "Edited files in Development Sandbox",
-      write_file: "Wrote file in Development Sandbox",
-      git_status_diff: "Checked repository changes",
-      cleanup_jobs: "Cleaned Development Sandbox jobs",
-      search: /personal_context/i.test(value) ? "Searched personal context" : "Searched"
-    };
-    if (labels[action]) return labels[action];
-    return sandbox ? "Used Development Sandbox" : action.replace(/[_-]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+    if (action === "search") return /personal_context/i.test(value) ? "Searched personal context" : "Searched";
+    const label = sandbox ? SANDBOX_LABELS[action] || ACTION_LABELS[action] : ACTION_LABELS[action];
+    if (label) return label;
+    return sandbox ? "Used Development Sandbox" : action.replace(/[_-]+/g, " ").replace(/^./, (character) => character.toUpperCase());
   }
 
   function classifyBlock(text) {
@@ -199,10 +207,6 @@
     return row;
   }
 
-  function directElementChildren(element) {
-    return Array.from(element ? element.children : []);
-  }
-
   function splitAssistantNodes(markdown) {
     const groups = [];
     let content = [];
@@ -212,7 +216,7 @@
       content = [];
     };
 
-    for (const node of directElementChildren(markdown)) {
+    for (const node of Array.from(markdown ? markdown.children : [])) {
       const classification = classifyBlock(node.textContent);
       if (classification.kind === "noise" || classification.kind === "empty") continue;
       if (classification.kind === "activity") {
@@ -239,7 +243,7 @@
     return message;
   }
 
-  function enhanceUser(section, outer, group, oldMessage, template) {
+  function enhanceUser(group, oldMessage, template) {
     const oldMarkdown = oldMessage.querySelector(".cg-history-markdown");
     const sourceText = oldMarkdown ? oldMarkdown.innerText : oldMessage.innerText;
 
@@ -261,7 +265,7 @@
     group.replaceChildren(grow);
   }
 
-  function enhanceAssistant(section, outer, group, oldMessage, template) {
+  function enhanceAssistant(group, oldMessage, template) {
     const markdown = oldMessage.querySelector(".cg-history-markdown");
     if (!markdown) return;
     const chunks = splitAssistantNodes(markdown);
@@ -291,8 +295,8 @@
     outer.className = `cg-history-turn-outer ${template.outer}${role === "user" && !template.outer.includes("pt-3") ? " pt-3" : ""}`;
     group.className = `cg-history-turn-width ${template.group}${role === "assistant" && !template.group.includes("agent-turn") ? " agent-turn" : ""}`;
 
-    if (role === "user") enhanceUser(section, outer, group, oldMessage, template);
-    else enhanceAssistant(section, outer, group, oldMessage, template);
+    if (role === "user") enhanceUser(group, oldMessage, template);
+    else enhanceAssistant(group, oldMessage, template);
   }
 
   function enhancePage(page) {
@@ -302,17 +306,20 @@
     return page;
   }
 
-  global.CGHistoryOverlay = {
-    ...prior,
-    create(options) {
-      const history = prior.create(options);
-      if (!history || typeof history.createPage !== "function") return history;
-      const createPage = history.createPage.bind(history);
-      history.createPage = function (page) {
-        return enhancePage(createPage(page));
-      };
-      return history;
-    },
-    enhancePage
-  };
+  function wrap(base) {
+    if (!base || typeof base.create !== "function") return base;
+    return {
+      ...base,
+      create(options) {
+        const history = base.create(options);
+        if (!history || typeof history.createPage !== "function") return history;
+        const createPage = history.createPage.bind(history);
+        history.createPage = (page) => enhancePage(createPage(page));
+        return history;
+      },
+      enhancePage
+    };
+  }
+
+  global.CGHistoryFidelity = { wrap, enhancePage };
 })(globalThis);
