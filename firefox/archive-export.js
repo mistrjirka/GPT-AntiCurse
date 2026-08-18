@@ -2,9 +2,6 @@
 (function (global) {
   "use strict";
 
-  const A = global.CGArchive;
-  if (!A) return;
-
   const DEFAULT_EXPORT_LEVEL = "progress";
   const EXPORT_LEVELS = new Set(["clean", "progress", "full"]);
   const TOOL_JSON_KEYS = new Set([
@@ -227,11 +224,14 @@
     return `${lines.join("\n").trimEnd()}\n`;
   }
 
-  A.DEFAULT_EXPORT_LEVEL = DEFAULT_EXPORT_LEVEL;
-  A.EXPORT_LEVELS = EXPORT_LEVELS;
-  A.archiveToMarkdown = archiveToMarkdown;
-  A.classifyAssistantMessage = classify;
-  A.planPayload = planPayload;
+  const api = {
+    DEFAULT_EXPORT_LEVEL,
+    EXPORT_LEVELS,
+    archiveToMarkdown,
+    classifyAssistantMessage: classify,
+    planPayload
+  };
 
-  if (typeof module !== "undefined" && module.exports) module.exports = A;
+  global.CGArchiveExport = api;
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
