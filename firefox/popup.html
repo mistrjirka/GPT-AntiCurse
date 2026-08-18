@@ -14,30 +14,30 @@
       <div class="title-block"><h1>GPT AntiCurse</h1><span class="subtitle">Long-chat performance guard</span></div>
       <span id="statusPill" class="status" role="status" aria-live="polite">Waiting</span>
     </header>
-    <section class="summary card" aria-label="Current optimization"><div class="summary-main"><span id="savedPct" class="pct">—</span><span id="summaryText" class="summary-text">No conversation stats yet</span></div><div id="summarySub" class="summary-sub">Reload a ChatGPT conversation to measure it.</div></section>
+    <section class="summary card" aria-label="Current optimization"><div class="summary-main"><span id="savedPct" class="pct">—</span><span id="summaryText" class="summary-text">Waiting for a ChatGPT conversation</span></div><div id="summarySub" class="summary-sub">Reload a conversation to measure its current load.</div></section>
     <section class="controls card" aria-label="AntiCurse settings">
       <label class="row"><span class="label"><b>Performance guard</b><small>Reduce heavy conversation state</small></span><input id="enabled" type="checkbox"></label>
       <label class="row"><span class="label"><b>History mode</b><small id="modeHelp">Keep the latest window and load older turns with a button.</small></span><select id="mode" aria-describedby="modeHelp"><option value="recent">Recent N + button</option><option value="windowed-visible">Auto window</option></select></label>
       <label class="row"><span class="label"><b>Window size</b><small>Recent conversation units kept natively by ChatGPT</small></span><input id="limit" type="number" min="4" max="500" step="2"></label>
       <label class="row"><span class="label"><b>On-page status</b></span><input id="showNotice" type="checkbox"></label>
-      <label class="row"><span class="label"><b>Conversation backup</b><small>Optional persistent local Markdown-ready copy</small></span><input id="archiveEnabled" type="checkbox"></label>
+      <label class="row"><span class="label"><b>Persistent backup</b><small>Keeps a local copy across reloads and enables Markdown export</small></span><input id="archiveEnabled" type="checkbox"></label>
     </section>
     <div class="buttons" style="grid-template-columns:1fr"><button id="reload" class="primary">Save &amp; reload</button></div>
     <div id="feedback" role="status" aria-live="polite"></div>
     <section class="backup card" aria-labelledby="backupTitle">
-      <div class="backup-head"><b id="backupTitle">Current chat backup</b><span id="archiveStatus" data-state="checking" role="status" aria-live="polite">Checking…</span></div>
-      <div id="archiveSummary" class="backup-summary">Open a ChatGPT conversation to create a backup.</div>
+      <div class="backup-head"><b id="backupTitle">Export this chat</b><span id="archiveStatus" data-state="checking" role="status" aria-live="polite">Checking…</span></div>
+      <div id="archiveSummary" class="backup-summary">Checking local backup…</div>
       <label class="archive-export-row">
-        <span class="archive-export-label"><b>Markdown detail</b><small id="archiveExportHelp">Also visible progress and a checklist</small></span>
+        <span class="archive-export-label"><b>Export content</b><small id="archiveExportHelp">Recommended: readable conversation without tool-call noise.</small></span>
         <select id="archiveExportLevel" aria-describedby="archiveExportHelp">
-          <option value="clean">Clean</option>
-          <option value="progress">Progress</option>
-          <option value="full">Full</option>
+          <option value="clean">Final answers only</option>
+          <option value="progress">Readable conversation</option>
+          <option value="full">Full technical log</option>
         </select>
       </label>
-      <div class="backup-buttons"><button id="exportMarkdown">Export Markdown</button><button id="continueChat">Export &amp; new chat</button></div>
+      <div class="backup-buttons"><button id="exportMarkdown">Download Markdown</button><button id="continueChat">Download &amp; new chat</button></div>
     </section>
-    <details><summary>Details</summary><dl><dt>Nodes removed</dt><dd id="removedNodes">—</dd><dt>Response data removed</dt><dd id="bytesSaved">—</dd><dt>Processing</dt><dd id="processing">—</dd><dt>Last issue</dt><dd id="lastIssue">None</dd><dt>Total optimized loads</dt><dd id="totalResponses">0</dd><dt>Total nodes skipped</dt><dd id="totalRemoved">0</dd><dt>Total data removed</dt><dd id="totalBytes">0 B</dd></dl><div class="details-actions"><span>Diagnostics stay local; debug reports contain no chat text.</span><button id="exportDebug" class="link-button">Download debug report</button><button id="resetTotals" class="link-button">Reset counters</button></div></details>
+    <details><summary>Technical details</summary><dl><dt>Internal nodes removed</dt><dd id="removedNodes">—</dd><dt id="bytesSavedLabel">Measured payload reduction</dt><dd id="bytesSaved">—</dd><dt>Processing time</dt><dd id="processing">—</dd><dt>Last issue</dt><dd id="lastIssue">None</dd><dt>Optimized loads</dt><dd id="totalResponses">0</dd><dt>Total internal nodes removed</dt><dd id="totalRemoved">0</dd><dt id="totalBytesLabel">Measured payload reduction total</dt><dd id="totalBytes">0 B</dd></dl><div class="details-actions"><span>Diagnostics stay local; debug reports contain no chat text.</span><button id="exportDebug" class="link-button">Download debug report</button><button id="resetTotals" class="link-button">Reset counters</button></div></details>
   </div>
   <script src="diagnostics.js"></script>
   <script src="popup-context.js"></script>
