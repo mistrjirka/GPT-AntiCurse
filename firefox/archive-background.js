@@ -42,6 +42,16 @@
     const id = message && message.conversationId;
     if (!id) return { ok: false, reason: "missing-conversation-id" };
 
+    const sourceId = CGArchive.conversationIdFromUrl(message && message.sourceUrl);
+    if (sourceId && sourceId !== id) {
+      return {
+        ok: false,
+        reason: "conversation-scope-mismatch",
+        conversationId: id,
+        sourceConversationId: sourceId
+      };
+    }
+
     return queueFor(id, async () => {
       const existing = await CGArchiveStore.get(id);
       const merged = CGArchive.mergeArchiveWithRendered(existing, message.messages, {

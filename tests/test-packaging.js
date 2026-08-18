@@ -37,6 +37,16 @@ function importedScripts(source) {
   return result;
 }
 
+function manifestIconPaths(manifest) {
+  const paths = new Set(Object.values(manifest.icons || {}));
+  const toolbar = manifest.action && manifest.action.default_icon;
+  if (typeof toolbar === "string") paths.add(toolbar);
+  else if (toolbar && typeof toolbar === "object") {
+    for (const name of Object.values(toolbar)) paths.add(name);
+  }
+  return paths;
+}
+
 function checkBrowser(browser) {
   const dir = path.join(ROOT, browser);
   const manifest = JSON.parse(text(path.join(dir, "manifest.json")));
@@ -67,6 +77,12 @@ function checkBrowser(browser) {
     const popup = text(popupPath);
     for (const name of htmlAssets(popup, "script", "src", ".js")) addJs(name);
     for (const name of htmlAssets(popup, "link", "href", ".css")) cssReachable.add(name);
+  }
+
+  assert(manifest.icons && manifest.icons["128"], `${browser}: 128px extension icon is not declared`);
+  assert(manifest.action && manifest.action.default_icon, `${browser}: toolbar icon is not declared`);
+  for (const name of manifestIconPaths(manifest)) {
+    assert(fs.existsSync(path.join(dir, name)), `${browser}: referenced icon file is missing: ${name}`);
   }
 
   while (queue.length) {

@@ -85,7 +85,8 @@ assert(!windowed.includes('const IS_FIREFOX = typeof browser !== "undefined";'),
 // retrigger history lookup. Only actual history settings may now trigger it.
 assert(windowed.includes("const settingsChanged = !!(changes.enabled || changes.mode || changes.maxDisplayMessages)"), "history must filter storage changes to actual history settings");
 assert(windowed.includes("if (!settingsChanged) return;"), "diagnostic/counter/archive storage writes must not retrigger history requests");
-assert(windowed.includes("historyRequestPromise"), "history background requests must be single-flight");
+assert(windowed.includes("let historyRequest = null"), "history controller must keep an explicit single in-flight request slot");
+assert(windowed.includes("historyRequest && scope.isCurrent(historyRequest.token)"), "history request reuse must be single-flight only inside the current conversation scope");
 assert(windowed.includes("HISTORY_RETRY_MAX_MS = 30000"), "history receiver failures need bounded exponential backoff");
 assert(windowed.includes("historyRetryAt"), "history retries must honor a cooldown after failures");
 
@@ -101,7 +102,7 @@ assert(chromeMain.includes('archiveSkipped: "unsupported-shape"'), "unsupported 
 
 assert(chromeManifest.content_scripts[1].js.includes("debug-state.js"), "Chromium must package the debug-state content script");
 assert(firefoxManifest.content_scripts[0].js.includes("debug-state.js"), "Firefox must package the debug-state content script");
-assert.equal(chromeManifest.version, "0.5.18");
-assert.equal(firefoxManifest.version, "0.5.18");
+assert.equal(chromeManifest.version, firefoxManifest.version, "Chrome and Firefox packages must use the same version");
+assert(/^\d+\.\d+\.\d+$/.test(chromeManifest.version), "package version must be semantic x.y.z");
 
 console.log("lifecycle/failure-recovery checks: PASS");

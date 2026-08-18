@@ -30,8 +30,6 @@ const STATS_KEY_PREFIX = "cg-tab-stats:";
 const HISTORY_KEY_PREFIX = "cg-tab-history:";
 const BACKGROUND_STARTED_AT = new Date().toISOString();
 
-// Hot copies improve the common path while the event page is alive. storage.session
-// is a fallback across event-page unloads, not the primary copy of large history.
 let settings = { ...DEFAULT_SETTINGS, archiveEnabled: false };
 let totals = { ...EMPTY_TOTALS };
 let settingsInitialized = false;
@@ -39,6 +37,9 @@ let initializationFailed = false;
 let pendingSettingChanges = Object.create(null);
 let pendingTotalsChange = null;
 const lastStatsByTab = new Map();
+// One latest response per tab is enough, but it is never trusted without its
+// conversationId. requestStartedAt prevents an older overlapping response from
+// replacing a newer SPA navigation merely because it finished later.
 const historyByTab = new Map();
 const sessionWriteQueues = new Map();
 
@@ -85,8 +86,6 @@ const settingsReady = browser.storage.local.get({ ...DEFAULT_SETTINGS, cgTotals:
   settingsInitialized = true;
   return true;
 }).catch((error) => {
-  // A failed settings read must fail open. Do not silently trim with defaults if
-  // the user may have disabled the extension or selected a different window.
   initializationFailed = true;
   settingsInitialized = true;
   settings = { ...DEFAULT_SETTINGS, archiveEnabled: false };
@@ -95,14 +94,14 @@ const settingsReady = browser.storage.local.get({ ...DEFAULT_SETTINGS, cgTotals:
   return false;
 });
 
+function conversationIdFromEndpoint(urlString) {
+  return CGArchive && typeof CGArchive.conversationIdFromUrl === "function"
+    ? CGArchive.conversationIdFromUrl(urlString)
+    : null;
+}
+
 function isConversationDocument(urlString) {
-  try {
-    return /^\/backend-api\/conversation\/[^/]+\/?$/.test(new URL(urlString).pathname);
-  } catch (error) {
-    // Expected URL probe: unparseable requests are outside the scoped endpoint.
-    void error;
-    return false;
-  }
+  return !!conversationIdFromEndpoint(urlString);
 }
 
 function removedNodeCount(stats) {
@@ -145,8 +144,6 @@ async function readSession(prefix, tabId, code) {
   const key = sessionKey(prefix, tabId);
   const pending = sessionWriteQueues.get(key);
   if (pending) await pending.catch((error) => {
-    // The write path already records the diagnostic. This read still continues so
-    // a stale-but-readable fallback can be used rather than failing the request.
     console.debug("[GPT AntiCurse] Pending session fallback write failed before read", key, error);
   });
   try {
@@ -174,7 +171,6 @@ function recordTotals(stats) {
     bytesRemoved: totals.bytesRemoved + bytesRemoved
   };
   browser.storage.local.set({ cgTotals: totals }).catch((error) => {
-    // Counters are optional and never affect interception/history correctness.
     recordIssue("counters", "firefox-persist-failed", error);
   });
   return { ...stats, totals: { ...totals } };
@@ -189,7 +185,6 @@ function updateActionBadge(tabId, stats) {
     : stats.mode === "error"
       ? `GPT AntiCurse error: original response passed through (${stats.error || stats.reason || "unknown"})`
       : "GPT AntiCurse: response unchanged";
-  // Tab closure/navigation can race these cosmetic calls; failure is harmless.
   browser.action.setBadgeText({ tabId, text: badge }).catch((error) => console.debug("[GPT AntiCurse] Badge update skipped", error));
   browser.action.setTitle({ tabId, title }).catch((error) => console.debug("[GPT AntiCurse] Badge title update skipped", error));
 }
@@ -198,38 +193,42 @@ function publishStats(tabId, rawStats) {
   if (tabId < 0) return;
   const stats = recordTotals(rawStats);
   lastStatsByTab.set(tabId, stats);
-  // Stats are small and the Firefox popup reads them from the event page, so keep
-  // this fallback across event-page unload/recreation.
   cacheSession(STATS_KEY_PREFIX, tabId, stats, "stats-cache-write-failed");
   updateActionBadge(tabId, stats);
   browser.tabs.sendMessage(tabId, { type: "cg-stats", stats }).catch((error) => console.debug("[GPT AntiCurse] Early stats delivery skipped", error));
 }
 
-function publishHistory(tabId, history) {
-  if (tabId < 0) return;
-  if (history) historyByTab.set(tabId, history);
+function publishConversationScope(tabId, conversationId) {
+  if (tabId < 0 || !conversationId) return;
+  browser.tabs.sendMessage(tabId, { type: "cg-conversation-scope", conversationId })
+    .catch((error) => console.debug("[GPT AntiCurse] Early conversation-scope delivery skipped", error));
+}
+
+function publishHistory(tabId, history, requestStartedAt) {
+  if (tabId < 0) return false;
+  const startedAt = Number(requestStartedAt) || 0;
+  const previous = historyByTab.get(tabId);
+  if (previous && previous.requestStartedAt > startedAt) return false;
+
+  if (history) historyByTab.set(tabId, { requestStartedAt: startedAt, history });
   else historyByTab.delete(tabId);
 
   if (!history) {
     cacheSession(HISTORY_KEY_PREFIX, tabId, null, "history-cache-remove-failed");
-    browser.tabs.sendMessage(tabId, { type: "cg-window-history", history }).catch((error) => console.debug("[GPT AntiCurse] Early empty-history delivery skipped", error));
-    return;
+    return true;
   }
 
-  // The content script is normally present from document_start and retains the
-  // full old-history payload in its own page lifetime. Only copy that potentially
-  // huge object into Firefox's 10 MB storage.session fallback when direct delivery
-  // actually missed the content script during startup.
   browser.tabs.sendMessage(tabId, { type: "cg-window-history", history }).then(() => {
     cacheSession(HISTORY_KEY_PREFIX, tabId, null, "history-cache-remove-failed");
   }).catch((error) => {
     console.debug("[GPT AntiCurse] Early history delivery skipped; caching session fallback", error);
     cacheSession(HISTORY_KEY_PREFIX, tabId, history, "history-cache-write-failed");
   });
+  return true;
 }
 
-function buildHistoryArchive(parsed, transformed, mode, limit) {
-  if (!LIMITED_MODES.has(mode)) return null;
+function buildHistoryArchive(parsed, transformed, mode, limit, conversationId) {
+  if (!LIMITED_MODES.has(mode) || !conversationId) return null;
   const messages = CGTrim.extractVisibleHistory(parsed);
   const fallbackNativeCount = Math.min(messages.length, limit);
   const nativeVisibleCount = transformed.stats && Number.isFinite(Number(transformed.stats.displayAfter))
@@ -237,6 +236,7 @@ function buildHistoryArchive(parsed, transformed, mode, limit) {
     : fallbackNativeCount;
   return {
     ok: true,
+    conversationId,
     messages,
     nativeVisibleCount,
     pageSize: limit,
@@ -245,11 +245,11 @@ function buildHistoryArchive(parsed, transformed, mode, limit) {
   };
 }
 
-function transformConversation(parsed) {
+function transformConversation(parsed, conversationId) {
   const mode = resolveMode(settings.mode);
   const limit = normalizeMessageLimit(settings.maxDisplayMessages);
   const transformed = CGTrim.trimConversation(parsed, { mode, maxDisplayMessages: limit });
-  return { mode, transformed, history: buildHistoryArchive(parsed, transformed, mode, limit) };
+  return { mode, transformed, history: buildHistoryArchive(parsed, transformed, mode, limit, conversationId) };
 }
 
 function persistAuthoritativeArchive(parsed, details) {
@@ -352,7 +352,6 @@ async function processResponse(filter, chunks, totalBytes, details) {
 
     if (!settings.enabled && !settings.archiveEnabled) {
       writeOriginal(filter, chunks);
-      publishHistory(details.tabId, null);
       publishStats(details.tabId, {
         mode: "passthrough",
         transport: "firefox-stream-filter",
@@ -364,11 +363,13 @@ async function processResponse(filter, chunks, totalBytes, details) {
     }
 
     const parsed = decodeJson(chunks, totalBytes);
+    const conversationId = conversationIdFromEndpoint(details.url) || parsed?.id || parsed?.conversation_id || null;
     persistAuthoritativeArchive(parsed, details);
+    publishConversationScope(details.tabId, conversationId);
 
     if (!settings.enabled) {
       writeOriginal(filter, chunks);
-      publishHistory(details.tabId, null);
+      publishHistory(details.tabId, null, details.timeStamp);
       publishStats(details.tabId, {
         mode: "passthrough",
         transport: "firefox-stream-filter",
@@ -379,8 +380,8 @@ async function processResponse(filter, chunks, totalBytes, details) {
       return;
     }
 
-    const result = transformConversation(parsed);
-    publishHistory(details.tabId, result.history);
+    const result = transformConversation(parsed, conversationId);
+    publishHistory(details.tabId, result.history, details.timeStamp);
     if (!result.transformed.changed) {
       writeOriginal(filter, chunks);
       publishPassthroughStats(details, result.transformed, totalBytes, started);
@@ -413,9 +414,6 @@ async function processResponse(filter, chunks, totalBytes, details) {
 function interceptConversation(details) {
   if (details.method !== "GET" || !isConversationDocument(details.url)) return {};
 
-  // The filter must be created synchronously in onBeforeRequest. The response is
-  // buffered until settingsReady resolves so a freshly awakened MV3 event page
-  // cannot trim with default settings before storage has loaded.
   const filter = browser.webRequest.filterResponseData(details.requestId);
   const chunks = [];
   let totalBytes = 0;
@@ -494,9 +492,19 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
   if (message.type === "cg-get-window-history") {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
-    const hot = historyByTab.get(tabId);
-    if (hot) return Promise.resolve(hot);
-    return readSession(HISTORY_KEY_PREFIX, tabId, "history-cache-read-failed").then((history) => history || { ok: false, reason: "archive-not-found" });
+    const requestedId = message.conversationId;
+    if (!requestedId) return Promise.resolve({ ok: false, reason: "missing-conversation-id" });
+
+    const hotState = historyByTab.get(tabId);
+    const hot = hotState && hotState.history;
+    if (hot && hot.conversationId === requestedId) return Promise.resolve(hot);
+
+    return readSession(HISTORY_KEY_PREFIX, tabId, "history-cache-read-failed").then((saved) => {
+      if (!saved) return { ok: false, reason: "archive-not-found" };
+      return saved.conversationId === requestedId
+        ? saved
+        : { ok: false, reason: "conversation-mismatch", conversationId: saved.conversationId };
+    });
   }
   if (message.type === "cg-get-totals") {
     return settingsReady.then(() => ({ ...totals }));

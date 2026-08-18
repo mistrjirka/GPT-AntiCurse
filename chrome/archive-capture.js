@@ -1,10 +1,9 @@
 /*
  * Content-side archive bridge and incremental backup capture.
  *
- * Chromium publishes one authoritative untrimmed visible archive from MAIN world.
- * The isolated world keeps that object in memory for current-page history. Only
- * the optional backup copy is persisted to extension IndexedDB. DOM capture is
- * a hydrated tail updater and never observes the whole ChatGPT document.
+ * Network interception supplies the authoritative conversation archive. DOM
+ * capture only extends that archive with a hydrated tail and is always scoped
+ * to one SPA conversation generation.
  */
 (() => {
   "use strict";
@@ -18,16 +17,17 @@
   const CAPTURE_TAIL_TURNS = 96;
   const DOM_GATE = globalThis.CGAntiCurseDomReady;
   const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
+  const scope = globalThis.CGConversationScope.create();
 
-  // Persist nothing until storage explicitly confirms the user's backup setting.
   let archiveEnabled = false;
   let archiveSettingsReady = false;
   let pendingNetworkArchive = null;
   let latestNetworkArchive = null;
-  let currentConversationId = null;
+  let confirmedConversationId = null;
   let captureTimer = null;
   let lastFingerprint = "";
   let observedThread = null;
+  let observedScope = null;
   let threadObserver = null;
   let parentObserver = null;
   let discoveryObserver = null;
@@ -44,25 +44,54 @@
     return Promise.resolve(false);
   }
 
-  function conversationId() {
-    const match = location.pathname.match(/(?:^|\/)c\/([^/?#]+)/);
-    if (match) currentConversationId = decodeURIComponent(match[1]);
-    return currentConversationId;
+  function cancelCapture() {
+    if (captureTimer) clearTimeout(captureTimer);
+    captureTimer = null;
+  }
+
+  function disconnectThreadObservers() {
+    if (threadObserver) threadObserver.disconnect();
+    if (parentObserver) parentObserver.disconnect();
+    threadObserver = null;
+    parentObserver = null;
+    observedThread = null;
+    observedScope = null;
+  }
+
+  function resetForConversationChange() {
+    if (!scope.sync()) return false;
+    cancelCapture();
+    disconnectThreadObservers();
+    lastFingerprint = "";
+    const id = scope.currentId();
+    confirmedConversationId = latestNetworkArchive && latestNetworkArchive.id === id ? id : null;
+    return true;
+  }
+
+  function conversationConfirmed(token) {
+    if (!token || !token.id || !scope.isCurrent(token)) return false;
+    // Generation zero is the initial document: there cannot be a previous SPA
+    // conversation DOM in this content-script lifetime. Later generations wait
+    // for an intercepted response/history delivery before observing their DOM.
+    return token.generation === 0 || confirmedConversationId === token.id;
   }
 
   globalThis.CGAntiCurseArchiveBridge = {
     get(id) {
-      if (!latestNetworkArchive) return null;
-      if (id && latestNetworkArchive.id !== id) return null;
+      const requestedId = id || scope.currentId();
+      if (!requestedId || !latestNetworkArchive || latestNetworkArchive.id !== requestedId) return null;
       return latestNetworkArchive;
     },
     debug() {
+      const id = scope.currentId();
+      const currentArchive = latestNetworkArchive && latestNetworkArchive.id === id ? latestNetworkArchive : null;
       return {
-        conversationId: conversationId(),
-        transientArchive: !!latestNetworkArchive,
-        transientMessages: latestNetworkArchive && Array.isArray(latestNetworkArchive.messages) ? latestNetworkArchive.messages.length : 0,
+        conversationId: id,
+        transientArchive: !!currentArchive,
+        transientMessages: currentArchive && Array.isArray(currentArchive.messages) ? currentArchive.messages.length : 0,
         archiveEnabled,
         archiveSettingsReady,
+        conversationConfirmed: !!id && (scope.snapshot().generation === 0 || confirmedConversationId === id),
         threadObserved: !!(observedThread && observedThread.isConnected),
         capturePending: !!captureTimer
       };
@@ -85,15 +114,34 @@
     }
   }
 
+  function confirmConversation(id) {
+    resetForConversationChange();
+    if (!id || id !== scope.currentId()) return false;
+    confirmedConversationId = id;
+    if (archiveEnabled && (!DOM_GATE || DOM_GATE.isReady())) {
+      scheduleThreadAttachment();
+      scheduleCapture(50);
+    }
+    return true;
+  }
+
   function acceptNetworkArchive(archive) {
     if (!archive || !archive.id || !Array.isArray(archive.messages)) {
       recordIssue("invalid-network-archive", "MAIN world supplied an invalid conversation archive.");
       return false;
     }
 
-    currentConversationId = archive.id;
-    latestNetworkArchive = archive;
-    window.dispatchEvent(new Event(NETWORK_ARCHIVE_EVENT));
+    resetForConversationChange();
+    const currentId = scope.currentId();
+    // An out-of-order response for an older SPA route may still be useful as a
+    // persistent backup, but it must never replace the transient archive used by
+    // the currently displayed conversation. An unbound `/` route is allowed so
+    // a newly-created chat can be promoted when ChatGPT changes the URL to /c/id.
+    if (!currentId || archive.id === currentId) {
+      latestNetworkArchive = archive;
+      confirmConversation(archive.id);
+      window.dispatchEvent(new Event(NETWORK_ARCHIVE_EVENT));
+    }
 
     if (!archiveSettingsReady) {
       pendingNetworkArchive = archive;
@@ -112,13 +160,9 @@
   function visibleText(roleElement) {
     const markdownBlocks = Array.from(roleElement.querySelectorAll(".markdown"));
     if (markdownBlocks.length) {
-      const value = markdownBlocks
-        .map((node) => node.textContent || "")
-        .join("\n\n")
-        .trim();
+      const value = markdownBlocks.map((node) => node.textContent || "").join("\n\n").trim();
       if (value) return value;
     }
-    // textContent avoids the synchronous layout work that innerText can trigger.
     return (roleElement.textContent || "").trim();
   }
 
@@ -134,8 +178,7 @@
         if (!roleElement) continue;
         const role = roleElement.getAttribute("data-message-author-role");
         const text = visibleText(roleElement);
-        if (!text) continue;
-        result.push({ role, text, turnIndex: turnIndex(turn) });
+        if (text) result.push({ role, text, turnIndex: turnIndex(turn) });
       }
       return result;
     }
@@ -156,7 +199,6 @@
         hash = Math.imul(hash, 16777619);
       }
     };
-
     update(id || "");
     for (const message of messages) {
       update(message.role);
@@ -168,21 +210,25 @@
 
   async function flushCapture(force = false) {
     if (!archiveEnabled) return { ok: false, reason: "backup-disabled" };
-    const id = conversationId();
-    if (!id) return { ok: false, reason: "not-a-conversation" };
+    if (resetForConversationChange()) return { ok: false, reason: "conversation-changed" };
 
+    const token = observedScope || scope.snapshot();
+    if (!conversationConfirmed(token)) return { ok: false, reason: "conversation-unconfirmed", conversationId: token.id };
+
+    const sourceUrl = location.href;
     const messages = collectRenderedMessages();
-    if (!messages.length) return { ok: false, reason: "no-rendered-turns", conversationId: id };
+    if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", conversationId: token.id };
+    if (!messages.length) return { ok: false, reason: "no-rendered-turns", conversationId: token.id };
 
-    const nextFingerprint = fingerprint(id, messages);
-    if (!force && nextFingerprint === lastFingerprint) return { ok: true, reason: "unchanged", conversationId: id };
+    const nextFingerprint = fingerprint(token.id, messages);
+    if (!force && nextFingerprint === lastFingerprint) return { ok: true, reason: "unchanged", conversationId: token.id };
     lastFingerprint = nextFingerprint;
 
     const result = await ext.runtime.sendMessage({
       type: "cg-merge-rendered-archive",
-      conversationId: id,
+      conversationId: token.id,
       title: document.title,
-      sourceUrl: location.href,
+      sourceUrl,
       messages
     });
     if (!result || result.ok !== true) throw new Error(result && result.reason ? result.reason : "Background did not confirm rendered archive merge.");
@@ -202,20 +248,11 @@
       ? record.target
       : record.target && record.target.parentElement;
     if (target && target.closest && target.closest(`${TURN_SELECTOR}, ${ROLE_SELECTOR}`)) return true;
-
     for (const node of record.addedNodes || []) {
       if (node.nodeType !== Node.ELEMENT_NODE) continue;
       if (node.matches?.(`${TURN_SELECTOR}, ${ROLE_SELECTOR}`) || node.querySelector?.(`${TURN_SELECTOR}, ${ROLE_SELECTOR}`)) return true;
     }
     return false;
-  }
-
-  function disconnectThreadObservers() {
-    if (threadObserver) threadObserver.disconnect();
-    if (parentObserver) parentObserver.disconnect();
-    threadObserver = null;
-    parentObserver = null;
-    observedThread = null;
   }
 
   function disconnectObservers() {
@@ -227,21 +264,30 @@
   }
 
   function attachThreadObserver() {
+    resetForConversationChange();
     if (!archiveEnabled) return false;
+    const token = scope.snapshot();
+    if (!conversationConfirmed(token)) return false;
+
     const thread = document.querySelector("#thread");
     if (!thread || !thread.parentElement) return false;
-    if (thread === observedThread && threadObserver) return true;
+    if (thread === observedThread && observedScope && scope.isCurrent(observedScope) && threadObserver) return true;
 
     disconnectThreadObservers();
     observedThread = thread;
+    observedScope = token;
     threadObserver = new MutationObserver((records) => {
+      if (!scope.isCurrent(observedScope)) {
+        resetForConversationChange();
+        return;
+      }
       if (records.some(touchesConversation)) scheduleCapture();
     });
     threadObserver.observe(thread, { childList: true, subtree: true, characterData: true });
 
     const parent = thread.parentElement;
     parentObserver = new MutationObserver(() => {
-      if (document.querySelector("#thread") !== observedThread) scheduleThreadAttachment();
+      if (resetForConversationChange() || document.querySelector("#thread") !== observedThread) scheduleThreadAttachment();
     });
     parentObserver.observe(parent, { childList: true });
     scheduleCapture(250);
@@ -259,9 +305,7 @@
   function installDiscoveryObserver() {
     if (discoveryObserver || !archiveEnabled || !document.documentElement) return;
     discoveryObserver = new MutationObserver(() => {
-      // Cheap steady-state path: streaming mutations do not query the document
-      // while the already-observed native thread is still connected.
-      if (!observedThread || !observedThread.isConnected) scheduleThreadAttachment();
+      if (resetForConversationChange() || !observedThread || !observedThread.isConnected) scheduleThreadAttachment();
     });
     discoveryObserver.observe(document.documentElement, { childList: true, subtree: true });
   }
@@ -292,8 +336,6 @@
       scheduleCapture(100);
     }
   }).catch((error) => {
-    // Fail private: current-page history still uses the transient archive, but
-    // persistent backup remains disabled until storage can be read successfully.
     archiveEnabled = false;
     archiveSettingsReady = true;
     pendingNetworkArchive = null;
@@ -311,16 +353,23 @@
         scheduleCapture(50);
       }
     } else {
-      if (captureTimer) clearTimeout(captureTimer);
-      captureTimer = null;
+      cancelCapture();
       disconnectObservers();
     }
   });
 
   ext.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message) return false;
+    if (message.type === "cg-conversation-scope" && message.conversationId) {
+      confirmConversation(message.conversationId);
+      return false;
+    }
+    if (message.type === "cg-window-history" && message.history && message.history.conversationId) {
+      confirmConversation(message.history.conversationId);
+      return false;
+    }
     if (message.type === "cg-get-conversation-id") {
-      sendResponse({ conversationId: conversationId() });
+      sendResponse({ conversationId: scope.currentId() });
       return false;
     }
     if (message.type === "cg-flush-archive") {
@@ -334,11 +383,7 @@
   });
 
   window.addEventListener("pagehide", () => {
-    if (captureTimer) {
-      clearTimeout(captureTimer);
-      captureTimer = null;
-    }
-    // Best effort only: page teardown may prevent an async extension message from completing.
+    cancelCapture();
     flushCapture(true).catch((error) => console.debug("[GPT AntiCurse] Final pagehide backup did not finish", error));
     disconnectObservers();
   });

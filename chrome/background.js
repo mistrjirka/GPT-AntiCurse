@@ -67,9 +67,6 @@ function recordStats(stats) {
     return next;
   });
 
-  // Keep the serialized queue usable after a transient storage failure. The
-  // caller still receives `operation` and therefore sees the rejection, while
-  // later counter updates are not permanently poisoned until the worker restarts.
   updateQueue = operation.catch((error) => {
     console.warn("[GPT AntiCurse] Counter queue recovered after a failed update", error);
   });
@@ -81,19 +78,10 @@ function resetTotals() {
   return chrome.storage.local.set({ cgTotals: empty }).then(() => empty);
 }
 
-function conversationIdFromMessage(message, sender) {
-  if (message && typeof message.conversationId === "string" && message.conversationId) return message.conversationId;
-  const urlString = sender && sender.tab && sender.tab.url;
-  if (!urlString) return null;
-  try {
-    const match = new URL(urlString).pathname.match(/(?:^|\/)c\/([^/?#]+)/);
-    return match ? decodeURIComponent(match[1]) : null;
-  } catch (error) {
-    // Expected URL probe: a sender without a normal tab URL simply has no
-    // conversation id and is handled by the caller as missing-conversation-id.
-    void error;
-    return null;
-  }
+function conversationIdFromMessage(message) {
+  return message && typeof message.conversationId === "string" && message.conversationId
+    ? message.conversationId
+    : null;
 }
 
 function rawVisibleWindowCount(messages, requestedLimit) {
@@ -115,8 +103,8 @@ function rawVisibleWindowCount(messages, requestedLimit) {
   return first < 0 ? messages.length : messages.length - first;
 }
 
-async function getWindowHistory(message, sender) {
-  const conversationId = conversationIdFromMessage(message, sender);
+async function getWindowHistory(message) {
+  const conversationId = conversationIdFromMessage(message);
   if (!conversationId) return { ok: false, reason: "missing-conversation-id" };
 
   const archive = await CGArchiveStore.get(conversationId);
@@ -135,6 +123,7 @@ async function getWindowHistory(message, sender) {
 
   return {
     ok: true,
+    conversationId,
     messages,
     nativeVisibleCount: rawVisibleWindowCount(messages, limit),
     pageSize: limit,
@@ -143,7 +132,7 @@ async function getWindowHistory(message, sender) {
   };
 }
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message) return false;
 
   if (message.type === "cg-record-stats") {
@@ -163,7 +152,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "cg-get-window-history") {
-    getWindowHistory(message, sender).then(sendResponse).catch((error) => {
+    getWindowHistory(message).then(sendResponse).catch((error) => {
       recordIssue("history", "indexeddb-read-failed", error);
       sendResponse({
         ok: false,
