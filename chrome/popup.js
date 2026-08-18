@@ -1,9 +1,9 @@
 /* Popup controller. Two history modes only: Recent N and Auto window. */
 "use strict";
 
+const popupContext = globalThis.CGPopupContext;
 const EMPTY_TOTALS = { responsesTrimmed: 0, nodesRemoved: 0, nodesDelivered: 0, visibleTurnsKept: 0, inputBytes: 0, outputBytes: 0, bytesRemoved: 0 };
-const CHATGPT_ORIGIN = "https://chatgpt.com/*";
-const diagnostics = globalThis.CGAntiCurseDiagnostics;
+const diagnostics = popupContext.diagnostics;
 const numberFormat = new Intl.NumberFormat();
 const enabledInput = document.getElementById("enabled");
 const modeSelect = document.getElementById("mode");
@@ -25,7 +25,6 @@ function formatBytes(value) {
   return `${number.toFixed(digits)} ${units[unitIndex]}`;
 }
 function messageLimit() { return Math.max(4, Math.min(500, Number(limitInput.value) || 64)); }
-function isChatGPTTab(tab) { return !!(tab && typeof tab.url === "string" && /^https:\/\/chatgpt\.com\//.test(tab.url)); }
 function updateControls() {
   modeHelp.textContent = modeSelect.value === "windowed-visible"
     ? "Automatically loads an older page when you reach the top."
@@ -48,7 +47,7 @@ function renderIssue(issue) {
   lastIssueElement.title = `${message}${issue.at ? `\n${new Date(issue.at).toLocaleString()}` : ""}`;
 }
 function showError(label, error) {
-  const text = error && error.message ? error.message : String(error || "Unknown error");
+  const text = popupContext.errorText(error);
   console.error(`[GPT AntiCurse] ${label}`, error);
   feedback.textContent = `${label}: ${text}`;
   setStatus("Error", "error");
@@ -61,10 +60,9 @@ async function clearBridgeIssue() {
   await diagnostics.clear("bridge");
   await diagnostics.clear("archive", "popup-page-bridge-failed");
 }
-async function currentTab() { return (await chrome.tabs.query({ active: true, currentWindow: true }))[0]; }
-async function hasHostAccess() {
+async function hasHostAccess(tab) {
   try {
-    return await chrome.permissions.contains({ origins: [CHATGPT_ORIGIN] });
+    return await popupContext.hasPackageHostAccess(tab);
   } catch (error) {
     await recordSettingIssue("host-access-check-failed", error);
     throw error;
@@ -79,8 +77,8 @@ async function saveSettings() {
   }
 }
 async function finishSaveAndReload(granted) {
-  const tab = activeTab || await currentTab();
-  if (isChatGPTTab(tab) && !granted) {
+  const tab = activeTab || await popupContext.currentTab();
+  if (popupContext.isChatGPTTab(tab) && !granted) {
     setStatus("Needs access", "error");
     feedback.textContent = "Chrome site access was not granted. Allow GPT AntiCurse on chatgpt.com, then press Save & reload again.";
     return;
@@ -91,11 +89,8 @@ async function finishSaveAndReload(granted) {
   window.close();
 }
 function saveAndReloadFromUserGesture() {
-  // permissions.request() must be invoked directly from the click gesture. It is
-  // safe to request the declared required host even when it is already granted;
-  // Chrome resolves true without an extra prompt in that case.
-  if (isChatGPTTab(activeTab)) {
-    chrome.permissions.request({ origins: [CHATGPT_ORIGIN] })
+  if (popupContext.isChatGPTTab(activeTab)) {
+    chrome.permissions.request({ origins: [popupContext.CHATGPT_ORIGIN] })
       .then((granted) => finishSaveAndReload(granted))
       .catch(async (error) => {
         await recordSettingIssue("host-access-request-failed", error);
@@ -152,15 +147,15 @@ async function initialize() {
   updateControls();
   if (saved.mode !== modeSelect.value) await chrome.storage.local.set({ mode: modeSelect.value });
 
-  activeTab = await currentTab();
+  activeTab = await popupContext.currentTab();
   if (!activeTab || activeTab.id == null) return;
-  if (!isChatGPTTab(activeTab)) {
+  if (!popupContext.isChatGPTTab(activeTab)) {
     setStatus("Waiting");
     feedback.textContent = "Open a chatgpt.com conversation to use AntiCurse.";
     return;
   }
 
-  if (!(await hasHostAccess())) {
+  if (!(await hasHostAccess(activeTab))) {
     await clearBridgeIssue();
     setStatus("Needs access", "error");
     feedback.textContent = "Chrome has withheld access to chatgpt.com. Press Save & reload to grant site access and reload this tab.";
@@ -174,7 +169,7 @@ async function initialize() {
     console.warn("[GPT AntiCurse] Could not reach the page-side status bridge", error);
     if (diagnostics && typeof diagnostics.record === "function") await diagnostics.record("bridge", "content-script-missing", error);
     setStatus("Reload required", "error");
-    feedback.textContent = `AntiCurse is allowed on ChatGPT, but this tab has no content-script bridge: ${error && error.message ? error.message : error}. Press Save & reload.`;
+    feedback.textContent = `AntiCurse is allowed on ChatGPT, but this tab has no content-script bridge: ${popupContext.errorText(error)}. Press Save & reload.`;
   }
 }
 
