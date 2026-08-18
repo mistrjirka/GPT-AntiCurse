@@ -1,8 +1,9 @@
 /* Popup controller. Two history modes only: Recent N and Auto window. */
 "use strict";
 
+const popupContext = globalThis.CGPopupContext;
 const EMPTY_TOTALS = { responsesTrimmed: 0, nodesRemoved: 0, nodesDelivered: 0, visibleTurnsKept: 0, inputBytes: 0, outputBytes: 0, bytesRemoved: 0 };
-const diagnostics = globalThis.CGAntiCurseDiagnostics;
+const diagnostics = popupContext.diagnostics;
 const numberFormat = new Intl.NumberFormat();
 const enabledInput = document.getElementById("enabled");
 const modeSelect = document.getElementById("mode");
@@ -43,7 +44,7 @@ function renderIssue(issue) {
   lastIssueElement.title = `${issue.message || "Unknown error"}${issue.at ? `\n${new Date(issue.at).toLocaleString()}` : ""}`;
 }
 function showError(label, error) {
-  const text = error && error.message ? error.message : String(error || "Unknown error");
+  const text = popupContext.errorText(error);
   console.error(`[GPT AntiCurse] ${label}`, error);
   feedback.textContent = `${label}: ${text}`;
   setStatus("Error", "error");
@@ -51,7 +52,6 @@ function showError(label, error) {
 async function recordSettingIssue(code, error) {
   if (diagnostics && typeof diagnostics.record === "function") await diagnostics.record("settings", code, error);
 }
-async function currentTab() { return (await browser.tabs.query({ active: true, currentWindow: true }))[0]; }
 async function saveSettings() {
   try {
     return await browser.runtime.sendMessage({
@@ -68,7 +68,7 @@ async function saveSettings() {
 }
 async function saveAndReload() {
   await saveSettings();
-  const tab = await currentTab();
+  const tab = await popupContext.currentTab();
   if (tab && tab.id != null) await browser.tabs.reload(tab.id);
   window.close();
 }
@@ -118,8 +118,14 @@ async function initialize() {
   renderIssue(saved.cgLastIssue);
   updateControls();
   if (saved.mode !== modeSelect.value) await browser.storage.local.set({ mode: modeSelect.value });
-  const tab = await currentTab();
-  if (tab && tab.id != null) renderStats(await browser.runtime.sendMessage({ type: "cg-get-stats", tabId: tab.id }));
+  const tab = await popupContext.currentTab();
+  if (tab && tab.id != null) {
+    renderStats(await browser.runtime.sendMessage({
+      type: "cg-get-stats",
+      tabId: tab.id,
+      conversationId: popupContext.conversationIdFromTab(tab)
+    }));
+  }
 }
 function runAction(label, action) {
   Promise.resolve().then(action).catch((error) => showError(label, error));
