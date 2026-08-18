@@ -2,6 +2,7 @@
 
 const CHANNEL = "__gpt_anticurse_v1__";
 const STATS_EVENT = "__gpt_anticurse_stats_ready__";
+const STATUS_BADGE_SELECTOR = '[id="cg-conversation-guard-status"]';
 const DEFAULT_SETTINGS = { enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true };
 const RECOVERABLE_MAIN_CODES = new Set([
   "unsupported-conversation-shape",
@@ -32,18 +33,28 @@ function issueBelongsToCurrentConversation(issue) {
   return !issue || !issue.extra || belongsToCurrentConversation(issue.extra.conversationId);
 }
 
+function statusBadges() {
+  return Array.from(document.querySelectorAll(STATUS_BADGE_SELECTOR));
+}
+
 function removeBadge() {
   clearTimeout(hideTimer);
-  if (badge) badge.remove();
+  for (const element of statusBadges()) element.remove();
   badge = null;
 }
 
 function ensureBadge() {
-  if (badge && document.documentElement.contains(badge)) return badge;
-  badge = document.createElement("div");
-  badge.id = "cg-conversation-guard-status";
+  const existing = statusBadges();
+  if (!badge || !document.documentElement.contains(badge)) badge = existing[0] || null;
+  if (!badge) {
+    badge = document.createElement("div");
+    badge.id = "cg-conversation-guard-status";
+    (document.body || document.documentElement).appendChild(badge);
+  }
+  for (const element of existing) {
+    if (element !== badge) element.remove();
+  }
   badge.title = "GPT AntiCurse";
-  (document.body || document.documentElement).appendChild(badge);
   return badge;
 }
 
@@ -51,6 +62,24 @@ function pctRemoved(stats) {
   const before = Number(stats.mappingNodesBefore) || 0;
   const after = Number(stats.mappingNodesAfter) || 0;
   return before > 0 ? Math.round(Math.max(0, Math.min(100, ((before - after) / before) * 100))) : 0;
+}
+
+function payloadReduction(stats) {
+  const input = Number(stats && stats.originalBytes);
+  const output = Number(stats && stats.outputBytes);
+  return Number.isFinite(input) && Number.isFinite(output) ? Math.max(0, input - output) : null;
+}
+
+function formatBytes(value) {
+  let number = Math.max(0, Number(value) || 0);
+  const units = ["B", "KB", "MB", "GB"];
+  let unitIndex = 0;
+  while (number >= 1024 && unitIndex < units.length - 1) {
+    number /= 1024;
+    unitIndex++;
+  }
+  const digits = number >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${number.toFixed(digits)} ${units[unitIndex]}`;
 }
 
 function issueIsRecent(issue) {
@@ -100,16 +129,20 @@ function render(stats) {
   el.classList.remove("cg-compact");
 
   if (lastStats.mode === "trimmed") {
-    const saved = pctRemoved(lastStats);
+    const savedPercent = pctRemoved(lastStats);
+    const savedBytes = payloadReduction(lastStats);
     const removed = Math.max(0, Number(lastStats.discardedNodes) || ((Number(lastStats.mappingNodesBefore) || 0) - (Number(lastStats.mappingNodesAfter) || 0)));
     const visible = Math.max(0, Number(lastStats.displayAfter) || 0);
-    el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${saved}% trimmed</span><span class="cg-sep">•</span><span>${visible.toLocaleString()} visible</span>`;
-    el.title = `Removed ${removed.toLocaleString()} internal mapping nodes\n${lastStats.mappingNodesBefore} → ${lastStats.mappingNodesAfter} nodes delivered to ChatGPT\n${visible} visible user/assistant turns preserved\nFilter processing: ${lastStats.processingMs} ms`;
+    const logical = Number(lastStats.logicalDisplayAfter);
+    const recent = Number.isFinite(logical) ? logical : visible;
+    const metric = savedBytes != null ? `${formatBytes(savedBytes)} trimmed` : `${savedPercent}% trimmed`;
+    el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${metric}</span><span class="cg-sep">•</span><span>${recent.toLocaleString()} recent</span>`;
+    el.title = `${savedBytes != null ? `${formatBytes(savedBytes)} of response payload removed before ChatGPT page code processed it\n` : ""}Removed ${removed.toLocaleString()} internal mapping nodes (${savedPercent}%)\nKept ${recent.toLocaleString()} recent conversation units\nFilter processing: ${lastStats.processingMs} ms`;
 
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
       if (el && el.dataset.mode === "trimmed" && currentSettings.showGuardNotice && !renderIssueIfNeeded()) {
-        el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${saved}% trimmed</span>`;
+        el.innerHTML = `<span class="cg-dot"></span><strong>AntiCurse</strong><span class="cg-accent">${metric}</span>`;
         el.classList.add("cg-compact");
       }
     }, 9000);
