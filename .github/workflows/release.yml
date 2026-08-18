@@ -31,6 +31,7 @@ jobs:
           cmp firefox/diagnostics.js chrome/diagnostics.js
           cmp firefox/trim.js chrome/trim.js
           cmp firefox/trim-logical.js chrome/trim-logical.js
+          cmp firefox/trim-pipeline.js chrome/trim-pipeline.js
           cmp firefox/archive.js chrome/archive.js
           cmp firefox/conversation-scope.js chrome/conversation-scope.js
           cmp firefox/archive-export.js chrome/archive-export.js
@@ -52,6 +53,7 @@ jobs:
           cmp firefox/popup.html chrome/popup.html
           cmp firefox/popup.css chrome/popup.css
           cmp firefox/popup-sizing.css chrome/popup-sizing.css
+          cmp firefox/popup-context.js chrome/popup-context.js
           cmp firefox/backup-popup.js chrome/backup-popup.js
       - name: Reject dynamic code execution
         shell: bash
@@ -71,6 +73,8 @@ jobs:
             tests/test-archive.js
             tests/test-archive-export.js
             tests/test-diagnostics.js
+            tests/test-counter-ordering.js
+            tests/test-stats-scope.js
             tests/test-history-inline.js
             tests/test-history-virtualized.js
             tests/test-history-fidelity.js
