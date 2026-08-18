@@ -93,6 +93,8 @@ AntiCurse runs locally in the browser.
 - A Markdown file is created only when you choose to download one.
 - Debug reports contain health information and diagnostics, not conversation text.
 
+[Read the full privacy policy](PRIVACY.md).
+
 ## Troubleshooting
 
 If AntiCurse is installed but does not seem to run, open the popup and press **Save & reload**. This is also useful after updating the extension because content scripts that were already loaded in a tab may still belong to the previous version.
