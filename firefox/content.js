@@ -121,6 +121,11 @@ function render(stats) {
 }
 
 function acceptStats(stats) {
+  if (!stats) {
+    lastStats = null;
+    render(null);
+    return true;
+  }
   if (!statsBelongToCurrentConversation(stats)) {
     if (lastStats && !statsBelongToCurrentConversation(lastStats)) {
       lastStats = null;
@@ -128,15 +133,15 @@ function acceptStats(stats) {
     }
     return false;
   }
-  lastStats = stats || null;
-  if (lastStats && lastStats.mode === "trimmed" && DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") {
+  lastStats = stats;
+  if (lastStats.mode === "trimmed" && DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") {
     DIAGNOSTICS.clear("interceptor");
   }
   render(lastStats);
   window.dispatchEvent(new CustomEvent(STATS_EVENT, { detail: {
-    mode: lastStats && lastStats.mode,
-    reason: lastStats && lastStats.reason,
-    conversationId: lastStats && lastStats.conversationId
+    mode: lastStats.mode,
+    reason: lastStats.reason,
+    conversationId: lastStats.conversationId
   } }));
   return true;
 }
