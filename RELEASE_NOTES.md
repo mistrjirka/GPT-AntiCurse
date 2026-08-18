@@ -1,35 +1,44 @@
-# GPT AntiCurse v0.6.1
+# GPT AntiCurse v0.6.2
 
-Internal-architecture and reliability cleanup after v0.6.0.
+Code-quality, DOM-lifecycle, status, and popup clarity release after v0.6.1.
 
-## Explicit module composition
+## Reliability and ownership
 
-- Replaces order-dependent `CGHistoryOverlay` monkey-patching with named Markdown, virtualizer, fidelity, and hydration modules composed once by `history-overlay.js`.
-- Renames the old `history-native.js` helper to the more accurate `history-markdown.js`.
-- Makes Markdown export a separate `CGArchiveExport` module instead of mutating `CGArchive` at load time.
-- Clarifies archive/export helper names so functions describe their domain responsibility rather than generic operations such as `groups`, `analyze`, or `full`.
+- Conversation stats now carry explicit conversation ownership, so a slow response from chat A cannot replace the visible status for chat B after SPA navigation.
+- Chromium and Firefox cumulative optimization counters are separated from current-tab status ownership: completed trims still count even when their UI status is stale.
+- Counter increments and Reset now share one serialized mutation path, preventing an older pending write from resurrecting totals after a reset.
+- `maxPrefixNodes: 0` is now preserved correctly instead of being converted back to the default value.
 
-## Simpler Chromium interception
+## Simpler module composition
 
-- `Response.json()` and `Response.text()` now share one conversation interception pipeline for endpoint validation, HTTP fail-open handling, hydration/settings waiting, archive publication, transformation, diagnostics, and tracing.
-- The two native Response wrappers remain explicit and preserve their format-specific parsing/serialization behavior.
+- Raw graph trimming is now an immutable `CGTrimCore`; logical Recent-N budgeting is a named `CGTrimLogical` policy; `trim-pipeline.js` is the single explicit production composition point.
+- Removes the remaining logical-trimmer monkey-patch pattern.
+- Removes the duplicate Markdown exporter from `CGArchive`; `CGArchiveExport` is the sole Markdown-export owner.
+- Adds shared popup context helpers for active-tab, ChatGPT route, runtime/package identity, host access, and error formatting.
 
-## Reliability fixes found during the cleanup
+## DOM handling
 
-- A rendered DOM backup fingerprint is now committed only after the background confirms persistence. Temporary merge failures can therefore retry unchanged content instead of being incorrectly treated as already saved.
-- Diagnostic clears are serialized with diagnostic writes, preventing an older pending write from resurrecting a diagnostic that was already cleared.
-- Adds behavioral regression coverage for the diagnostic write/clear ordering race.
+- The bottom-right AntiCurse status is now a DOM singleton. Stale or duplicate status pills are removed, including duplicates inserted later by an older content-script instance.
+- The archived-history host is likewise self-deduplicating so `#cg-window-history-host` remains unique.
+- Dynamic status/history DOM uses explicit node creation and `textContent` instead of `innerHTML`; the fidelity layer also builds its SVG activity icon with SVG DOM APIs.
+- Synthetic-history text copying uses `textContent` instead of layout-dependent `innerText`.
+- Whole-document archive discovery observers are now temporary: once `#thread` is found, AntiCurse switches to narrower thread/parent/shell observers and re-enables broad discovery only when needed.
 
-## Scope
+## Clearer popup and export UI
 
-- No trimming or history-virtualization algorithm was changed.
-- The large scroll/history controller remains a single state machine because splitting its tightly coupled UI state into callback-heavy services would add indirection without reducing the underlying complexity.
+- When measurable, response payload reduction is now the primary optimization metric, shown in KB/MB/GB. Node-reduction percentage is used as the fallback when byte sizes are unavailable.
+- The UI clarifies that this is response data removed from page state, not network bandwidth saved.
+- Raw node counts, processing time, cumulative counters, and diagnostics are grouped under **Technical details**.
+- Export choices are now named **Final answers only**, **Readable conversation** (recommended), and **Full technical log** while retaining the existing stored export modes.
+- Persistent-backup status is simplified to **Ready**, **Partial**, **No backup**, or **Off**, with Partial explicitly warning that older history may be missing.
 
 ## Regression coverage
 
-- Chromium Recent/Auto, hydration-boundary, and native-fidelity E2E remain release gates.
-- Firefox interception/paging and native-fidelity E2E remain release gates.
-- Shared-source parity, syntax, packaging, archive/export, diagnostics, retry-loop, and virtualization tests remain release gates.
+- Adds deterministic counter-reset ordering coverage.
+- Adds Chromium and Firefox chat A → B stale-stat tests.
+- Adds a regression test for duplicate bottom-right status nodes.
+- Adds architecture gates for explicit trim composition, safe DOM construction, temporary discovery observers, and exclusive archive-export ownership.
+- Chromium Recent/Auto, hydration-boundary, native-fidelity, Firefox interception/paging, and Firefox native-fidelity E2E remain release gates.
 
 ## Privacy
 
