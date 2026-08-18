@@ -1,20 +1,13 @@
 "use strict";
 (() => {
-  const ext = typeof browser !== "undefined" ? browser : chrome;
-  const extensionManifest = ext.runtime.getManifest();
-  // Package target and actual runtime browser are intentionally separate. Chrome
-  // 148+ exposes `browser`, while a Firefox package can also be loaded manually
-  // into Chromium far enough for content scripts/popup code to run.
-  const IS_FIREFOX = !!(extensionManifest.browser_specific_settings && extensionManifest.browser_specific_settings.gecko);
-  const PACKAGE_TARGET = IS_FIREFOX ? "firefox" : "chromium";
-  const RUNTIME_BROWSER = /Firefox\//.test(String(navigator.userAgent || "")) ? "firefox" : "chromium";
-  const BACKGROUND_KIND = extensionManifest.background && extensionManifest.background.service_worker
-    ? "service_worker"
-    : extensionManifest.background && Array.isArray(extensionManifest.background.scripts)
-      ? "scripts"
-      : "none";
-  const diagnostics = globalThis.CGAntiCurseDiagnostics;
-  const CHATGPT_ORIGIN = "https://chatgpt.com/*";
+  const popupContext = globalThis.CGPopupContext;
+  const ext = popupContext.ext;
+  const extensionManifest = popupContext.manifest;
+  const IS_FIREFOX = popupContext.isFirefoxPackage;
+  const PACKAGE_TARGET = popupContext.packageTarget;
+  const RUNTIME_BROWSER = popupContext.runtimeBrowser;
+  const BACKGROUND_KIND = popupContext.backgroundKind;
+  const diagnostics = popupContext.diagnostics;
   const toggle = document.getElementById("archiveEnabled");
   const status = document.getElementById("archiveStatus");
   const summary = document.getElementById("archiveSummary");
@@ -25,15 +18,15 @@
   const debugButton = document.getElementById("exportDebug");
   const feedback = document.getElementById("feedback");
   const EXPORT_HELP = {
-    clean: "Tasks and final answers only",
-    progress: "Also visible progress and a checklist",
-    full: "Also exact tool calls and plan payloads"
+    clean: "User messages and final assistant answers only. Best for a compact shareable transcript.",
+    progress: "Recommended. Keeps readable assistant progress and plans, but omits raw tool-call noise.",
+    full: "Includes raw tool calls and plan payloads. Best for debugging or technical continuation."
   };
 
   function buttons(on) { exportButton.disabled = !on; continueButton.disabled = !on; }
   function setArchiveStatus(text, state) { status.textContent = text; status.dataset.state = state; }
   function updateExportHelp() { exportHelp.textContent = EXPORT_HELP[exportLevel.value] || EXPORT_HELP.progress; }
-  function errorText(error) { return String(error && error.message ? error.message : error || "Unknown error"); }
+  function errorText(error) { return popupContext.errorText(error); }
   function recordIssue(scope, code, error, extra) {
     if (diagnostics && typeof diagnostics.record === "function") return diagnostics.record(scope, code, error, extra);
     console.warn(`[GPT AntiCurse] ${scope}/${code}`, error, extra || "");
@@ -42,24 +35,20 @@
   async function clearPageBridgeIssue() {
     if (!diagnostics || typeof diagnostics.clear !== "function") return;
     await diagnostics.clear("bridge");
-    // v0.5.12 incorrectly classified this bridge problem as an archive problem.
     await diagnostics.clear("archive", "popup-page-bridge-failed");
   }
-  async function tab() { return (await ext.tabs.query({ active: true, currentWindow: true }))[0]; }
-  function isChatGPTTab(activeTab) { return !!(activeTab && typeof activeTab.url === "string" && /^https:\/\/chatgpt\.com\//.test(activeTab.url)); }
   async function hasChromeHostAccess(activeTab) {
-    if (IS_FIREFOX || !isChatGPTTab(activeTab)) return true;
     try {
-      return await chrome.permissions.contains({ origins: [CHATGPT_ORIGIN] });
+      return await popupContext.hasPackageHostAccess(activeTab);
     } catch (error) {
       await recordIssue("bridge", "host-access-check-failed", error);
       return false;
     }
   }
   async function probeRuntimeHostAccess(activeTab) {
-    if (RUNTIME_BROWSER !== "chromium" || !isChatGPTTab(activeTab) || typeof chrome === "undefined" || !chrome.permissions) return null;
+    if (RUNTIME_BROWSER !== "chromium" || !popupContext.isChatGPTTab(activeTab) || typeof chrome === "undefined" || !chrome.permissions) return null;
     try {
-      return await chrome.permissions.contains({ origins: [CHATGPT_ORIGIN] });
+      return await chrome.permissions.contains({ origins: [popupContext.CHATGPT_ORIGIN] });
     } catch (error) {
       return { error: errorText(error) };
     }
@@ -87,14 +76,11 @@
       await clearPageBridgeIssue();
       return result?.conversationId || null;
     } catch (error) {
-      if (!isChatGPTTab(activeTab)) return null;
+      if (!popupContext.isChatGPTTab(activeTab)) return null;
       if (!IS_FIREFOX && !(await hasChromeHostAccess(activeTab))) {
         feedback.textContent = "Chrome has not granted GPT AntiCurse access to chatgpt.com. Use Save & reload to grant access and reload the page.";
         return null;
       }
-      // The main popup owns passive bridge health. Only an explicit backup/export
-      // operation writes a second bridge diagnostic, so startup probes cannot
-      // overwrite the more specific bridge/content-script-missing result.
       if (flush) await recordIssue("bridge", "popup-page-bridge-failed", error, { flush: true });
       feedback.textContent = `ChatGPT page bridge is not running: ${errorText(error)}. Reload this tab after installing or updating AntiCurse.`;
       return null;
@@ -103,21 +89,24 @@
 
   function render(value) {
     if (!value) {
-      setArchiveStatus(toggle.checked ? "Not saved" : "Off", toggle.checked ? "missing" : "off");
+      setArchiveStatus(toggle.checked ? "No backup" : "Off", toggle.checked ? "missing" : "off");
       summary.textContent = toggle.checked
-        ? "Open or reload a ChatGPT conversation to create its optional persistent backup."
-        : "Persistent backup is off. On-page history loading still works for the current tab.";
+        ? "Reload this chat once to create a persistent local backup for export."
+        : "Persistent backup is off. Current-tab history still works, but nothing is kept for export across reloads.";
       buttons(false);
       return;
     }
-    setArchiveStatus(value.complete === false ? "Partial" : "Saved", value.complete === false ? "partial" : "saved");
+    const partial = value.complete === false;
+    setArchiveStatus(partial ? "Partial" : "Ready", partial ? "partial" : "saved");
     const updated = value.updatedAt ? new Date(value.updatedAt).toLocaleString() : "unknown time";
-    summary.textContent = `${value.messageCount} turns · ${value.characters} chars · ${updated}`;
+    summary.textContent = partial
+      ? `${value.messageCount} visible messages backed up locally · older history may be missing · Updated ${updated}`
+      : `${value.messageCount} messages backed up locally · Updated ${updated}`;
     buttons(true);
   }
 
   async function refresh() {
-    const activeTab = await tab();
+    const activeTab = await popupContext.currentTab();
     const id = await conversationId(activeTab);
     if (!id) return render(null);
     const result = await ext.runtime.sendMessage({ type: "cg-get-archive-summary", conversationId: id });
@@ -141,7 +130,7 @@
 
   async function exportChat(openNew) {
     feedback.textContent = "Saving current turns…";
-    const activeTab = await tab();
+    const activeTab = await popupContext.currentTab();
     const id = await conversationId(activeTab, true);
     if (!id) {
       if (!feedback.textContent) feedback.textContent = "Could not reach a ChatGPT conversation in this tab.";
@@ -158,7 +147,7 @@
     }
     download(result.markdown, result.filename);
     render(result.summary);
-    feedback.textContent = `${exportLevel.options[exportLevel.selectedIndex].text} Markdown exported locally.`;
+    feedback.textContent = `${exportLevel.options[exportLevel.selectedIndex].text} exported locally.`;
     if (openNew) {
       await ext.tabs.create({ url: "https://chatgpt.com/" });
       window.close();
@@ -171,7 +160,6 @@
       const url = new URL(activeTab.url);
       return `${url.origin}${url.pathname}`;
     } catch (error) {
-      // Debug metadata only; an unreadable URL is represented as null.
       void error;
       return null;
     }
@@ -179,7 +167,7 @@
 
   async function exportDebugReport() {
     feedback.textContent = "Collecting AntiCurse health state…";
-    const activeTab = await tab();
+    const activeTab = await popupContext.currentTab();
     const stored = await ext.storage.local.get({
       enabled: true,
       mode: "recent",
@@ -207,7 +195,7 @@
       }
     }
 
-    const id = page?.state?.conversationId || null;
+    const id = page?.state?.conversationId || popupContext.conversationIdFromTab(activeTab) || null;
     let archive = null;
     if (id) {
       try {
@@ -237,7 +225,7 @@
         present: !!activeTab,
         id: activeTab && Number.isInteger(activeTab.id) ? activeTab.id : null,
         url: sanitizedTabUrl(activeTab),
-        isChatGPT: isChatGPTTab(activeTab),
+        isChatGPT: popupContext.isChatGPTTab(activeTab),
         chromeHostAccess: await probeRuntimeHostAccess(activeTab)
       },
       settings: {
@@ -285,7 +273,7 @@
 
   toggle.addEventListener("change", () => runAction("Changing backup setting failed", async () => {
     await ext.storage.local.set({ archiveEnabled: toggle.checked });
-    if (toggle.checked) await conversationId(await tab(), true);
+    if (toggle.checked) await conversationId(await popupContext.currentTab(), true);
     await refresh();
   }));
   exportLevel.addEventListener("change", () => runAction("Saving export detail failed", async () => {

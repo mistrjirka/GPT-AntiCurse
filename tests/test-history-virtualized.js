@@ -48,11 +48,13 @@ for (const browser of ["firefox", "chrome"]) {
 
 const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
 assert(firefoxManifest.background.scripts.indexOf("trim.js") < firefoxManifest.background.scripts.indexOf("trim-logical.js"));
-assert(firefoxManifest.background.scripts.indexOf("trim-logical.js") < firefoxManifest.background.scripts.indexOf("archive.js"));
+assert(firefoxManifest.background.scripts.indexOf("trim-logical.js") < firefoxManifest.background.scripts.indexOf("trim-pipeline.js"));
+assert(firefoxManifest.background.scripts.indexOf("trim-pipeline.js") < firefoxManifest.background.scripts.indexOf("archive.js"));
 
 const chromeManifest = JSON.parse(source("chrome/manifest.json"));
 const chromeMain = chromeManifest.content_scripts[0].js;
 assert(chromeMain.indexOf("trim.js") < chromeMain.indexOf("trim-logical.js"));
-assert(chromeMain.indexOf("trim-logical.js") < chromeMain.indexOf("main.js"));
+assert(chromeMain.indexOf("trim-logical.js") < chromeMain.indexOf("trim-pipeline.js"));
+assert(chromeMain.indexOf("trim-pipeline.js") < chromeMain.indexOf("main.js"));
 
 console.log("virtual history tests: PASS");

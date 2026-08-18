@@ -36,10 +36,10 @@ let settingsInitialized = false;
 let initializationFailed = false;
 let pendingSettingChanges = Object.create(null);
 let pendingTotalsChange = null;
+let counterQueue = Promise.resolve();
+// Per-tab UI state is always coupled to the response start time and explicit
+// conversation id. A late request may finish, but it cannot replace newer state.
 const lastStatsByTab = new Map();
-// One latest response per tab is enough, but it is never trusted without its
-// conversationId. requestStartedAt prevents an older overlapping response from
-// replacing a newer SPA navigation merely because it finished later.
 const historyByTab = new Map();
 const sessionWriteQueues = new Map();
 
@@ -155,25 +155,43 @@ async function readSession(prefix, tabId, code) {
   }
 }
 
-function recordTotals(stats) {
-  if (!stats || stats.mode !== "trimmed") return stats;
-  const after = Math.max(0, Number(stats.mappingNodesAfter) || 0);
-  const inputBytes = Math.max(0, Number(stats.originalBytes) || 0);
-  const outputBytes = Math.max(0, Number(stats.outputBytes) || 0);
-  const bytesRemoved = inputBytes && outputBytes ? Math.max(0, inputBytes - outputBytes) : 0;
-  totals = {
-    responsesTrimmed: totals.responsesTrimmed + 1,
-    nodesRemoved: totals.nodesRemoved + removedNodeCount(stats),
-    nodesDelivered: totals.nodesDelivered + after,
-    visibleTurnsKept: totals.visibleTurnsKept + Math.max(0, Number(stats.displayAfter) || 0),
-    inputBytes: totals.inputBytes + inputBytes,
-    outputBytes: totals.outputBytes + outputBytes,
-    bytesRemoved: totals.bytesRemoved + bytesRemoved
-  };
-  browser.storage.local.set({ cgTotals: totals }).catch((error) => {
-    recordIssue("counters", "firefox-persist-failed", error);
+function serializeCounterOperation(operation) {
+  const queued = counterQueue.then(operation);
+  counterQueue = queued.catch((error) => {
+    console.warn("[GPT AntiCurse] Counter queue recovered after a failed operation", error);
   });
-  return { ...stats, totals: { ...totals } };
+  return queued;
+}
+
+function updateTotals(stats) {
+  if (!stats || stats.mode !== "trimmed") return Promise.resolve({ ...totals });
+  return serializeCounterOperation(async () => {
+    const after = Math.max(0, Number(stats.mappingNodesAfter) || 0);
+    const inputBytes = Math.max(0, Number(stats.originalBytes) || 0);
+    const outputBytes = Math.max(0, Number(stats.outputBytes) || 0);
+    const bytesRemoved = inputBytes && outputBytes ? Math.max(0, inputBytes - outputBytes) : 0;
+    totals = {
+      responsesTrimmed: totals.responsesTrimmed + 1,
+      nodesRemoved: totals.nodesRemoved + removedNodeCount(stats),
+      nodesDelivered: totals.nodesDelivered + after,
+      visibleTurnsKept: totals.visibleTurnsKept + Math.max(0, Number(stats.displayAfter) || 0),
+      inputBytes: totals.inputBytes + inputBytes,
+      outputBytes: totals.outputBytes + outputBytes,
+      bytesRemoved: totals.bytesRemoved + bytesRemoved
+    };
+    const snapshot = { ...totals };
+    await browser.storage.local.set({ cgTotals: snapshot });
+    return snapshot;
+  });
+}
+
+function resetTotals() {
+  return serializeCounterOperation(async () => {
+    totals = { ...EMPTY_TOTALS };
+    const snapshot = { ...totals };
+    await browser.storage.local.set({ cgTotals: snapshot });
+    return snapshot;
+  });
 }
 
 function updateActionBadge(tabId, stats) {
@@ -189,13 +207,31 @@ function updateActionBadge(tabId, stats) {
   browser.action.setTitle({ tabId, title }).catch((error) => console.debug("[GPT AntiCurse] Badge title update skipped", error));
 }
 
-function publishStats(tabId, rawStats) {
-  if (tabId < 0) return;
-  const stats = recordTotals(rawStats);
-  lastStatsByTab.set(tabId, stats);
+function statsForRequest(details, stats, conversationId = null) {
+  return {
+    ...stats,
+    conversationId: conversationId || conversationIdFromEndpoint(details && details.url) || null
+  };
+}
+
+function publishStats(tabId, rawStats, requestStartedAt) {
+  if (tabId < 0) return false;
+  const stats = rawStats || {};
+  // Cumulative totals describe real completed optimization work, not whichever
+  // response currently owns the tab UI. Count it even if a newer SPA response
+  // makes this status too old to publish.
+  updateTotals(stats).catch((error) => recordIssue("counters", "firefox-persist-failed", error));
+
+  const startedAt = Number(requestStartedAt) || 0;
+  const previous = lastStatsByTab.get(tabId);
+  if (previous && previous.requestStartedAt > startedAt) return false;
+
+  lastStatsByTab.set(tabId, { requestStartedAt: startedAt, stats });
   cacheSession(STATS_KEY_PREFIX, tabId, stats, "stats-cache-write-failed");
   updateActionBadge(tabId, stats);
-  browser.tabs.sendMessage(tabId, { type: "cg-stats", stats }).catch((error) => console.debug("[GPT AntiCurse] Early stats delivery skipped", error));
+  browser.tabs.sendMessage(tabId, { type: "cg-stats", stats })
+    .catch((error) => console.debug("[GPT AntiCurse] Early stats delivery skipped", error));
+  return true;
 }
 
 function publishConversationScope(tabId, conversationId) {
@@ -297,86 +333,88 @@ function writeOriginal(filter, chunks) {
   for (const chunk of chunks) filter.write(chunk);
 }
 
-function publishPassthroughStats(details, transformed, totalBytes, started) {
+function publishPassthroughStats(details, transformed, totalBytes, started, conversationId = null) {
   if (transformed.reason === "unsupported-shape") {
     const message = "Unsupported ChatGPT conversation response shape; original response kept.";
     recordIssue("interceptor", "unsupported-conversation-shape", message);
-    publishStats(details.tabId, {
+    publishStats(details.tabId, statsForRequest(details, {
       mode: "error",
       transport: "firefox-stream-filter",
       reason: transformed.reason,
       error: message,
       originalBytes: totalBytes,
       processingMs: +(performance.now() - started).toFixed(2)
-    });
+    }, conversationId), details.timeStamp);
     return;
   }
-  publishStats(details.tabId, {
+  publishStats(details.tabId, statsForRequest(details, {
     mode: "passthrough",
+    transport: "firefox-stream-filter",
     reason: transformed.reason,
     originalBytes: totalBytes,
     processingMs: +(performance.now() - started).toFixed(2),
     ...(transformed.stats || {})
-  });
+  }, conversationId), details.timeStamp);
 }
 
-function writeTransformedResponse(filter, details, transformed, totalBytes, started) {
+function writeTransformedResponse(filter, details, transformed, totalBytes, started, conversationId = null) {
   const output = new TextEncoder().encode(JSON.stringify(transformed.data));
   filter.write(output);
-  publishStats(details.tabId, {
+  publishStats(details.tabId, statsForRequest(details, {
     mode: "trimmed",
     transport: "firefox-stream-filter",
     originalBytes: totalBytes,
     outputBytes: output.byteLength,
     processingMs: +(performance.now() - started).toFixed(2),
     ...transformed.stats
-  });
+  }, conversationId), details.timeStamp);
 }
 
 async function processResponse(filter, chunks, totalBytes, details) {
   const started = performance.now();
+  const endpointConversationId = conversationIdFromEndpoint(details.url);
   try {
     const initialized = await settingsReady;
     if (!initialized || initializationFailed) {
       writeOriginal(filter, chunks);
-      publishStats(details.tabId, {
+      publishStats(details.tabId, statsForRequest(details, {
         mode: "error",
         transport: "firefox-stream-filter",
         reason: "settings-unavailable",
         error: "Firefox extension settings could not be read; original response kept.",
         originalBytes: totalBytes,
         processingMs: +(performance.now() - started).toFixed(2)
-      });
+      }, endpointConversationId), details.timeStamp);
       return;
     }
 
     if (!settings.enabled && !settings.archiveEnabled) {
       writeOriginal(filter, chunks);
-      publishStats(details.tabId, {
+      publishStats(details.tabId, statsForRequest(details, {
         mode: "passthrough",
         transport: "firefox-stream-filter",
         reason: "disabled",
         originalBytes: totalBytes,
         processingMs: +(performance.now() - started).toFixed(2)
-      });
+      }, endpointConversationId), details.timeStamp);
       return;
     }
 
     const parsed = decodeJson(chunks, totalBytes);
-    const conversationId = conversationIdFromEndpoint(details.url) || parsed?.id || parsed?.conversation_id || null;
+    const conversationId = endpointConversationId || parsed?.id || parsed?.conversation_id || null;
     persistAuthoritativeArchive(parsed, details);
     publishConversationScope(details.tabId, conversationId);
 
     if (!settings.enabled) {
       writeOriginal(filter, chunks);
       publishHistory(details.tabId, null, details.timeStamp);
-      publishStats(details.tabId, {
+      publishStats(details.tabId, statsForRequest(details, {
         mode: "passthrough",
         transport: "firefox-stream-filter",
         reason: "disabled",
         originalBytes: totalBytes,
         processingMs: +(performance.now() - started).toFixed(2)
-      });
+      }, conversationId), details.timeStamp);
       return;
     }
 
@@ -384,9 +422,9 @@ async function processResponse(filter, chunks, totalBytes, details) {
     publishHistory(details.tabId, result.history, details.timeStamp);
     if (!result.transformed.changed) {
       writeOriginal(filter, chunks);
-      publishPassthroughStats(details, result.transformed, totalBytes, started);
+      publishPassthroughStats(details, result.transformed, totalBytes, started, conversationId);
     } else {
-      writeTransformedResponse(filter, details, result.transformed, totalBytes, started);
+      writeTransformedResponse(filter, details, result.transformed, totalBytes, started, conversationId);
     }
   } catch (error) {
     try {
@@ -395,13 +433,13 @@ async function processResponse(filter, chunks, totalBytes, details) {
       console.error("[GPT AntiCurse] Failed to restore the original Firefox response after an interceptor error", writeError);
     }
     recordIssue("interceptor", "firefox-transform-failed", error);
-    publishStats(details.tabId, {
+    publishStats(details.tabId, statsForRequest(details, {
       mode: "error",
       transport: "firefox-stream-filter",
       error: String(error && error.message ? error.message : error),
       originalBytes: totalBytes,
       processingMs: +(performance.now() - started).toFixed(2)
-    });
+    }, endpointConversationId), details.timeStamp);
   } finally {
     try {
       filter.close();
@@ -442,7 +480,11 @@ function interceptConversation(details) {
     finished = true;
     const error = filter.error || "StreamFilter error";
     recordIssue("interceptor", "firefox-stream-filter-error", error);
-    publishStats(details.tabId, { mode: "error", transport: "firefox-stream-filter", error });
+    publishStats(details.tabId, statsForRequest(details, {
+      mode: "error",
+      transport: "firefox-stream-filter",
+      error
+    }), details.timeStamp);
   };
   return {};
 }
@@ -470,6 +512,10 @@ browser.webRequest.onBeforeRequest.addListener(
   ["blocking"]
 );
 
+function statsMatchConversation(stats, requestedId) {
+  return !requestedId || !stats || !stats.conversationId || stats.conversationId === requestedId;
+}
+
 browser.runtime.onMessage.addListener((message, sender) => {
   if (!message) return undefined;
   if (message.type === "cg-background-health") {
@@ -487,8 +533,14 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }
   if (message.type === "cg-get-stats") {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
-    const hot = lastStatsByTab.get(tabId);
-    return hot ? Promise.resolve(hot) : readSession(STATS_KEY_PREFIX, tabId, "stats-cache-read-failed");
+    const requestedId = message.conversationId || null;
+    const hotState = lastStatsByTab.get(tabId);
+    const hot = hotState && hotState.stats;
+    if (hot && statsMatchConversation(hot, requestedId)) return Promise.resolve(hot);
+    return readSession(STATS_KEY_PREFIX, tabId, "stats-cache-read-failed").then((saved) => {
+      if (!saved) return null;
+      return statsMatchConversation(saved, requestedId) ? saved : null;
+    });
   }
   if (message.type === "cg-get-window-history") {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
@@ -507,13 +559,10 @@ browser.runtime.onMessage.addListener((message, sender) => {
     });
   }
   if (message.type === "cg-get-totals") {
-    return settingsReady.then(() => ({ ...totals }));
+    return settingsReady.then(() => counterQueue.then(() => ({ ...totals })));
   }
   if (message.type === "cg-reset-totals") {
-    return settingsReady.then(() => {
-      totals = { ...EMPTY_TOTALS };
-      return browser.storage.local.set({ cgTotals: totals }).then(() => ({ ...totals }));
-    });
+    return settingsReady.then(resetTotals);
   }
   if (message.type === "cg-settings") {
     return settingsReady.then(() => {

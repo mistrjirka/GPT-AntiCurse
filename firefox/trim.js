@@ -1,10 +1,8 @@
 /*
- * Pure conversation-graph transformation logic.
+ * Pure conversation-graph transformation core.
  *
- * Production has exactly two history modes: Recent N and Auto window. Both use
- * the same bounded graph semantics; Auto only changes how archived pages are
- * presented by the UI. This module deliberately contains no legacy full/latest
- * selection branches.
+ * This module owns only raw graph-preserving Recent-N semantics. Logical
+ * user-facing budgeting is a separate policy layer composed in trim-pipeline.js.
  */
 (function (global) {
   "use strict";
@@ -107,7 +105,6 @@
       if (seenDisplay >= displayLimit) return index;
     }
 
-    // Fewer visible records than the requested budget: keep the active chain.
     return 0;
   }
 
@@ -178,11 +175,16 @@
     return result;
   }
 
+  function clampNumber(value, min, max, fallback) {
+    const number = Number(value);
+    return Math.max(min, Math.min(max, Number.isFinite(number) ? number : fallback));
+  }
+
   function normalizeConfig(options) {
     const config = Object.assign({}, DEFAULTS, options || {});
     config.mode = config.mode === "windowed-visible" ? "windowed-visible" : "recent";
-    config.maxDisplayMessages = Math.max(4, Math.min(500, Number(config.maxDisplayMessages) || DEFAULTS.maxDisplayMessages));
-    config.maxPrefixNodes = Math.max(0, Math.min(32, Number(config.maxPrefixNodes) || DEFAULTS.maxPrefixNodes));
+    config.maxDisplayMessages = clampNumber(config.maxDisplayMessages, 4, 500, DEFAULTS.maxDisplayMessages);
+    config.maxPrefixNodes = clampNumber(config.maxPrefixNodes, 0, 32, DEFAULTS.maxPrefixNodes);
     return config;
   }
 
@@ -248,13 +250,14 @@
     };
   }
 
-  global.CGTrim = {
+  const api = Object.freeze({
     trimConversation,
     extractVisibleHistory,
     DEFAULTS,
     isDisplayCandidate,
     isExplicitlyHidden
-  };
+  });
 
-  if (typeof module !== "undefined" && module.exports) module.exports = global.CGTrim;
+  global.CGTrimCore = api;
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

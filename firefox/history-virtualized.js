@@ -12,6 +12,8 @@
   if (typeof renderMarkdown !== "function") return;
 
   const DEFAULT_PAGE_SIZE = 64;
+  const HISTORY_HOST_ID = "cg-window-history-host";
+  const HISTORY_HOST_SELECTOR = `[id="${HISTORY_HOST_ID}"]`;
 
   function clamp(value, min, max, fallback) {
     const number = Number(value);
@@ -109,6 +111,35 @@
     outer.append(width);
     section.append(outer);
     return section;
+  }
+
+  function createHistoryHost() {
+    const host = document.createElement("div");
+    host.id = HISTORY_HOST_ID;
+    host.className = "cg-window-history-host";
+
+    const control = document.createElement("div");
+    control.className = "cg-history-control";
+    control.hidden = true;
+    const button = document.createElement("button");
+    button.className = "cg-history-previous";
+    button.type = "button";
+    const marker = document.createElement("span");
+    marker.className = "cg-history-marker text-token-text-tertiary";
+    control.append(button, marker);
+
+    const list = document.createElement("div");
+    list.className = "cg-history-list";
+    const topSpacer = document.createElement("div");
+    topSpacer.className = "cg-history-spacer cg-history-spacer-top";
+    topSpacer.hidden = true;
+    const bottomSpacer = document.createElement("div");
+    bottomSpacer.className = "cg-history-spacer cg-history-spacer-bottom";
+    bottomSpacer.hidden = true;
+    list.append(topSpacer, bottomSpacer);
+    host.append(control, list);
+
+    return { host, control, button, marker, list, topSpacer, bottomSpacer };
   }
 
   function scrollerTarget(scroller) {
@@ -253,10 +284,6 @@
         Number(element.scrollHeight) || 0
       );
 
-      // content-visibility:auto is intentionally used for archived turns. Some
-      // browser/layout states report a zero wrapper height for an offscreen page.
-      // Force layout only for the <= maxPages mounted archive pages, then restore
-      // the normal lightweight behavior. This never touches ChatGPT-owned nodes.
       if (!(observed > 0)) {
         const turns = Array.from(element.querySelectorAll(".cg-history-turn"));
         const previous = turns.map((turn) => turn.style.contentVisibility);
@@ -368,17 +395,22 @@
       const thread = document.querySelector("#thread");
       if (!thread || !thread.parentElement) return false;
 
+      const existingHosts = Array.from(document.querySelectorAll(HISTORY_HOST_SELECTOR));
+      if (this.host && this.host.isConnected) {
+        for (const host of existingHosts) if (host !== this.host) host.remove();
+      } else {
+        for (const host of existingHosts) host.remove();
+      }
+
       if (!this.host) {
-        this.host = document.createElement("div");
-        this.host.id = "cg-window-history-host";
-        this.host.className = "cg-window-history-host";
-        this.host.innerHTML = '<div class="cg-history-control" hidden><button class="cg-history-previous" type="button"></button><span class="cg-history-marker text-token-text-tertiary"></span></div><div class="cg-history-list"><div class="cg-history-spacer cg-history-spacer-top" hidden></div><div class="cg-history-spacer cg-history-spacer-bottom" hidden></div></div>';
-        this.list = this.host.querySelector(".cg-history-list");
-        this.control = this.host.querySelector(".cg-history-control");
-        this.button = this.host.querySelector(".cg-history-previous");
-        this.marker = this.host.querySelector(".cg-history-marker");
-        this.topSpacer = this.host.querySelector(".cg-history-spacer-top");
-        this.bottomSpacer = this.host.querySelector(".cg-history-spacer-bottom");
+        const created = createHistoryHost();
+        this.host = created.host;
+        this.list = created.list;
+        this.control = created.control;
+        this.button = created.button;
+        this.marker = created.marker;
+        this.topSpacer = created.topSpacer;
+        this.bottomSpacer = created.bottomSpacer;
         this.button.addEventListener("click", () => this.loadPreviousPage({ preserveScroll: true }));
       }
 

@@ -1,7 +1,7 @@
 /*
  * Pure conversation backup helpers.
  * Persistent storage lives in archive-store.js; this file only normalizes,
- * merges, and exports active visible conversation history.
+ * merges, summarizes, and names active visible conversation history.
  */
 (function (global) {
   "use strict";
@@ -244,24 +244,6 @@
     };
   }
 
-  function archiveToMarkdown(archive) {
-    if (!archive) return "";
-    const lines = [
-      `# ${oneLine(archive.title, "ChatGPT conversation")}`,
-      "",
-      `> Exported by GPT AntiCurse on ${archive.updatedAt || nowIso()}.`,
-      `> Original conversation: ${archive.sourceUrl || pageUrlForConversation(archive.id)}`
-    ];
-    if (archive.complete === false) {
-      lines.push("> Warning: this backup was reconstructed from currently rendered turns and may not contain older unloaded history.");
-    }
-    lines.push("", "---", "");
-    for (const message of Array.isArray(archive.messages) ? archive.messages : []) {
-      lines.push(message.role === "user" ? "## User" : "## Assistant", "", String(message.text || "").trim(), "");
-    }
-    return `${lines.join("\n").trimEnd()}\n`;
-  }
-
   function archiveFilename(archive) {
     const title = oneLine(archive?.title, "chatgpt-conversation")
       .normalize("NFKD")
@@ -272,7 +254,7 @@
     return `${title}.md`;
   }
 
-  global.CGArchive = {
+  const api = Object.freeze({
     SCHEMA_VERSION,
     conversationIdFromUrl,
     pageUrlForConversation,
@@ -280,9 +262,9 @@
     mergeArchiveWithRendered,
     mergeNetworkArchive,
     archiveSummary,
-    archiveToMarkdown,
     archiveFilename
-  };
+  });
 
-  if (typeof module !== "undefined" && module.exports) module.exports = global.CGArchive;
+  global.CGArchive = api;
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

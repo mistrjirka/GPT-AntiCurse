@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560">
+  <rect width="1000" height="560" fill="#eef2f5"/>
+  <g font-family="system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" fill="#20242a">
+    <rect x="66" y="102" width="430" height="357" rx="14" fill="#fff" stroke="#d9dde3"/>
+    <text x="84" y="139" font-size="16" font-weight="700">Export this chat</text>
+    <rect x="408" y="119" width="69" height="29" rx="15" fill="#e6f5f2" stroke="#8fd0c8"/><text x="442" y="138" text-anchor="middle" font-size="11" fill="#0f766e">Ready</text>
+    <text x="84" y="165" font-size="11" fill="#68727d">1,842 messages backed up locally · Updated just now</text>
+    <line x1="84" y1="182" x2="478" y2="182" stroke="#d9dde3"/>
+    <text x="84" y="211" font-size="13" font-weight="700">Export content</text>
+    <text x="84" y="231" font-size="11" fill="#68727d">Choose how much implementation detail to keep in the Markdown file.</text>
+
+    <rect x="84" y="245" width="394" height="59" rx="10" fill="#fff" stroke="#d9dde3"/><text x="97" y="270" font-size="12" font-weight="700">Final answers only</text><text x="97" y="289" font-size="10.5" fill="#68727d">User messages and final assistant answers.</text>
+    <rect x="84" y="313" width="394" height="59" rx="10" fill="#eef9f7" stroke="#75c7bd"/><text x="97" y="338" font-size="12" font-weight="700">Readable conversation</text><text x="97" y="357" font-size="10.5" fill="#68727d">Recommended. Keeps progress and plans, omits raw tool-call noise.</text>
+    <rect x="84" y="381" width="394" height="59" rx="10" fill="#fff" stroke="#d9dde3"/><text x="97" y="406" font-size="12" font-weight="700">Full technical log</text><text x="97" y="425" font-size="10.5" fill="#68727d">Includes raw tool calls and plan payloads for debugging.</text>
+
+    <text x="544" y="224" font-size="29" font-weight="700">Carry useful context into a</text><text x="544" y="258" font-size="29" font-weight="700">fresh chat</text>
+    <text x="544" y="290" font-size="14" fill="#4b5563">Persistent backup keeps a local copy of the conversation so you</text><text x="544" y="311" font-size="14" fill="#4b5563">can export it even after a reload.</text>
+    <line x1="546" y1="329" x2="546" y2="365" stroke="#0f766e" stroke-width="3"/>
+    <text x="559" y="343" font-size="12" fill="#68727d">Nothing is uploaded by AntiCurse. Backup and export stay in the</text><text x="559" y="361" font-size="12" fill="#68727d">browser until you download the Markdown file.</text>
+  </g>
+</svg>

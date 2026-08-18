@@ -99,6 +99,12 @@
     }
   }
 
+  function conversationIdFromEndpoint(urlString) {
+    return globalThis.CGArchive && typeof globalThis.CGArchive.conversationIdFromUrl === "function"
+      ? globalThis.CGArchive.conversationIdFromUrl(urlString)
+      : null;
+  }
+
   function publish(type, payload) {
     window.postMessage({ channel: CHANNEL, type, ...payload }, location.origin);
   }
@@ -193,6 +199,7 @@
 
   function publishArchive(data, endpointUrl) {
     const buildStarted = performance.now();
+    const conversationId = conversationIdFromEndpoint(endpointUrl);
     const shape = shapeSummary(data);
     if (!shape.shapeSupported) {
       return {
@@ -203,12 +210,10 @@
       };
     }
     try {
-      // Bind archive identity/metadata to the response that produced it, not to
-      // whatever SPA route happens to be visible when a slow response finishes.
       const archive = CGArchive.createArchive(data, { endpointUrl });
       const archiveBuildMs = elapsed(buildStarted);
       if (!archive) {
-        publishDiagnostic("archive-build-empty", "The conversation response could not be converted to an archive.");
+        publishDiagnostic("archive-build-empty", "The conversation response could not be converted to an archive.", { conversationId });
         return { archiveOk: false, archiveBuildMs, archiveMessageCount: 0 };
       }
       const postStarted = performance.now();
@@ -221,7 +226,7 @@
       };
     } catch (error) {
       const archiveBuildMs = elapsed(buildStarted);
-      publishDiagnostic("archive-build-failed", error, { archiveBuildMs });
+      publishDiagnostic("archive-build-failed", error, { archiveBuildMs, conversationId });
       return { archiveOk: false, archiveBuildMs, archiveMessageCount: 0 };
     }
   }
@@ -336,7 +341,10 @@
     if (!isConversationDocument(response.url)) return readBody();
 
     const endpointUrl = response.url;
-    const meta = responseMeta(response);
+    const meta = {
+      ...responseMeta(response),
+      conversationId: conversationIdFromEndpoint(endpointUrl)
+    };
     if (!meta.responseOk) {
       const readStarted = performance.now();
       const body = await readBody();

@@ -2,7 +2,10 @@
 
 const assert = require("assert");
 require("../firefox/trim.js");
+require("../firefox/trim-logical.js");
+require("../firefox/trim-pipeline.js");
 const A = require("../firefox/archive.js");
+const E = require("../firefox/archive-export.js");
 
 function n(id, parent, role, text, metadata = {}) {
   return {
@@ -32,6 +35,7 @@ function conversation() {
 function testUrlAndAuthoritativeArchive() {
   assert.equal(A.conversationIdFromUrl("https://chatgpt.com/c/abc"), "abc");
   assert.equal(A.conversationIdFromUrl("https://chatgpt.com/g/example/c/def"), "def");
+  assert.equal(A.archiveToMarkdown, undefined, "archive core must not carry a second Markdown exporter");
 
   const archive = A.createArchive(conversation(), {
     sourceUrl: "https://chatgpt.com/c/conv-test",
@@ -40,7 +44,7 @@ function testUrlAndAuthoritativeArchive() {
   assert.equal(archive.messages.length, 2);
   assert.deepEqual(archive.messages.map((message) => message.role), ["user", "assistant"]);
   assert.deepEqual(archive.messages.map((message) => message.text), ["hello", "world"]);
-  assert(!A.archiveToMarkdown(archive).includes("secret"));
+  assert(!E.archiveToMarkdown(archive).includes("secret"));
 }
 
 function testMarkdownStructureAndRichText() {
@@ -57,7 +61,7 @@ function testMarkdownStructureAndRichText() {
     ]
   };
 
-  const markdown = A.archiveToMarkdown(archive);
+  const markdown = E.archiveToMarkdown(archive);
   assert(markdown.startsWith("# Markdown λ test\n\n"));
   assert(markdown.includes("> Exported by GPT AntiCurse on 2026-08-13T12:34:56.000Z."));
   assert(markdown.includes("> Original conversation: https://chatgpt.com/c/rich"));
@@ -78,7 +82,7 @@ function testPartialWarningAndFilename() {
     messages: [{ role: "user", text: "visible tail" }]
   };
 
-  const markdown = A.archiveToMarkdown(partial);
+  const markdown = E.archiveToMarkdown(partial);
   assert(markdown.includes("Warning: this backup was reconstructed from currently rendered turns"));
 
   const filename = A.archiveFilename(partial);
@@ -153,7 +157,7 @@ function testLongMarkdownOrderAndSummary() {
     messages
   };
 
-  const markdown = A.archiveToMarkdown(archive);
+  const markdown = E.archiveToMarkdown(archive);
   assert(markdown.indexOf("unique-message-0") < markdown.indexOf("unique-message-299"));
   assert.equal((markdown.match(/^## (User|Assistant)$/gm) || []).length, 300);
 

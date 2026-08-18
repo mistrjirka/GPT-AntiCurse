@@ -68,6 +68,17 @@ function testUnknownLegacyModeFallsBackToRecent() {
   const result = trimConversation(buildToolHeavyConversation(), { mode: "visible-history", maxDisplayMessages: 64 });
   assert.equal(result.stats.trimMode, "recent"); assert.equal(result.stats.displayAfter, 64); assert(!result.data.mapping["user-0"]);
 }
+function testZeroPrefixNodesIsPreserved() {
+  const result = trimConversation(buildToolHeavyConversation(), {
+    mode: "recent",
+    maxDisplayMessages: 4,
+    maxPrefixNodes: 0
+  });
+  assert.equal(result.changed, true);
+  assert(!result.data.mapping.root0, "explicit maxPrefixNodes=0 must not fall back to the default prefix");
+  assert.notEqual(result.data.root, "root0");
+  assertLinearMapping(result.data);
+}
 function testVisibleArchiveExtraction() {
   const history = extractVisibleHistory(buildToolHeavyConversation());
   assert.equal(history.length, 80); assert.equal(history[0].id, "user-0"); assert.equal(history.at(-1).id, "assistant-39");
@@ -79,6 +90,6 @@ function testDisplayCandidateRules() {
   assert.equal(isDisplayCandidate(makeNode("c", null, "user", { is_user_system_message: true })), false);
   assert.equal(isDisplayCandidate(makeNode("d", null, "tool")), false);
 }
-const tests = [testRecentSafeWindow, testAutoUsesSameBoundedGraphSemantics, testBelowLimitKeepsWholeActiveChainButPrunesBranches, testUnknownLegacyModeFallsBackToRecent, testVisibleArchiveExtraction, testDisplayCandidateRules];
+const tests = [testRecentSafeWindow, testAutoUsesSameBoundedGraphSemantics, testBelowLimitKeepsWholeActiveChainButPrunesBranches, testUnknownLegacyModeFallsBackToRecent, testZeroPrefixNodesIsPreserved, testVisibleArchiveExtraction, testDisplayCandidateRules];
 for (const test of tests) test();
 console.log(`trim tests: PASS (${tests.length})`);
