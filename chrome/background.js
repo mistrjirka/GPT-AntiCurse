@@ -59,23 +59,29 @@ function recordIssue(scope, code, error, extra) {
   return Promise.resolve(null);
 }
 
+function serializeCounterOperation(operation) {
+  const queued = updateQueue.then(operation);
+  updateQueue = queued.catch((error) => {
+    console.warn("[GPT AntiCurse] Counter queue recovered after a failed operation", error);
+  });
+  return queued;
+}
+
 function recordStats(stats) {
-  const operation = updateQueue.then(async () => {
+  return serializeCounterOperation(async () => {
     const saved = await chrome.storage.local.get({ cgTotals: EMPTY_TOTALS });
     const next = addStats(normalizeTotals(saved.cgTotals), stats);
     await chrome.storage.local.set({ cgTotals: next });
     return next;
   });
-
-  updateQueue = operation.catch((error) => {
-    console.warn("[GPT AntiCurse] Counter queue recovered after a failed update", error);
-  });
-  return operation;
 }
 
 function resetTotals() {
-  const empty = { ...EMPTY_TOTALS };
-  return chrome.storage.local.set({ cgTotals: empty }).then(() => empty);
+  return serializeCounterOperation(async () => {
+    const empty = { ...EMPTY_TOTALS };
+    await chrome.storage.local.set({ cgTotals: empty });
+    return empty;
+  });
 }
 
 function conversationIdFromMessage(message) {
