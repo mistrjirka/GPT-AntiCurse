@@ -1,19 +1,15 @@
 /*
- * Logical visible-window budgeting layered over the graph-preserving trimmer.
+ * Logical visible-window budgeting policy for the graph-preserving trimmer.
  *
- * A long agent response can contain many consecutive visible assistant records.
- * Those records count as one user-facing assistant unit for the Recent-N budget,
- * while every user message remains its own unit. The underlying trimmer still
- * keeps every technical/tool/hidden node between the chosen cutoff and current
- * node, so this changes the budget only, not recent graph semantics.
+ * Consecutive assistant progress records count as one user-facing unit while
+ * user messages remain distinct. This module does not mutate the core trimmer;
+ * trim-pipeline.js composes the final production API explicitly.
  */
 (function (global) {
   "use strict";
 
-  const trim = global.CGTrim;
-  if (!trim || typeof trim.trimConversation !== "function") return;
-
-  const baseTrimConversation = trim.trimConversation;
+  const core = global.CGTrimCore;
+  if (!core || typeof core.trimConversation !== "function") return;
 
   function getRole(node) {
     return node && node.message && node.message.author ? node.message.author.role : undefined;
@@ -40,7 +36,7 @@
     const rows = [];
     for (const id of activeChain(data)) {
       const node = mapping[id];
-      if (!trim.isDisplayCandidate(node)) continue;
+      if (!core.isDisplayCandidate(node)) continue;
       rows.push({ id, role: getRole(node) });
     }
     return rows;
@@ -50,16 +46,19 @@
     let unit = -1;
     let previousVisibleRole = null;
     return rows.map((row) => {
-      // Consecutive assistant records are one presentation unit. User messages
-      // remain distinct even if two user messages are adjacent.
       if (row.role === "user" || row.role !== "assistant" || previousVisibleRole !== "assistant") unit++;
       previousVisibleRole = row.role;
       return { ...row, unit };
     });
   }
 
+  function normalizeLimit(value) {
+    const number = Number(value);
+    return Math.max(4, Math.min(500, Number.isFinite(number) ? number : 64));
+  }
+
   function logicalWindowInfo(data, requestedLimit) {
-    const limit = Math.max(4, Math.min(500, Number(requestedLimit) || 64));
+    const limit = normalizeLimit(requestedLimit);
     const rows = annotateLogicalUnits(visibleRows(data));
     const totalUnits = rows.length ? rows[rows.length - 1].unit + 1 : 0;
 
@@ -85,11 +84,11 @@
   function trimConversation(data, options = {}) {
     const mode = options && options.mode;
     if (mode !== "recent" && mode !== "windowed-visible") {
-      return baseTrimConversation(data, options);
+      return core.trimConversation(data, options);
     }
 
     const info = logicalWindowInfo(data, options.maxDisplayMessages);
-    const result = baseTrimConversation(data, {
+    const result = core.trimConversation(data, {
       ...options,
       maxDisplayMessages: Math.max(4, info.rawLimit || info.limit)
     });
@@ -103,9 +102,7 @@
     return result;
   }
 
-  trim.trimConversation = trimConversation;
-  trim.logicalWindowInfo = logicalWindowInfo;
-  trim.logicalUnitCount = logicalUnitCount;
-
-  if (typeof module !== "undefined" && module.exports) module.exports = trim;
+  const api = Object.freeze({ trimConversation, logicalWindowInfo, logicalUnitCount });
+  global.CGTrimLogical = api;
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
