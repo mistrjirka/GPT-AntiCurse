@@ -75,6 +75,9 @@
 
   function conversationConfirmed(token) {
     if (!token || !token.id || !scope.isCurrent(token)) return false;
+    // Generation zero is the initial document: there cannot be a previous SPA
+    // conversation DOM in this content-script lifetime. Later generations wait
+    // for an intercepted response/history delivery before observing their DOM.
     return token.generation === 0 || confirmedConversationId === token.id;
   }
 
