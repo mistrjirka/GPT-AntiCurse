@@ -1,20 +1,13 @@
 "use strict";
 (() => {
-  const ext = typeof browser !== "undefined" ? browser : chrome;
-  const extensionManifest = ext.runtime.getManifest();
-  // Package target and actual runtime browser are intentionally separate. Chrome
-  // 148+ exposes `browser`, while a Firefox package can also be loaded manually
-  // into Chromium far enough for content scripts/popup code to run.
-  const IS_FIREFOX = !!(extensionManifest.browser_specific_settings && extensionManifest.browser_specific_settings.gecko);
-  const PACKAGE_TARGET = IS_FIREFOX ? "firefox" : "chromium";
-  const RUNTIME_BROWSER = /Firefox\//.test(String(navigator.userAgent || "")) ? "firefox" : "chromium";
-  const BACKGROUND_KIND = extensionManifest.background && extensionManifest.background.service_worker
-    ? "service_worker"
-    : extensionManifest.background && Array.isArray(extensionManifest.background.scripts)
-      ? "scripts"
-      : "none";
-  const diagnostics = globalThis.CGAntiCurseDiagnostics;
-  const CHATGPT_ORIGIN = "https://chatgpt.com/*";
+  const popupContext = globalThis.CGPopupContext;
+  const ext = popupContext.ext;
+  const extensionManifest = popupContext.manifest;
+  const IS_FIREFOX = popupContext.isFirefoxPackage;
+  const PACKAGE_TARGET = popupContext.packageTarget;
+  const RUNTIME_BROWSER = popupContext.runtimeBrowser;
+  const BACKGROUND_KIND = popupContext.backgroundKind;
+  const diagnostics = popupContext.diagnostics;
   const toggle = document.getElementById("archiveEnabled");
   const status = document.getElementById("archiveStatus");
   const summary = document.getElementById("archiveSummary");
@@ -33,7 +26,7 @@
   function buttons(on) { exportButton.disabled = !on; continueButton.disabled = !on; }
   function setArchiveStatus(text, state) { status.textContent = text; status.dataset.state = state; }
   function updateExportHelp() { exportHelp.textContent = EXPORT_HELP[exportLevel.value] || EXPORT_HELP.progress; }
-  function errorText(error) { return String(error && error.message ? error.message : error || "Unknown error"); }
+  function errorText(error) { return popupContext.errorText(error); }
   function recordIssue(scope, code, error, extra) {
     if (diagnostics && typeof diagnostics.record === "function") return diagnostics.record(scope, code, error, extra);
     console.warn(`[GPT AntiCurse] ${scope}/${code}`, error, extra || "");
@@ -42,24 +35,20 @@
   async function clearPageBridgeIssue() {
     if (!diagnostics || typeof diagnostics.clear !== "function") return;
     await diagnostics.clear("bridge");
-    // v0.5.12 incorrectly classified this bridge problem as an archive problem.
     await diagnostics.clear("archive", "popup-page-bridge-failed");
   }
-  async function tab() { return (await ext.tabs.query({ active: true, currentWindow: true }))[0]; }
-  function isChatGPTTab(activeTab) { return !!(activeTab && typeof activeTab.url === "string" && /^https:\/\/chatgpt\.com\//.test(activeTab.url)); }
   async function hasChromeHostAccess(activeTab) {
-    if (IS_FIREFOX || !isChatGPTTab(activeTab)) return true;
     try {
-      return await chrome.permissions.contains({ origins: [CHATGPT_ORIGIN] });
+      return await popupContext.hasPackageHostAccess(activeTab);
     } catch (error) {
       await recordIssue("bridge", "host-access-check-failed", error);
       return false;
     }
   }
   async function probeRuntimeHostAccess(activeTab) {
-    if (RUNTIME_BROWSER !== "chromium" || !isChatGPTTab(activeTab) || typeof chrome === "undefined" || !chrome.permissions) return null;
+    if (RUNTIME_BROWSER !== "chromium" || !popupContext.isChatGPTTab(activeTab) || typeof chrome === "undefined" || !chrome.permissions) return null;
     try {
-      return await chrome.permissions.contains({ origins: [CHATGPT_ORIGIN] });
+      return await chrome.permissions.contains({ origins: [popupContext.CHATGPT_ORIGIN] });
     } catch (error) {
       return { error: errorText(error) };
     }
@@ -87,14 +76,11 @@
       await clearPageBridgeIssue();
       return result?.conversationId || null;
     } catch (error) {
-      if (!isChatGPTTab(activeTab)) return null;
+      if (!popupContext.isChatGPTTab(activeTab)) return null;
       if (!IS_FIREFOX && !(await hasChromeHostAccess(activeTab))) {
         feedback.textContent = "Chrome has not granted GPT AntiCurse access to chatgpt.com. Use Save & reload to grant access and reload the page.";
         return null;
       }
-      // The main popup owns passive bridge health. Only an explicit backup/export
-      // operation writes a second bridge diagnostic, so startup probes cannot
-      // overwrite the more specific bridge/content-script-missing result.
       if (flush) await recordIssue("bridge", "popup-page-bridge-failed", error, { flush: true });
       feedback.textContent = `ChatGPT page bridge is not running: ${errorText(error)}. Reload this tab after installing or updating AntiCurse.`;
       return null;
@@ -117,7 +103,7 @@
   }
 
   async function refresh() {
-    const activeTab = await tab();
+    const activeTab = await popupContext.currentTab();
     const id = await conversationId(activeTab);
     if (!id) return render(null);
     const result = await ext.runtime.sendMessage({ type: "cg-get-archive-summary", conversationId: id });
@@ -141,7 +127,7 @@
 
   async function exportChat(openNew) {
     feedback.textContent = "Saving current turns…";
-    const activeTab = await tab();
+    const activeTab = await popupContext.currentTab();
     const id = await conversationId(activeTab, true);
     if (!id) {
       if (!feedback.textContent) feedback.textContent = "Could not reach a ChatGPT conversation in this tab.";
@@ -171,7 +157,6 @@
       const url = new URL(activeTab.url);
       return `${url.origin}${url.pathname}`;
     } catch (error) {
-      // Debug metadata only; an unreadable URL is represented as null.
       void error;
       return null;
     }
@@ -179,7 +164,7 @@
 
   async function exportDebugReport() {
     feedback.textContent = "Collecting AntiCurse health state…";
-    const activeTab = await tab();
+    const activeTab = await popupContext.currentTab();
     const stored = await ext.storage.local.get({
       enabled: true,
       mode: "recent",
@@ -207,7 +192,7 @@
       }
     }
 
-    const id = page?.state?.conversationId || null;
+    const id = page?.state?.conversationId || popupContext.conversationIdFromTab(activeTab) || null;
     let archive = null;
     if (id) {
       try {
@@ -237,7 +222,7 @@
         present: !!activeTab,
         id: activeTab && Number.isInteger(activeTab.id) ? activeTab.id : null,
         url: sanitizedTabUrl(activeTab),
-        isChatGPT: isChatGPTTab(activeTab),
+        isChatGPT: popupContext.isChatGPTTab(activeTab),
         chromeHostAccess: await probeRuntimeHostAccess(activeTab)
       },
       settings: {
@@ -285,7 +270,7 @@
 
   toggle.addEventListener("change", () => runAction("Changing backup setting failed", async () => {
     await ext.storage.local.set({ archiveEnabled: toggle.checked });
-    if (toggle.checked) await conversationId(await tab(), true);
+    if (toggle.checked) await conversationId(await popupContext.currentTab(), true);
     await refresh();
   }));
   exportLevel.addEventListener("change", () => runAction("Saving export detail failed", async () => {
