@@ -1,1 +1,10 @@
-body{width:360px!important;min-width:360px!important;max-width:none!important;}
+body{width:min(360px,100vw)!important;min-width:0!important;max-width:360px!important;}
+@media (max-width:600px) and (pointer:coarse){
+  body{width:100vw!important;max-width:none!important;}
+  .app{padding:12px!important;}
+  .row{min-height:52px;}
+  button,select,input[type="number"]{min-height:44px;}
+  input[type="checkbox"]{width:22px;height:22px;}
+  .backup-buttons{grid-template-columns:1fr;}
+  .details-actions{flex-wrap:wrap;}
+}

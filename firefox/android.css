@@ -1,0 +1,42 @@
+/* Firefox for Android layout adjustments. Desktop Firefox is unaffected. */
+@media (max-width: 600px) and (pointer: coarse) {
+  #cg-conversation-guard-status {
+    right: max(8px, env(safe-area-inset-right, 0px));
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 76px);
+    gap: 5px;
+    max-width: calc(100vw - 16px);
+    padding: 6px 9px;
+    font-size: 10.5px;
+  }
+
+  #cg-window-history-host .cg-history-control {
+    flex-wrap: wrap;
+    gap: 7px;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  #cg-window-history-host .cg-history-previous {
+    min-height: 44px;
+    padding: 10px 15px;
+  }
+
+  #cg-window-history-host .cg-history-marker {
+    width: 100%;
+    text-align: center;
+  }
+
+  #cg-window-history-host .cg-history-turn-outer {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  #cg-window-history-host .cg-history-user-bubble {
+    max-width: 86%;
+  }
+
+  #cg-window-history-host .cg-history-code {
+    max-width: 100%;
+    font-size: .85rem;
+  }
+}

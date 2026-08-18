@@ -50,7 +50,15 @@ for (const manifest of [firefoxManifest, chromeManifest]) {
   assert(scripts.indexOf("history-fidelity.js") < scripts.indexOf("history-hydration-safe.js"), "fidelity must be available before hydration composition");
   assert(scripts.indexOf("history-hydration-safe.js") < scripts.indexOf("history-overlay.js"), "decorators must load before final composition");
   assert(scripts.indexOf("history-overlay.js") < scripts.indexOf("windowed.js"), "final overlay must exist before the history controller");
-  assert(styles.indexOf("history-fidelity.css") === styles.length - 1, "fidelity CSS must override older fallback geometry last");
+
+  const fidelityIndex = styles.indexOf("history-fidelity.css");
+  assert(fidelityIndex > styles.indexOf("history-virtualized.css"), "fidelity CSS must override the shared virtual-history fallback geometry");
+  if (manifest === firefoxManifest) {
+    assert.equal(styles.at(-1), "android.css", "Firefox Android overrides must load after the shared fidelity styles");
+    assert.equal(fidelityIndex, styles.length - 2, "Firefox fidelity CSS must remain the final shared/base history stylesheet");
+  } else {
+    assert.equal(fidelityIndex, styles.length - 1, "Chromium fidelity CSS must remain the final history stylesheet");
+  }
 }
 
 console.log("history fidelity tests: PASS");

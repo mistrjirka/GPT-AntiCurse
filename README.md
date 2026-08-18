@@ -28,9 +28,9 @@ Download the latest package from [GitHub Releases](https://github.com/mistrjirka
 
 Chrome can withhold site access from an extension. If AntiCurse shows **Needs access**, press **Save & reload** and allow access to `chatgpt.com`.
 
-### Firefox
+### Firefox desktop
 
-The release also contains a Firefox package. For temporary/manual installation:
+The release contains a Firefox package. For temporary/manual installation:
 
 1. Download `gpt-anticurse-firefox-vX.Y.Z.zip` and extract it.
 2. Open `about:debugging#/runtime/this-firefox`.
@@ -39,12 +39,20 @@ The release also contains a Firefox package. For temporary/manual installation:
 
 The Firefox build targets Firefox 128 or newer. Stable Firefox normally requires add-ons to be signed for permanent installation.
 
+### Firefox for Android
+
+Starting with v0.6.4, the same Firefox package declares Android compatibility for AMO. Once the signed add-on is available through Firefox Add-ons, install it from Firefox for Android and open **Add-ons → GPT AntiCurse** from the browser menu.
+
+The Android build uses the same response-filtering and history code as desktop Firefox, with narrower layouts and larger touch targets for the popup, status pill, and older-history controls.
+
+For developer testing with an Android device connected over ADB, Mozilla's `web-ext` tooling can run the package with `web-ext run --target=firefox-android`.
+
 ## Use it
 
 For most people, the defaults are a good starting point.
 
 1. Open a long conversation on `chatgpt.com`.
-2. Click the AntiCurse toolbar icon.
+2. Click the AntiCurse toolbar icon or open it from Firefox Android's **Add-ons** menu.
 3. Leave **Performance guard** on.
 4. Choose how older history should load:
    - **Recent N + button** keeps the latest window in ChatGPT and shows **Load previous** above it.
@@ -107,6 +115,7 @@ If you see more than one AntiCurse status pill in the lower-right corner, update
 
 - ChatGPT can change its page and response formats. AntiCurse fails open where possible: if it cannot safely transform a response, it keeps the original response rather than risking conversation data.
 - Chromium has to intercept the page's response handling, so it depends more on ChatGPT page internals than the Firefox network-filter path.
+- Firefox Android is declared compatible from v0.6.4, but physical-device behavior can still differ from desktop Firefox and should be reported if a mobile-only issue appears.
 - Exported Markdown carries visible conversation context; it cannot reproduce a model's hidden state from the original chat.
 
 <details>
