@@ -4,12 +4,14 @@ const fs = require("fs");
 const path = require("path");
 function source(relative) { return fs.readFileSync(path.join(__dirname, "..", relative), "utf8"); }
 
-const markdown = source("firefox/history-native.js");
+const markdown = source("firefox/history-markdown.js");
 const virtualized = source("firefox/history-virtualized.js");
+const fidelity = source("firefox/history-fidelity.js");
+const historyHydration = source("firefox/history-hydration-safe.js");
+const historyOverlay = source("firefox/history-overlay.js");
 const windowed = source("firefox/windowed.js");
 const conversationScope = source("firefox/conversation-scope.js");
 const domReady = source("firefox/dom-ready.js");
-const historyHydration = source("firefox/history-hydration-safe.js");
 const firefoxContent = source("firefox/content.js");
 const chromeContent = source("chrome/content.js");
 const firefoxArchiveCapture = source("firefox/archive-capture.js");
@@ -26,8 +28,8 @@ const chromeManifest = JSON.parse(source("chrome/manifest.json"));
 const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
 
 assert(markdown.includes("function renderMarkdown"), "history Markdown parser must remain packaged");
-assert(!markdown.includes("class NativeHistory"), "superseded non-virtualized renderer must not remain as dead compatibility code");
-assert(!markdown.includes("insertBefore(this.host"), "Markdown module must not own history attachment anymore");
+assert(markdown.includes("global.CGHistoryMarkdown"), "Markdown helper must expose a named module");
+assert(!markdown.includes("CGHistoryOverlay"), "Markdown parsing must not publish or mutate the final history overlay");
 assert(virtualized.includes('document.querySelector("#thread")'), "active history must anchor to ChatGPT #thread");
 assert(virtualized.includes("insertBefore(this.host, thread)"), "active history must stay immediately before native #thread");
 assert(!virtualized.includes("attachShadow"), "active history renderer must use light DOM so ChatGPT styles can apply");
@@ -37,6 +39,11 @@ assert(virtualized.includes("renderMarkdown"), "older Markdown should be rendere
 assert(virtualized.includes("function grouped"), "consecutive assistant records should be visually grouped");
 assert(virtualized.includes("Load previous ${next}"), "Recent N mode needs an inline Load previous button");
 assert(virtualized.includes('this.mode === "recent"'), "the button must belong only to Recent N mode");
+assert(virtualized.includes("global.CGHistoryVirtualized"), "virtual renderer must expose a named module");
+assert(!virtualized.includes("global.CGHistoryOverlay ="), "virtual renderer must not publish the final overlay");
+assert(fidelity.includes("function wrap(base)"), "fidelity must be an explicit renderer decorator");
+assert(historyHydration.includes("function wrap(base"), "hydration safety must be an explicit renderer decorator");
+assert(historyOverlay.includes("global.CGHistoryOverlay = overlay"), "one compositor must own final overlay publication");
 assert(contentCss.includes("#cg-window-history-host"), "light-DOM history must have scoped fallback styling");
 assert(contentCss.includes("content-visibility: auto"), "archived turns should stay lightweight off-screen");
 
@@ -44,7 +51,7 @@ assert(domReady.includes('window.addEventListener("load"'), "extension DOM must 
 assert((domReady.match(/requestAnimationFrame/g) || []).length >= 2, "hydration gate should wait through two animation frames");
 assert(domReady.includes("requestIdleCallback"), "hydration gate should wait for an idle slice after load");
 assert(historyHydration.includes("pendingHistory"), "history received during hydration must be buffered rather than dropped");
-assert(historyHydration.includes("gate.isReady() ? rawEnsureAttached() : false"), "history must not attach inside React's SSR tree before hydration settles");
+assert(historyHydration.includes("reader.ensureAttached = () => gate.isReady() ? ensureAttached() : false"), "history must not attach inside React's SSR tree before hydration settles");
 assert(historyHydration.includes('reason: "hydration-pending"'), "manual history loading must fail safely while hydration is pending");
 assert(firefoxContent.includes("DOM_GATE && !DOM_GATE.isReady()"), "Firefox status badge must not write DOM during hydration");
 assert(chromeContent.includes("DOM_GATE && !DOM_GATE.isReady()"), "Chromium status badge must not write DOM during hydration");
@@ -74,6 +81,10 @@ assert(firefoxArchiveCapture.includes("conversationConfirmed"), "SPA tail captur
 assert(!firefoxArchiveCapture.includes("currentConversationId"), "tail capture must not keep a sticky previous-conversation id fallback");
 assert(!/location\.pathname\.match/.test(firefoxArchiveCapture), "tail capture must not duplicate conversation URL parsing");
 assert(firefoxArchiveCapture.includes('type: "cg-merge-rendered-archive"'), "tail capture must still merge rendered updates through the background archive service");
+assert(
+  firefoxArchiveCapture.indexOf("lastFingerprint = nextFingerprint") > firefoxArchiveCapture.indexOf("await ext.runtime.sendMessage"),
+  "a DOM snapshot must be marked persisted only after the background merge succeeds"
+);
 
 assert(chromeBackground.includes('message.type === "cg-get-window-history"'), "Chromium service worker must serve durable archived history");
 assert(chromeBackground.includes("CGArchiveStore.get(conversationId)"), "Chromium durable history must come from extension-origin IndexedDB");
@@ -97,22 +108,21 @@ assert.deepEqual(chromeMainScripts.js.slice(-1), ["main.js"], "main.js must be t
 assert(!chromeMainScripts.js.includes("main-settings-barrier.js"), "superseded stacked Response wrapper must not be packaged");
 assert(!chromeMainScripts.js.includes("history-replay-main.js"), "Chromium MAIN world must not package the old full-history replay bridge");
 assert(!chromeUi.js.includes("history-request.js"), "Chromium isolated world must not use page-global history replay timers");
-assert(!chromeUi.js.includes("history-overlay.js"), "superseded shadow/inline history layer must not be packaged");
 assert(chromeUi.js.indexOf("diagnostics.js") < chromeUi.js.indexOf("content.js"), "Chromium diagnostics must exist before code can report failures");
 assert(chromeUi.js.includes("conversation-scope.js"), "Chromium must package the shared page conversation scope");
 assert(chromeUi.js.indexOf("conversation-scope.js") < chromeUi.js.indexOf("archive-capture.js"), "conversation scope must exist before archive capture");
-assert(chromeUi.js.indexOf("conversation-scope.js") < chromeUi.js.indexOf("windowed.js"), "conversation scope must exist before history control");
-assert(chromeUi.js.indexOf("history-native.js") < chromeUi.js.indexOf("history-virtualized.js"), "Markdown helper must load before the virtualized renderer");
-assert(chromeUi.js.indexOf("history-fidelity.js") < chromeUi.js.indexOf("history-hydration-safe.js"), "Chromium hydration wrapper must wrap the final history renderer");
-assert(chromeUi.js.indexOf("history-hydration-safe.js") < chromeUi.js.indexOf("windowed.js"), "Chromium hydration wrapper must load before the history controller");
+assert(chromeUi.js.indexOf("history-markdown.js") < chromeUi.js.indexOf("history-virtualized.js"), "Markdown helper must load before the virtualized renderer");
+assert(chromeUi.js.indexOf("history-virtualized.js") < chromeUi.js.indexOf("history-fidelity.js"), "virtual renderer must load before fidelity decorator");
+assert(chromeUi.js.indexOf("history-fidelity.js") < chromeUi.js.indexOf("history-hydration-safe.js"), "fidelity decorator must load before hydration decorator");
+assert(chromeUi.js.indexOf("history-hydration-safe.js") < chromeUi.js.indexOf("history-overlay.js"), "renderer decorators must load before the final compositor");
+assert(chromeUi.js.indexOf("history-overlay.js") < chromeUi.js.indexOf("windowed.js"), "final history overlay must exist before the controller");
 assert(chromeUi.js.indexOf("windowed.js") < chromeUi.js.indexOf("debug-state.js"), "Chromium debug state must observe the final history controller stack");
 assert(firefoxUi.js.indexOf("diagnostics.js") < firefoxUi.js.indexOf("content.js"), "Firefox diagnostics must exist before code can report failures");
-assert(!firefoxUi.js.includes("history-overlay.js"), "Firefox must not package the superseded history layer");
 assert(firefoxUi.js.includes("conversation-scope.js"), "Firefox must package the shared page conversation scope");
 assert(firefoxUi.js.indexOf("conversation-scope.js") < firefoxUi.js.indexOf("archive-capture.js"), "Firefox conversation scope must exist before archive capture");
-assert(firefoxUi.js.indexOf("history-native.js") < firefoxUi.js.indexOf("history-virtualized.js"), "Firefox Markdown helper must load before virtualized history");
-assert(firefoxUi.js.indexOf("history-fidelity.js") < firefoxUi.js.indexOf("history-hydration-safe.js"), "Firefox hydration wrapper must wrap the final history renderer");
-assert(firefoxUi.js.indexOf("history-hydration-safe.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox hydration wrapper must load before the history controller");
+assert(firefoxUi.js.indexOf("history-markdown.js") < firefoxUi.js.indexOf("history-virtualized.js"), "Firefox Markdown helper must load before virtualized history");
+assert(firefoxUi.js.indexOf("history-hydration-safe.js") < firefoxUi.js.indexOf("history-overlay.js"), "Firefox decorators must load before final history composition");
+assert(firefoxUi.js.indexOf("history-overlay.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox final history overlay must exist before the controller");
 assert(firefoxUi.js.indexOf("windowed.js") < firefoxUi.js.indexOf("debug-state.js"), "Firefox debug state must observe the final history controller stack");
 assert(!firefoxManifest.background.scripts.includes("archive-firefox-hook.js"), "Firefox must have one authoritative network archive path, not a duplicate trim wrapper");
 
