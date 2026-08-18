@@ -1,94 +1,133 @@
 # GPT AntiCurse
 
-GPT AntiCurse is a browser extension for keeping very long ChatGPT conversations responsive. It intercepts conversation data before ChatGPT processes it, keeps only a bounded recent graph in the page, and makes older visible history available through an extension-owned history layer.
+Keep long ChatGPT conversations responsive without giving up older history.
 
-## What it does
+[![Latest release](https://img.shields.io/github/v/release/mistrjirka/GPT-AntiCurse?display_name=tag)](https://github.com/mistrjirka/GPT-AntiCurse/releases/latest)
+[![Test and release](https://github.com/mistrjirka/GPT-AntiCurse/actions/workflows/release.yml/badge.svg)](https://github.com/mistrjirka/GPT-AntiCurse/actions/workflows/release.yml)
 
-- Shrinks large ChatGPT conversation graphs before the page processes them.
-- Preserves a recent user-facing window while keeping required technical/hidden graph state inside that recent slice.
-- Offers two history modes:
-  - **Recent N + button** — keep the latest window natively and load older turns explicitly.
-  - **Auto window** — automatically load an older page when you reach the top.
-- Keeps archived history outside ChatGPT's React-owned conversation graph and bounds the amount of archived DOM mounted at once.
-- Can keep an optional persistent local conversation backup for Markdown export.
-- Provides local diagnostics/debug reports without conversation text.
+Long ChatGPT threads can become slow because the page keeps a large conversation graph active. GPT AntiCurse reduces that active state, keeps a recent part of the conversation in ChatGPT's normal thread, and lets you load older visible history when you need it.
 
-## Browser architecture
+**It does not delete messages from your ChatGPT account.** AntiCurse changes what the current page keeps active, not the conversation stored by ChatGPT.
+
+![Rendered GPT AntiCurse popup showing a measured payload reduction, history settings, and local export](docs/screenshots/popup-overview.svg)
+
+*Rendered preview with sample numbers. The values are illustrative, not benchmark results.*
+
+## Install
+
+Download the latest package from [GitHub Releases](https://github.com/mistrjirka/GPT-AntiCurse/releases/latest).
+
+### Chrome and Chromium browsers
+
+1. Download `gpt-anticurse-chrome-vX.Y.Z.zip` and extract it.
+2. Open `chrome://extensions`.
+3. Turn on **Developer mode**.
+4. Click **Load unpacked**.
+5. Select the extracted folder that contains `manifest.json`.
+6. Open a ChatGPT conversation, click the AntiCurse icon, and press **Save & reload**.
+
+Chrome can withhold site access from an extension. If AntiCurse shows **Needs access**, press **Save & reload** and allow access to `chatgpt.com`.
 
 ### Firefox
 
-Firefox uses `webRequest.filterResponseData()` to capture and transform the conversation response before ChatGPT receives it. The event-page background keeps durable/session fallbacks for history and status without relying on globals surviving background suspension.
+The release also contains a Firefox package. For temporary/manual installation:
 
-### Chromium
+1. Download `gpt-anticurse-firefox-vX.Y.Z.zip` and extract it.
+2. Open `about:debugging#/runtime/this-firefox`.
+3. Click **Load Temporary Add-on**.
+4. Select `manifest.json` from the extracted folder.
 
-Chromium installs one MAIN-world response interceptor at `document_start` and keeps DOM/history/status code in the isolated content-script world. Conversation transformation waits for settings plus an initial hydration/load safety boundary before changing SSR-delivered conversation data.
+The Firefox build targets Firefox 128 or newer. Stable Firefox normally requires add-ons to be signed for permanent installation.
 
-## Conversation ownership
+## Use it
 
-ChatGPT is a long-lived SPA, so one browser tab may visit many conversations without reloading. AntiCurse treats conversation identity as explicit state rather than equating a tab with a conversation:
+For most people, the defaults are a good starting point.
 
-- async history work carries a conversation-scope token;
-- background history and stats payloads carry `conversationId`;
-- stale responses for a previous SPA conversation are rejected before they can update current UI/history;
-- persistent archives are stored by conversation ID rather than by tab;
-- cumulative optimization counters remain independent of whichever conversation currently owns the tab UI.
+1. Open a long conversation on `chatgpt.com`.
+2. Click the AntiCurse toolbar icon.
+3. Leave **Performance guard** on.
+4. Choose how older history should load:
+   - **Recent N + button** keeps the latest window in ChatGPT and shows **Load previous** above it.
+   - **Auto window** loads another older page when you reach the top.
+5. Set **Window size** if you want more or less recent context kept in ChatGPT's normal thread.
+6. Press **Save & reload** after changing the main settings.
 
-## Local backup and export
+### What the main number means
 
-Persistent backup is optional. When enabled, AntiCurse stores a local archive in extension-origin storage so the chat can still be exported after a reload.
+When AntiCurse can measure both versions of the conversation response, the popup shows the reduction in KB, MB, or GB. For example, **6.2 MB** means the transformed page state is 6.2 MB smaller than the original conversation response.
 
-The popup offers three export detail levels:
+This is **not network bandwidth saved**: the response has already reached the browser. It is a measure of how much conversation data AntiCurse removes before ChatGPT's page code works with it.
+
+If byte sizes are not available, AntiCurse shows the percentage of internal conversation nodes removed instead. Raw node counts, processing time, cumulative totals, and diagnostics are under **Technical details**.
+
+## Older history stays available
+
+AntiCurse does not put every older turn back into ChatGPT's active conversation state when you scroll upward. It renders older visible history in its own bounded history area and keeps only a small number of those archived pages mounted at once.
+
+![Rendered ChatGPT conversation showing Load previous and the AntiCurse status pill](docs/screenshots/history-overlay.svg)
+
+In **Recent N + button** mode, click **Load previous** to reveal another page. In **Auto window** mode, scroll to the top and AntiCurse loads the next page automatically.
+
+## Backup and Markdown export
+
+**Persistent backup** is optional. When enabled, AntiCurse keeps a local copy of the conversation in extension storage so it can still be exported after a reload.
+
+The export menu has three useful levels:
 
 - **Final answers only** — user messages and final assistant answers.
-- **Readable conversation** — recommended; keeps readable assistant progress/plans while omitting raw tool-call noise.
-- **Full technical log** — includes raw tool calls and plan payloads for debugging or technical continuation.
+- **Readable conversation** — recommended for continuing work in a fresh chat; keeps useful progress and plans but omits raw tool-call noise.
+- **Full technical log** — also includes raw tool calls and plan payloads for debugging or technical handoff.
 
-The underlying stored export mode values remain `clean`, `progress`, and `full` for compatibility.
+![Rendered export options showing Final answers only, Readable conversation, and Full technical log](docs/screenshots/export-options.svg)
 
-## Limitations
+A **Partial** backup can still be exported, but some older history may be missing. **Ready** means the stored archive is complete according to the data AntiCurse has seen.
 
-- Chromium interception is inherently more dependent on page internals than Firefox's network-level stream filtering.
-- A Markdown export is intended as continuation context; AntiCurse cannot force a new model conversation to have the original model's hidden state.
+## Privacy
 
-## Source layout
+AntiCurse runs locally in the browser.
 
-The production extension is intentionally plain, human-readable JavaScript/CSS/HTML with no bundling or minification.
+- No telemetry or analytics.
+- No remote extension code.
+- AntiCurse does not upload your conversation to its own server.
+- Persistent backups stay in browser extension storage.
+- A Markdown file is created only when you choose to download one.
+- Debug reports contain health information and diagnostics, not conversation text.
 
-Important files include:
+## Troubleshooting
 
-- `trim.js` — immutable browser-independent raw graph trimming (`CGTrimCore`).
-- `trim-logical.js` — named logical Recent-N budgeting policy (`CGTrimLogical`).
-- `trim-pipeline.js` — explicit production composition point publishing `CGTrim`.
-- `archive.js` / `archive-store.js` — archive normalization/merging and durable local storage.
-- `archive-export.js` — named Markdown export module and sole owner of Markdown export formatting.
-- `history-markdown.js` — lightweight Markdown rendering for archived turns.
-- `history-virtualized.js` — bounded archived-history DOM window and spacers.
-- `history-fidelity.js` — decorator that adapts archived turns to the current native ChatGPT visual shell.
-- `history-hydration-safe.js` — decorator that prevents archived DOM changes before hydration settles.
-- `history-overlay.js` — explicit composition point for the virtual renderer and its decorators.
-- `windowed.js` — recent/auto history controller, conversation scoping, and scroll-root handling.
-- `popup-context.js` — shared popup environment helpers without merging browser-specific permission/save behavior.
-- `firefox/background.js` — Firefox response interception and event-page state.
-- `chrome/main.js` — Chromium conversation-response transformation and startup/hydration safety barrier.
+If AntiCurse is installed but does not seem to run, open the popup and press **Save & reload**. This is also useful after updating the extension because content scripts that were already loaded in a tab may still belong to the previous version.
 
-There is no minification, transpilation, bundling, `eval`, `new Function`, or remotely loaded JavaScript in the extension.
+If older history does not appear or the popup shows an error, open **Technical details**. **Download debug report** creates a local JSON report with extension state and recent diagnostics but no chat text. That report is useful when filing an issue.
 
-Build the production packages with:
+If you see more than one AntiCurse status pill in the lower-right corner, update to the latest release and reload the tab. Current versions enforce a single status pill in the page DOM.
+
+## Limits
+
+- ChatGPT can change its page and response formats. AntiCurse fails open where possible: if it cannot safely transform a response, it keeps the original response rather than risking conversation data.
+- Chromium has to intercept the page's response handling, so it depends more on ChatGPT page internals than the Firefox network-filter path.
+- Exported Markdown carries visible conversation context; it cannot reproduce a model's hidden state from the original chat.
+
+<details>
+<summary><strong>Development and architecture</strong></summary>
+
+The extension uses plain JavaScript, CSS, and HTML with no bundler or minifier.
+
+The trimming path is composed explicitly:
+
+- `trim.js` provides the raw graph trimmer (`CGTrimCore`).
+- `trim-logical.js` provides Recent-N logical budgeting (`CGTrimLogical`).
+- `trim-pipeline.js` publishes the production `CGTrim` API.
+
+History rendering is also composed from named modules: Markdown rendering, bounded virtualization, native-style fidelity, and hydration safety are combined once in `history-overlay.js`.
+
+Firefox uses `webRequest.filterResponseData()` to transform conversation responses before the page consumes them. Chromium installs its response interceptor at `document_start` in the page's MAIN world; DOM, history, status, archive capture, and popup code stay in the isolated extension world.
+
+Build both packages:
 
 ```bash
 bash ./scripts/build.sh
 ```
 
-The script directly ZIPs the existing `firefox/` and `chrome/` source directories.
+Run the same unit/code-quality tests used by CI by following `.github/workflows/release.yml`. Release CI also runs real Chromium and Firefox extension E2E tests, including paging, Auto window, hydration-boundary behavior, and native-fidelity rendering.
 
-## Testing
-
-Release CI validates both browser packages, checks JavaScript syntax and shared-source parity, rejects dynamic code execution, and runs unit/code-quality tests for trimming, archives, exports, diagnostics, counter ordering, conversation-scoped status, history virtualization, and history rendering.
-
-It also launches real browser extensions in CI:
-
-- Chromium E2E for response trimming, paging, Auto window, and bounded archive DOM.
-- Chromium hydration-boundary E2E.
-- Chromium native-fidelity E2E using a ChatGPT-shaped turn shell.
-- Firefox E2E through the real `webRequest.filterResponseData()` path.
-- Firefox native-fidelity E2E.
+</details>
