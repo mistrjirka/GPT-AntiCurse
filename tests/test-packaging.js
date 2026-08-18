@@ -5,6 +5,8 @@ const fs = require("fs");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const STANDARD_ICON_CHUNKS = new Set(["IHDR", "IDAT", "IEND"]);
 
 function text(file) {
   return fs.readFileSync(file, "utf8");
@@ -47,6 +49,42 @@ function manifestIconPaths(manifest) {
   return paths;
 }
 
+function pngChunks(buffer) {
+  const chunks = [];
+  let offset = PNG_SIGNATURE.length;
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString("ascii", offset + 4, offset + 8);
+    const next = offset + 12 + length;
+    assert(next <= buffer.length, `PNG chunk ${type} exceeds file bounds`);
+    chunks.push(type);
+    offset = next;
+    if (type === "IEND") break;
+  }
+  assert.equal(offset, buffer.length, "PNG must end immediately after IEND");
+  return chunks;
+}
+
+function validatePngIcon(file, expectedSize) {
+  const buffer = fs.readFileSync(file);
+  assert(buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE), `${file}: invalid PNG signature`);
+  assert.equal(buffer.readUInt32BE(8), 13, `${file}: IHDR must have the standard 13-byte payload`);
+  assert.equal(buffer.toString("ascii", 12, 16), "IHDR", `${file}: first PNG chunk must be IHDR`);
+  assert.equal(buffer.readUInt32BE(16), expectedSize, `${file}: wrong PNG width`);
+  assert.equal(buffer.readUInt32BE(20), expectedSize, `${file}: wrong PNG height`);
+  assert.equal(buffer[24], 8, `${file}: icon must use 8-bit channels`);
+  assert.equal(buffer[25], 6, `${file}: icon must use standard RGBA color type`);
+  assert.equal(buffer[26], 0, `${file}: unsupported PNG compression method`);
+  assert.equal(buffer[27], 0, `${file}: unsupported PNG filter method`);
+  assert.equal(buffer[28], 0, `${file}: icon must be non-interlaced`);
+
+  const chunks = pngChunks(buffer);
+  assert.equal(chunks[0], "IHDR", `${file}: first chunk must be IHDR`);
+  assert.equal(chunks.at(-1), "IEND", `${file}: last chunk must be IEND`);
+  assert(chunks.includes("IDAT"), `${file}: PNG must contain image data`);
+  assert(chunks.every((type) => STANDARD_ICON_CHUNKS.has(type)), `${file}: unexpected PNG metadata/chunk: ${chunks.join(", ")}`);
+}
+
 function checkBrowser(browser) {
   const dir = path.join(ROOT, browser);
   const manifest = JSON.parse(text(path.join(dir, "manifest.json")));
@@ -84,6 +122,9 @@ function checkBrowser(browser) {
   for (const name of manifestIconPaths(manifest)) {
     assert(fs.existsSync(path.join(dir, name)), `${browser}: referenced icon file is missing: ${name}`);
   }
+  for (const [size, name] of Object.entries(manifest.icons || {})) {
+    validatePngIcon(path.join(dir, name), Number(size));
+  }
 
   while (queue.length) {
     const name = queue.shift();
@@ -108,4 +149,4 @@ function checkBrowser(browser) {
 }
 
 const results = [checkBrowser("chrome"), checkBrowser("firefox")];
-console.log("packaging reachability: PASS", JSON.stringify(results));
+console.log("packaging reachability and icon PNG validation: PASS", JSON.stringify(results));
