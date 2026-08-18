@@ -52,6 +52,12 @@
     return issue;
   }
 
+  function serializeWrite(operation, onError) {
+    const pending = writeQueue.then(operation);
+    writeQueue = pending.catch((error) => onError(error));
+    return pending;
+  }
+
   function record(scope, code, error, extra) {
     const sanitizedExtra = safeExtra(extra);
     const issue = {
@@ -64,26 +70,25 @@
     console.warn(`[GPT AntiCurse] ${issue.scope}/${issue.code}: ${issue.message}`, issue.extra || "");
     if (!ext || !ext.storage || !ext.storage.local) return Promise.resolve(issue);
 
-    const operation = writeQueue.then(() => persistIssue(issue));
-    // A failed diagnostic write must not poison every later diagnostic attempt.
-    writeQueue = operation.catch((storageError) => {
-      console.error("[GPT AntiCurse] Failed to persist local diagnostic", storageError, issue);
-    });
-    return operation.catch(() => issue);
+    return serializeWrite(
+      () => persistIssue(issue),
+      (storageError) => console.error("[GPT AntiCurse] Failed to persist local diagnostic", storageError, issue)
+    ).catch(() => issue);
   }
 
   function clear(scope, code) {
     if (!ext || !ext.storage || !ext.storage.local) return Promise.resolve(false);
-    return ext.storage.local.get({ [STORAGE_KEY]: null }).then((saved) => {
+    return serializeWrite(async () => {
+      const saved = await ext.storage.local.get({ [STORAGE_KEY]: null });
       const current = saved && saved[STORAGE_KEY];
       if (!current) return false;
       if (scope && current.scope !== scope) return false;
       if (code && current.code !== code) return false;
-      return ext.storage.local.remove(STORAGE_KEY).then(() => true);
-    }).catch((error) => {
+      await ext.storage.local.remove(STORAGE_KEY);
+      return true;
+    }, (error) => {
       console.error("[GPT AntiCurse] Failed to clear local diagnostic", error);
-      return false;
-    });
+    }).catch(() => false);
   }
 
   function history() {
