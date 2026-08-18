@@ -1,8 +1,15 @@
 "use strict";
 
 const assert = require("assert");
-require("../firefox/trim.js");
-const T = require("../firefox/trim-logical.js");
+const Core = require("../firefox/trim.js");
+const Logical = require("../firefox/trim-logical.js");
+const T = require("../firefox/trim-pipeline.js");
+
+assert.equal(global.CGTrimCore, Core, "core trimmer must have its own named module");
+assert.equal(global.CGTrimLogical, Logical, "logical policy must have its own named module");
+assert.equal(global.CGTrim, T, "production trimmer must be composed once by trim-pipeline.js");
+assert.equal(T.trimConversation, Logical.trimConversation);
+assert.notEqual(Core.trimConversation, Logical.trimConversation, "logical policy must not mutate the core method");
 
 function node(id, parent, role, metadata = {}) {
   return {
