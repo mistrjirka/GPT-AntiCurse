@@ -15,7 +15,7 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["trim.js", "trim-logical.js", "archive.js", "main.js"],
+      "js": ["trim.js", "trim-logical.js", "trim-pipeline.js", "archive.js", "main.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
