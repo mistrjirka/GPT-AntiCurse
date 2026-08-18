@@ -28,6 +28,10 @@ assert(fidelity.includes("Ran command in Development Sandbox"), "Development San
 assert(fidelity.includes("row.title"), "raw tool payload should remain inspectable without occupying transcript layout");
 assert(!fidelity.includes("setAttribute(\"data-message-author-role\""), "synthetic turns must not impersonate React-owned messages");
 assert(!fidelity.includes("setAttribute(\"data-turn-id\""), "synthetic turns must not impersonate React-owned turn containers");
+assert(!fidelity.includes(".innerHTML"), "fidelity DOM should not use innerHTML even for static activity icons");
+assert(!fidelity.includes(".innerText"), "fidelity text copying should avoid layout-dependent innerText reads");
+assert(fidelity.includes("document.createElementNS(SVG_NS"), "activity SVG should be assembled with DOM APIs");
+assert(fidelity.includes("oldMarkdown.textContent"), "synthetic history text should be copied with textContent");
 assert(fidelity.includes("function wrap(base)"), "fidelity must expose an explicit decorator");
 assert(fidelity.includes("global.CGHistoryFidelity"), "fidelity must have a named module API");
 assert(!fidelity.includes("global.CGHistoryOverlay ="), "fidelity must not silently replace the final overlay global");
