@@ -14,7 +14,8 @@
   const DEFAULT_SETTINGS = { archiveEnabled: true };
   const TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
   const ROLE_SELECTOR = '[data-message-author-role="user"], [data-message-author-role="assistant"]';
-  const CAPTURE_TAIL_TURNS = 96;
+  const LIVE_CAPTURE_TAIL_TURNS = 8;
+  const RECOVERY_CAPTURE_TAIL_TURNS = 96;
   const DOM_GATE = globalThis.CGAntiCurseDomReady;
   const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
   const scope = globalThis.CGConversationScope.create();
@@ -102,7 +103,8 @@
         conversationConfirmed: !!id && (scope.snapshot().generation === 0 || confirmedConversationId === id),
         threadObserved: !!(observedThread && observedThread.isConnected),
         discoveryActive: !!discoveryObserver,
-        capturePending: !!captureTimer
+        capturePending: !!captureTimer,
+        liveCaptureTailTurns: LIVE_CAPTURE_TAIL_TURNS
       };
     }
   };
@@ -171,12 +173,12 @@
     return (roleElement.textContent || "").trim();
   }
 
-  function collectRenderedMessages() {
+  function collectRenderedMessages(limit = LIVE_CAPTURE_TAIL_TURNS) {
     const root = observedThread && observedThread.isConnected ? observedThread : document.querySelector("#thread");
     if (!root) return [];
 
     const result = [];
-    const turns = Array.from(root.querySelectorAll(TURN_SELECTOR)).slice(-CAPTURE_TAIL_TURNS);
+    const turns = Array.from(root.querySelectorAll(TURN_SELECTOR)).slice(-limit);
     if (turns.length) {
       for (const turn of turns) {
         const roleElement = turn.querySelector(ROLE_SELECTOR);
@@ -188,7 +190,7 @@
       return result;
     }
 
-    for (const roleElement of Array.from(root.querySelectorAll(ROLE_SELECTOR)).slice(-CAPTURE_TAIL_TURNS)) {
+    for (const roleElement of Array.from(root.querySelectorAll(ROLE_SELECTOR)).slice(-limit)) {
       const role = roleElement.getAttribute("data-message-author-role");
       const text = visibleText(roleElement);
       if (text) result.push({ role, text, turnIndex: null });
@@ -221,7 +223,13 @@
     if (!conversationConfirmed(token)) return { ok: false, reason: "conversation-unconfirmed", conversationId: token.id };
 
     const sourceUrl = location.href;
-    const messages = collectRenderedMessages();
+    // The intercepted network archive already contains historical records. Live
+    // DOM capture only needs the newest rendered tail; a full scan is reserved
+    // for DOM-only recovery and explicit/manual final flushes.
+    const captureLimit = force || (!latestNetworkArchive && !lastFingerprint)
+      ? RECOVERY_CAPTURE_TAIL_TURNS
+      : LIVE_CAPTURE_TAIL_TURNS;
+    const messages = collectRenderedMessages(captureLimit);
     if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", conversationId: token.id };
     if (!messages.length) return { ok: false, reason: "no-rendered-turns", conversationId: token.id };
 
@@ -240,7 +248,7 @@
     return result;
   }
 
-  function scheduleCapture(delay = 1200) {
+  function scheduleCapture(delay = 2500) {
     if (!archiveEnabled || captureTimer) return;
     captureTimer = setTimeout(() => {
       captureTimer = null;

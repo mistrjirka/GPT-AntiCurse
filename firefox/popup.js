@@ -137,10 +137,20 @@ function renderStats(stats) {
     setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
     return;
   }
-  setStatus("Ready", "active");
-  primaryMetric.textContent = "0%";
-  document.getElementById("summaryText").textContent = "no trimming needed";
-  document.getElementById("summarySub").textContent = "This conversation is already within the configured window.";
+  if (stats.reason === "below-limit") {
+    setStatus("Ready", "active");
+    primaryMetric.textContent = "0%";
+    document.getElementById("summaryText").textContent = "no trimming needed";
+    document.getElementById("summarySub").textContent = "This conversation is already within the configured window and does not have excessive technical state.";
+    setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
+    return;
+  }
+  setStatus("Bypassed", "error");
+  primaryMetric.textContent = "—";
+  document.getElementById("summaryText").textContent = "this load was not optimized";
+  document.getElementById("summarySub").textContent = stats.reason
+    ? `Reason: ${stats.reason}. Open Technical details or export a debug report for the exact cause.`
+    : "AntiCurse passed this response through unchanged.";
   setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
 }
 async function initialize() {

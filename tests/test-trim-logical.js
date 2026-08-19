@@ -96,6 +96,39 @@ function testWindowedUsesSameLogicalCutoff() {
   assert(result.data.mapping["tool-6"]);
 }
 
+
+function testBelowLogicalLimitCompactsPathologicalAgentState() {
+  const source = agentConversation(13, 6);
+  const beforeNodes = Object.keys(source.mapping).length;
+  const info = T.logicalWindowInfo(source, 64);
+  assert.equal(info.totalUnits, 26, "fixture must remain below the default logical window");
+
+  const result = T.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
+  assert.equal(result.changed, true, "tool/progress-heavy chats must not pass through solely because logical turns are below the limit");
+  assert.equal(result.reason, "trimmed");
+  assert.equal(result.stats.logicalDisplayBefore, 26);
+  assert.equal(result.stats.logicalDisplayAfter, 26, "all user-facing logical units must survive technical compaction");
+  assert.equal(result.stats.technicalCompaction, true);
+  assert.equal(result.stats.technicalTailUnits, Logical.TECHNICAL_TAIL_UNITS);
+  assert(result.stats.mappingNodesAfter < beforeNodes * 0.6, "pathological technical state should shrink substantially");
+
+  assert(result.data.mapping["user-0"], "old user anchors must remain readable");
+  assert(result.data.mapping["assistant-0-5"], "old final assistant anchor must remain readable");
+  assert(!result.data.mapping["assistant-0-0"], "old assistant progress fragments should leave native React state");
+  assert(!result.data.mapping["tool-0"], "old tool state should leave native React state");
+  assert(result.data.mapping["tool-9"], "the recent technical tail must retain tool state");
+  assert(result.data.mapping["assistant-9-0"], "the recent technical tail must retain progress state");
+  assert.equal(result.data.current_node, source.current_node);
+}
+
+function testOrdinaryBelowLimitConversationStillPassesThrough() {
+  const source = agentConversation(5, 1);
+  const result = T.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
+  assert.equal(result.changed, false, "ordinary small chats should not be rewritten unnecessarily");
+  assert.equal(result.reason, "below-limit");
+  assert.equal(result.stats.technicalCompaction, false);
+}
+
 function testAdjacentUsersStayDistinct() {
   const mapping = { root: node("root", null, null) };
   let parent = "root";
@@ -112,6 +145,8 @@ function testAdjacentUsersStayDistinct() {
 const tests = [
   testLogicalBudgetGroupsAssistantProgress,
   testWindowedUsesSameLogicalCutoff,
+  testBelowLogicalLimitCompactsPathologicalAgentState,
+  testOrdinaryBelowLimitConversationStillPassesThrough,
   testAdjacentUsersStayDistinct
 ];
 for (const test of tests) test();

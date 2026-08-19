@@ -212,10 +212,94 @@ async function assertTrimInvariant(page) {
   assert.equal(state.hasRecentHidden, true, "hidden nodes inside retained recent state must survive");
 }
 
+
+async function assertUnderLimitAgentCompaction(page) {
+  const state = await page.evaluate(() => {
+    function make(id, parent, role, recipient = "") {
+      return {
+        id,
+        parent,
+        children: [],
+        message: role ? {
+          author: { role },
+          recipient,
+          metadata: {},
+          content: { content_type: "text", parts: [id] }
+        } : null
+      };
+    }
+    function attach(mapping, parent, child) {
+      mapping[child].parent = parent;
+      mapping[parent].children.push(child);
+    }
+
+    const mapping = { root: make("root", null, null) };
+    let parent = "root";
+    for (let exchange = 0; exchange < 13; exchange++) {
+      const user = `agent-user-${exchange}`;
+      mapping[user] = make(user, parent, "user");
+      attach(mapping, parent, user);
+      parent = user;
+      for (let call = 0; call < 5; call++) {
+        const toolCall = `agent-call-${exchange}-${call}`;
+        mapping[toolCall] = make(toolCall, parent, "assistant", "tool");
+        attach(mapping, parent, toolCall);
+        parent = toolCall;
+        const toolResult = `agent-result-${exchange}-${call}`;
+        mapping[toolResult] = make(toolResult, parent, "tool");
+        attach(mapping, parent, toolResult);
+        parent = toolResult;
+        const progress = `agent-progress-${exchange}-${call}`;
+        mapping[progress] = make(progress, parent, "assistant");
+        attach(mapping, parent, progress);
+        parent = progress;
+      }
+      const answer = `agent-answer-${exchange}`;
+      mapping[answer] = make(answer, parent, "assistant");
+      attach(mapping, parent, answer);
+      parent = answer;
+    }
+
+    const source = { mapping, current_node: parent, root: "root" };
+    const before = Object.keys(mapping).length;
+    const result = globalThis.CGTrim.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
+    return {
+      before,
+      after: Object.keys(result.data.mapping).length,
+      changed: result.changed,
+      reason: result.reason,
+      logicalBefore: result.stats.logicalDisplayBefore,
+      logicalAfter: result.stats.logicalDisplayAfter,
+      technicalCompaction: result.stats.technicalCompaction,
+      technicalNodesDropped: result.stats.technicalNodesDropped,
+      oldUser: !!result.data.mapping["agent-user-0"],
+      oldFinal: !!result.data.mapping["agent-answer-0"],
+      oldProgress: !!result.data.mapping["agent-progress-0-0"],
+      oldTool: !!result.data.mapping["agent-result-0-0"],
+      recentTool: !!result.data.mapping["agent-result-9-0"],
+      currentPreserved: result.data.current_node === source.current_node
+    };
+  });
+
+  assert.equal(state.logicalBefore, 26, "agentic regression fixture must stay below Recent 64");
+  assert.equal(state.logicalAfter, 26, "technical compaction must preserve all logical conversation units");
+  assert.equal(state.changed, true, "pathological under-limit agent state must be trimmed");
+  assert.equal(state.reason, "trimmed");
+  assert.equal(state.technicalCompaction, true);
+  assert(state.after < state.before * 0.5, `agentic native graph should shrink substantially: ${JSON.stringify(state)}`);
+  assert.equal(state.oldUser, true);
+  assert.equal(state.oldFinal, true);
+  assert.equal(state.oldProgress, false);
+  assert.equal(state.oldTool, false);
+  assert.equal(state.recentTool, true, "recent technical tail must remain intact");
+  assert.equal(state.currentPreserved, true);
+}
+
 async function recentPagingTest(context, worker) {
   await configure(worker, "recent");
   const page = await openFixture(context);
   await assertTrimInvariant(page);
+  await assertUnderLimitAgentCompaction(page);
 
   const button = page.locator("#cg-window-history-host .cg-history-previous");
   try {

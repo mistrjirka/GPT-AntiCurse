@@ -196,8 +196,10 @@ function render(stats) {
   } else if (lastStats.mode === "error") {
     el.textContent = "AntiCurse error — original response kept";
     el.title = lastStats.error || "Unknown interception error";
-  } else {
+  } else if (lastStats.reason === "below-limit") {
     renderSimpleBadge(el, "no trimming needed");
+  } else {
+    renderSimpleBadge(el, `not optimized${lastStats.reason ? ` · ${lastStats.reason}` : ""}`);
   }
 }
 

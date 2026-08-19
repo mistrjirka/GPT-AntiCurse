@@ -65,6 +65,9 @@ assert(archiveCapture.includes("discoveryActive: !!discoveryObserver"), "debug s
 assert(archiveCapture.includes("if (!archiveEnabled) return;"), "DOM backup observers must stay off when persistent backup is disabled");
 assert(!archiveCapture.includes(".innerText"), "tail backup extraction should not use innerText and force layout");
 assert(archiveCapture.includes("debug()"), "archive bridge must expose a content-free health snapshot");
+assert(archiveCapture.includes("LIVE_CAPTURE_TAIL_TURNS = 8"), "live streaming backup capture should scan only a small rendered tail");
+assert(archiveCapture.includes("RECOVERY_CAPTURE_TAIL_TURNS = 96"), "explicit recovery/export flushes must retain the larger recovery window");
+assert(archiveCapture.includes("function scheduleCapture(delay = 2500)"), "streaming backup capture should be throttled on mutation-heavy chats");
 
 assert(domReady.includes('"dom-ready", "callback-failed"'), "hydration callback failures must become diagnostics");
 assert(domReady.includes("readyPromise.then(() => callback()).catch"), "hydration callback rejection must be observed");
@@ -138,6 +141,8 @@ assert(!historyVirtualized.includes("host.innerHTML"), "history overlay shell sh
 
 assert(chromeContent.includes("RECOVERABLE_MAIN_CODES"), "valid later graphs must clear stale Chromium graph diagnostics");
 assert(chromeContent.includes('stats.reason === "below-limit"'), "below-limit valid graphs must count as recovery");
+assert(chromePopupController.includes('stats.reason === "below-limit"'), "popup must distinguish legitimate below-limit passthrough from failed optimization");
+assert(chromePopupController.includes('setStatus("Bypassed", "error")'), "non-below-limit passthrough must be visible instead of reported as no trimming needed");
 assert(chromeContent.includes('DIAGNOSTICS.clear("chromium-main", lastIssue.code)'), "recovery must clear only the matching Chromium issue, not unrelated diagnostics");
 
 assert(chromeMain.includes("function shapeSummary"), "unsupported Chromium responses need structural shape metadata");
