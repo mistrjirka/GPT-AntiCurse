@@ -121,6 +121,21 @@ function testBelowLogicalLimitCompactsPathologicalAgentState() {
   assert.equal(result.data.current_node, source.current_node);
 }
 
+
+function testTechnicalTailAlsoHonorsRawNodeBudget() {
+  const source = agentConversation(13, 12);
+  const result = T.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.stats.logicalDisplayAfter, 26, "node-budget compaction must preserve logical history");
+  assert.equal(result.stats.technicalCompaction, true);
+  assert(result.stats.technicalTailUnits < Logical.TECHNICAL_TAIL_UNITS, "tool-heavy tail should shrink below the logical-unit cap");
+  assert(result.stats.technicalTailNodes <= Logical.TECHNICAL_TAIL_NODE_BUDGET, "full technical tail should honor the raw-node budget when a complete recent exchange fits");
+  assert(result.data.mapping["tool-12"], "newest exchange must keep its technical state");
+  assert(!result.data.mapping["tool-9"], "older technical state should compact once the raw-node budget is exhausted");
+  assert(result.data.mapping["assistant-9-11"], "older exchange final assistant anchor should remain readable");
+}
+
 function testOrdinaryBelowLimitConversationStillPassesThrough() {
   const source = agentConversation(5, 1);
   const result = T.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
@@ -146,6 +161,7 @@ const tests = [
   testLogicalBudgetGroupsAssistantProgress,
   testWindowedUsesSameLogicalCutoff,
   testBelowLogicalLimitCompactsPathologicalAgentState,
+  testTechnicalTailAlsoHonorsRawNodeBudget,
   testOrdinaryBelowLimitConversationStillPassesThrough,
   testAdjacentUsersStayDistinct
 ];

@@ -276,7 +276,8 @@ async function assertUnderLimitAgentCompaction(page) {
       oldFinal: !!result.data.mapping["agent-answer-0"],
       oldProgress: !!result.data.mapping["agent-progress-0-0"],
       oldTool: !!result.data.mapping["agent-result-0-0"],
-      recentTool: !!result.data.mapping["agent-result-9-0"],
+      olderRecentTool: !!result.data.mapping["agent-result-9-0"],
+      newestTool: !!result.data.mapping["agent-result-12-0"],
       currentPreserved: result.data.current_node === source.current_node
     };
   });
@@ -291,7 +292,8 @@ async function assertUnderLimitAgentCompaction(page) {
   assert.equal(state.oldFinal, true);
   assert.equal(state.oldProgress, false);
   assert.equal(state.oldTool, false);
-  assert.equal(state.recentTool, true, "recent technical tail must remain intact");
+  assert.equal(state.olderRecentTool, false, "raw-node budget should compact older tool-heavy exchanges even inside the logical tail");
+  assert.equal(state.newestTool, true, "newest exchange technical state must remain intact");
   assert.equal(state.currentPreserved, true);
 }
 

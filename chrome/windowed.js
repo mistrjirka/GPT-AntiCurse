@@ -150,10 +150,11 @@
     return nativeScroller ? Math.max(0, Number(nativeScroller.scrollTop) || 0) : 0;
   }
 
-  function isAtTop() {
+  function isAtTop(knownTop) {
     if (!nativeScroller) return false;
     if (nativeScroller.hasAttribute("data-scroll-from-top")) return false;
-    return nativeTop() <= TOP_EPSILON;
+    const top = Number.isFinite(knownTop) ? knownTop : nativeTop();
+    return top <= TOP_EPSILON;
   }
 
   function eventTargetForScroller(scroller) {
@@ -320,7 +321,7 @@
     const currentTop = nativeTop();
     const movingUp = currentTop < lastNativeTop - 0.5;
     if (currentTop > 64 || nativeScroller.hasAttribute("data-scroll-from-top")) autoArmed = true;
-    if (movingUp && isAtTop()) handleTopReached();
+    if (movingUp && isAtTop(currentTop)) handleTopReached();
     lastNativeTop = currentTop;
   }
 

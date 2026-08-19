@@ -13,6 +13,7 @@
   if (!core || typeof core.trimConversation !== "function") return;
 
   const TECHNICAL_TAIL_UNITS = 8;
+  const TECHNICAL_TAIL_NODE_BUDGET = 64;
   const TECHNICAL_PRESSURE_MIN_OVERHEAD = 48;
   const TECHNICAL_PRESSURE_RATIO = 2;
 
@@ -133,7 +134,7 @@
       totalUnits,
       overheadNodes,
       threshold,
-      pressured: totalUnits > TECHNICAL_TAIL_UNITS && overheadNodes >= threshold
+      pressured: totalUnits > 2 && overheadNodes >= threshold
     };
   }
 
@@ -141,11 +142,28 @@
     const pressure = technicalPressure(data);
     if (!pressure.pressured) return { changed: false, data, pressure };
 
-    const tailUnits = Math.min(TECHNICAL_TAIL_UNITS, pressure.totalUnits);
-    const tailCutoffUnit = pressure.totalUnits - tailUnits;
-    const tailFirst = pressure.rows.find((row) => row.unit >= tailCutoffUnit);
+    const maxTailUnits = Math.min(TECHNICAL_TAIL_UNITS, pressure.totalUnits);
+    const maxTailCutoffUnit = pressure.totalUnits - maxTailUnits;
+    const candidateUsers = pressure.rows.filter((row) => row.role === "user" && row.unit >= maxTailCutoffUnit);
+    let tailFirst = null;
+
+    // Keep as many complete recent exchanges as fit the raw-node budget. If the
+    // newest exchange alone is larger than the budget, preserve that exchange
+    // intact and compact every older one rather than slicing live tool state.
+    for (const row of candidateUsers) {
+      const index = pressure.chain.indexOf(row.id);
+      if (index >= 0 && pressure.chain.length - index <= TECHNICAL_TAIL_NODE_BUDGET) {
+        tailFirst = row;
+        break;
+      }
+    }
+    if (!tailFirst && candidateUsers.length) tailFirst = candidateUsers[candidateUsers.length - 1];
+    if (!tailFirst) tailFirst = pressure.rows.find((row) => row.unit >= maxTailCutoffUnit) || null;
+
     const tailStartIndex = tailFirst ? pressure.chain.indexOf(tailFirst.id) : -1;
     if (tailStartIndex < 0) return { changed: false, data, pressure };
+    const tailCutoffUnit = tailFirst.unit;
+    const tailUnits = Math.max(0, pressure.totalUnits - tailCutoffUnit);
 
     const keep = new Set(leadingPrefix(data, pressure.chain, Math.max(0, Math.min(32, Number(options.maxPrefixNodes) || 4))));
     const assistantAnchorByUnit = new Map();
@@ -173,6 +191,7 @@
       pressure,
       tailUnits,
       tailCutoffUnit,
+      tailNodeCount: pressure.chain.length - tailStartIndex,
       nodesBefore: pressure.chain.length,
       nodesAfter: keptChain.length,
       nodesDropped: pressure.chain.length - keptChain.length
@@ -221,6 +240,8 @@
     result.stats.logicalDisplayAfter = logicalUnitCount(compacted.data);
     result.stats.currentNodePreserved = !!(compacted.data.current_node && compacted.data.current_node === data.current_node);
     result.stats.technicalTailUnits = compacted.tailUnits;
+    result.stats.technicalTailNodes = compacted.tailNodeCount;
+    result.stats.technicalTailNodeBudget = TECHNICAL_TAIL_NODE_BUDGET;
     result.stats.technicalNodesDropped = compacted.nodesDropped;
     return result;
   }
@@ -231,7 +252,8 @@
     logicalUnitCount,
     technicalPressure,
     compactTechnicalHistory,
-    TECHNICAL_TAIL_UNITS
+    TECHNICAL_TAIL_UNITS,
+    TECHNICAL_TAIL_NODE_BUDGET
   });
   global.CGTrimLogical = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
