@@ -1,27 +1,32 @@
-# GPT AntiCurse v0.6.4
+# GPT AntiCurse v0.6.5
 
-Firefox for Android compatibility release.
+Agent-heavy conversation responsiveness and diagnostics release.
 
-## Firefox for Android
+## Agent/tool-heavy conversations
 
-- Declares Firefox Android support through `browser_specific_settings.gecko_android`, so AMO can list the same Firefox package as Android-compatible.
-- Keeps the existing Firefox network-response filtering architecture; no separate mobile fork is required.
-- Adds a Firefox-only narrow-screen stylesheet for the on-page status and archived-history controls.
-- Moves the mobile status pill above the bottom browser/composer area and accounts for safe-area insets.
-- Uses larger touch targets for older-history loading and allows wider user bubbles on narrow screens.
+- Fixes a case where long agentic chats could bypass useful trimming because many tool calls, progress records, and hidden technical nodes collapsed into fewer than the configured number of logical conversation units.
+- Detects excessive technical graph pressure even when the visible/logical conversation is still below the normal Recent-N limit.
+- Compacts older agent state to stable user and final-assistant anchors while preserving the logical conversation history and current node.
+- Bounds the fully preserved recent technical tail by both logical units and a raw-node budget, so a few very tool-heavy exchanges cannot keep an unbounded amount of React-visible state.
+- Preserves the newest complete exchange when it alone exceeds the technical-node budget rather than slicing live/recent tool state in the middle.
 
-## Popup
+## Mobile and runtime overhead
 
-- Removes the hard 360 px minimum width so the extension popup cannot overflow narrow mobile viewports.
-- On narrow touch devices, the popup may use the full available width, uses larger controls, and stacks export buttons vertically.
-- Desktop Firefox and Chromium retain the existing compact popup layout.
+- Reduces live backup DOM scanning to the newest 8 rendered turns; the wider 96-turn scan remains available for recovery and explicit export/final flush paths.
+- Increases live backup-capture throttling from 1.2 s to 2.5 s to reduce repeated work during streaming and mutation-heavy pages.
+- Removes a redundant scroll-position read in the windowed-history hot path.
+
+## Diagnostics
+
+- Distinguishes a true below-limit pass-through from loads that were bypassed or not optimized, so startup/hydration or other fail-open paths no longer look like successful "no trimming needed" cases.
+- Adds technical-compaction statistics including technical overhead, preserved tail size, node budget, and dropped technical nodes.
 
 ## Regression coverage
 
-- Adds a dedicated Firefox Android compatibility test for the AMO manifest declaration, response-filter permissions, packaged mobile CSS, responsive popup sizing, safe-area placement, and touch targets.
-- Existing Chromium and desktop Firefox unit/E2E tests remain release gates.
+- Adds synthetic and browser-level coverage for pathological below-window agent graphs and raw-node-tail budgeting.
+- Chromium extension, hydration-boundary, native-fidelity, Firefox extension, Firefox native-fidelity, packaging, Android compatibility, and shared-code checks remain release gates.
 
 ## Scope
 
-- The conversation trimming algorithm, archive format, export format, and desktop history behavior are unchanged.
-- Physical-device Android testing is still recommended after AMO signing because CI does not provide an Android Firefox device.
+- Normal Recent-N behavior for conversations that genuinely exceed the visible window remains unchanged: recent hidden/tool state is still preserved.
+- The more aggressive completed-turn tool-history compaction explored in profiling is not part of this release.
