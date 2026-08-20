@@ -165,7 +165,7 @@ async function worker(context) {
 
     const serviceWorker = await worker(context);
     await serviceWorker.evaluate(async () => {
-      await chrome.storage.local.set({ enabled: true, mode: "recent", maxDisplayMessages: 4, showGuardNotice: false, archiveEnabled: true });
+      await chrome.storage.local.set({ enabled: true, mode: "recent", maxDisplayMessages: 4, showGuardNotice: false });
     });
 
     const page = await context.newPage();

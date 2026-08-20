@@ -178,7 +178,7 @@ async function buildExportArchiveFromPage(worker) {
     const tabs = await chrome.tabs.query({ url: "https://chatgpt.com/*" });
     const tab = tabs[tabs.length - 1];
     if (!tab) return { ok: false, reason: "fixture-tab-not-found" };
-    return chrome.tabs.sendMessage(tab.id, { type: "cg-build-export-archive", exportLevel: "full" });
+    return chrome.tabs.sendMessage(tab.id, { type: "cg-build-export-archive" });
   });
 }
 

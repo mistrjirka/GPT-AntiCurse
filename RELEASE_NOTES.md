@@ -1,12 +1,20 @@
-# GPT AntiCurse v0.6.7
+# GPT AntiCurse v0.6.8
 
-Long-conversation export reliability hotfix, especially for Firefox and Firefox Android.
+Finalized long-conversation export reliability and technical-log fidelity, especially for Firefox and Firefox Android.
+
+## Final export-fidelity polish after v0.6.7
+
+- Preserves recognized structured plan payloads even when ChatGPT stores the plan record as visually hidden; arbitrary hidden assistant narration remains excluded.
+- Corrects the Markdown header for **Full technical log** to describe its actual boundary: visible assistant records, structured plans, and explicit tool calls.
+- Removes the unused export-detail field from the popup-to-content export request; formatting remains owned by the popup.
+- Removes stale `archiveEnabled` writes from Chromium E2E fixtures now that continuous backup no longer exists.
+- Updates the lifecycle evidence with the stronger real-browser reproduction: v0.6.6 dropped from a 630-record base to rendered-only state after the Firefox event page restarted, while the repaired path returned the complete 630-record export after the same restart.
 
 ## Fix: exports after Firefox background idle
 
 - Fixes a v0.6.6 regression where **Full technical log**, **Readable conversation**, and other exports could contain only the few turns currently rendered in the page after the Firefox MV3 background event page had gone idle.
-- The failure was reproduced against the released v0.6.6 build: before idle the page had 136 older turns available, but after 35 seconds the export had `baseArchive=0` and only 6 rendered messages.
-- The repaired build was tested under the same 35-second idle condition and returned all 200 authoritative messages without reloading the chat.
+- The failure was reproduced against the released v0.6.6 build: before idle Export had a 630-record authoritative base; after about 45 seconds the Firefox background restarted and the same v0.6.6 export had `baseArchive=0` with only 6 currently rendered messages.
+- The repaired build was tested under the same ~45-second idle/restart condition and returned the same complete 630-record authoritative export without reloading the chat.
 - Export no longer depends on Firefox background-page globals or on a transient history delivery surviving until the user presses Export.
 
 ## Authoritative on-demand export
@@ -21,7 +29,7 @@ Long-conversation export reliability hotfix, especially for Firefox and Firefox 
 
 ## Technical-log fidelity
 
-- The on-demand raw-graph extractor preserves visible user/assistant history plus explicit assistant tool calls and their `recipient` metadata, including tool calls that ChatGPT marks visually hidden.
+- The on-demand raw-graph extractor preserves visible user/assistant history, recognized structured plan payloads, and explicit assistant tool calls with their `recipient` metadata, including supported technical records that ChatGPT marks visually hidden.
 - Arbitrary hidden assistant narration is deliberately **not** surfaced by export.
 - The normal performance/history archive remains lightweight and independent from the richer export snapshot.
 - Raw technical records no longer confuse rendered-tail reconciliation: DOM turn indices are matched against a visible projection of the raw archive, so a currently streaming final response can extend the fresh endpoint snapshot without moving or duplicating interleaved tool calls.

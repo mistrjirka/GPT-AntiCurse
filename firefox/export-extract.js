@@ -49,6 +49,20 @@
     return !!recipient && recipient !== "all" && recipient !== "assistant";
   }
 
+  function isStructuredPlanPayload(message, role) {
+    if (role !== "assistant") return false;
+    const text = contentToText(message && message.content);
+    if (!text || text[0] !== "{") return false;
+    try {
+      const value = JSON.parse(text);
+      return !!value && !Array.isArray(value) && Array.isArray(value.plan) &&
+        value.plan.some((item) => item && typeof item.step === "string" && item.step.trim());
+    } catch (error) {
+      void error;
+      return false;
+    }
+  }
+
   function createArchive(data, options = {}) {
     const id = String(options.id || data?.id || data?.conversation_id || "").trim();
     if (!id) return null;
@@ -60,10 +74,11 @@
       if (role !== "user" && role !== "assistant") continue;
       const hidden = isHidden(message);
       const explicitToolCall = isExplicitToolCall(message, role);
+      const structuredPlan = isStructuredPlanPayload(message, role);
       if (role === "user" && hidden) continue;
-      // Full export means full user-visible assistant history plus explicit tool
-      // calls. It deliberately does not expose arbitrary hidden assistant records.
-      if (role === "assistant" && hidden && !explicitToolCall) continue;
+      // Export hidden assistant state only when it is an explicitly supported
+      // technical artifact (tool call or structured plan), never arbitrary narration.
+      if (role === "assistant" && hidden && !explicitToolCall && !structuredPlan) continue;
       const text = contentToText(message.content);
       if (!text) continue;
       messages.push({

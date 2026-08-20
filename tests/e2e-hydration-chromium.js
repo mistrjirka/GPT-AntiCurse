@@ -107,7 +107,6 @@ async function waitForServiceWorker(context) {
         mode: "recent",
         maxDisplayMessages: 4,
         showGuardNotice: true,
-        archiveEnabled: true
       });
     });
 

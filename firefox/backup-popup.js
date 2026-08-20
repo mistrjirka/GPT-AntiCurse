@@ -103,7 +103,7 @@
     }
     let result;
     try {
-      result = await ext.tabs.sendMessage(activeTab.id, { type: "cg-build-export-archive", exportLevel: exportLevel.value });
+      result = await ext.tabs.sendMessage(activeTab.id, { type: "cg-build-export-archive" });
       await clearPageBridgeIssue();
     } catch (error) {
       await recordIssue("bridge", "popup-page-bridge-failed", error, { export: true });

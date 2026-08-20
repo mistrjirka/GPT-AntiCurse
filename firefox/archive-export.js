@@ -7,7 +7,7 @@
   const EXPORT_DESCRIPTIONS = Object.freeze({
     clean: "Clean — user tasks and final visible assistant responses",
     progress: "Progress — visible assistant progress and consolidated plans; tool calls omitted",
-    full: "Full — all non-empty assistant records, plans, and tool calls"
+    full: "Full — visible assistant records, structured plans, and explicit tool calls"
   });
   const COMPLETED_PLAN_STATUSES = new Set(["completed", "complete", "done"]);
   const ACTIVE_PLAN_STATUSES = new Set(["in_progress", "in-progress", "active"]);

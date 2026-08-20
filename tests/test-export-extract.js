@@ -43,6 +43,7 @@ function rawConversation() {
     "Development_Sandbox.exec_command"
   );
   add("tool-result", "tool", "tool result should not be exported as an assistant record");
+  add("hidden-plan", "assistant", JSON.stringify({ plan: [{ step: "Verify export", status: "in_progress" }], explanation: "Safe structured plan" }), { is_visually_hidden_from_conversation: true });
   add("hidden-narration", "assistant", "arbitrary hidden assistant narration", { is_visually_hidden_from_conversation: true });
   add("final", "assistant", "Final answer");
   return { id: "raw-export", title: "Raw export", mapping, current_node: parent, root: "root" };
@@ -59,11 +60,12 @@ assert(archive);
 assert.equal(archive.complete, true);
 assert.deepEqual(
   archive.messages.map((message) => message.id),
-  ["user", "progress", "tool-call", "final"],
+  ["user", "progress", "tool-call", "hidden-plan", "final"],
   "raw export must preserve visible assistant history and explicit hidden tool calls, but not hidden/system noise"
 );
 assert.equal(archive.messages[2].recipient, "Development_Sandbox.exec_command");
 assert.equal(archive.messages[2].hidden, true);
+assert.equal(archive.messages[3].hidden, true);
 assert(!archive.messages.some((message) => message.id === "tool-result"));
 assert(!archive.messages.some((message) => message.id === "hidden-narration"));
 
@@ -77,8 +79,10 @@ assert(!full.includes("arbitrary hidden assistant narration"));
 assert(!full.includes("tool result should not be exported"));
 assert(!progress.includes("old-tool"));
 assert(progress.includes("Visible progress"));
+assert(progress.includes("Verify export"), "Readable/Progress export should preserve a recognized structured plan even if its raw record is hidden");
 assert(clean.includes("Final answer"));
 assert(!clean.includes("Visible progress"));
+assert(!clean.includes("Verify export"), "Clean export should still contain only the final response");
 
 // Raw technical records must not break DOM-tail reconciliation. DOM turn indices
 // count rendered user/assistant turns, not interleaved explicit tool records.
