@@ -1,9 +1,8 @@
 /*
  * Chromium service worker.
  *
- * Durable conversation history lives in extension-origin IndexedDB. The service
- * worker is deliberately stateless: every history request reads durable storage,
- * so MV3 worker suspension/restart cannot erase history state.
+ * Conversation text never enters the service worker during normal browsing.
+ * This worker only maintains aggregate, content-free performance counters.
  */
 "use strict";
 
@@ -84,60 +83,6 @@ function resetTotals() {
   });
 }
 
-function conversationIdFromMessage(message) {
-  return message && typeof message.conversationId === "string" && message.conversationId
-    ? message.conversationId
-    : null;
-}
-
-function rawVisibleWindowCount(messages, requestedLimit) {
-  const limit = normalizeMessageLimit(requestedLimit);
-  if (!Array.isArray(messages) || !messages.length) return 0;
-  const units = [];
-  let unit = -1;
-  let previousRole = null;
-  for (const message of messages) {
-    const role = message && message.role === "user" ? "user" : "assistant";
-    if (role === "user" || previousRole !== "assistant") unit++;
-    units.push(unit);
-    previousRole = role;
-  }
-  const totalUnits = unit + 1;
-  if (totalUnits <= limit) return messages.length;
-  const cutoff = totalUnits - limit;
-  const first = units.findIndex((value) => value >= cutoff);
-  return first < 0 ? messages.length : messages.length - first;
-}
-
-async function getWindowHistory(message) {
-  const conversationId = conversationIdFromMessage(message);
-  if (!conversationId) return { ok: false, reason: "missing-conversation-id" };
-
-  const archive = await CGArchiveStore.get(conversationId);
-  if (!archive || !Array.isArray(archive.messages)) return { ok: false, reason: "archive-not-found" };
-
-  const saved = await chrome.storage.local.get({ maxDisplayMessages: 64 });
-  const limit = normalizeMessageLimit(
-    Number.isFinite(Number(message && message.maxDisplayMessages)) ? message.maxDisplayMessages : saved.maxDisplayMessages
-  );
-  const messages = archive.messages.map((entry) => ({
-    id: entry.id,
-    role: entry.role,
-    text: entry.text,
-    createTime: entry.createTime == null ? null : entry.createTime
-  }));
-
-  return {
-    ok: true,
-    conversationId,
-    messages,
-    nativeVisibleCount: rawVisibleWindowCount(messages, limit),
-    pageSize: limit,
-    maxRendered: Math.max(limit, Math.min(500, limit * 3)),
-    source: "extension-indexeddb"
-  };
-}
-
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message) return false;
 
@@ -157,17 +102,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  if (message.type === "cg-get-window-history") {
-    getWindowHistory(message).then(sendResponse).catch((error) => {
-      recordIssue("history", "indexeddb-read-failed", error);
-      sendResponse({
-        ok: false,
-        reason: "history-read-failed",
-        error: String(error && error.message ? error.message : error)
-      });
-    });
-    return true;
-  }
+
 
   return false;
 });

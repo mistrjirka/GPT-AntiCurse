@@ -215,7 +215,7 @@
       `> Export detail: ${EXPORT_DESCRIPTIONS[level]}.`
     ];
     if (archive.complete === false) {
-      lines.push("> Warning: this backup was reconstructed from currently rendered turns and may not contain older unloaded history.");
+      lines.push("> Warning: this export snapshot was reconstructed from currently rendered turns and may not contain older unloaded history.");
     }
     lines.push("", "---", "");
     for (const group of groupByUserTurn(Array.isArray(archive.messages) ? archive.messages : [])) {

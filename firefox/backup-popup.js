@@ -8,7 +8,6 @@
   const RUNTIME_BROWSER = popupContext.runtimeBrowser;
   const BACKGROUND_KIND = popupContext.backgroundKind;
   const diagnostics = popupContext.diagnostics;
-  const toggle = document.getElementById("archiveEnabled");
   const status = document.getElementById("archiveStatus");
   const summary = document.getElementById("archiveSummary");
   const exportLevel = document.getElementById("archiveExportLevel");
@@ -63,55 +62,18 @@
     }
   }
 
-  async function conversationId(activeTab, flush = false) {
-    if (!activeTab || activeTab.id == null) return null;
-    try {
-      if (flush) {
-        const saved = await ext.tabs.sendMessage(activeTab.id, { type: "cg-flush-archive" });
-        await clearPageBridgeIssue();
-        if (saved?.conversationId) return saved.conversationId;
-        if (saved?.summary?.id) return saved.summary.id;
-      }
-      const result = await ext.tabs.sendMessage(activeTab.id, { type: "cg-get-conversation-id" });
-      await clearPageBridgeIssue();
-      return result?.conversationId || null;
-    } catch (error) {
-      if (!popupContext.isChatGPTTab(activeTab)) return null;
-      if (!IS_FIREFOX && !(await hasChromeHostAccess(activeTab))) {
-        feedback.textContent = "Chrome has not granted GPT AntiCurse access to chatgpt.com. Use Save & reload to grant access and reload the page.";
-        return null;
-      }
-      if (flush) await recordIssue("bridge", "popup-page-bridge-failed", error, { flush: true });
-      feedback.textContent = `ChatGPT page bridge is not running: ${errorText(error)}. Reload this tab after installing or updating AntiCurse.`;
-      return null;
-    }
-  }
 
   function render(value) {
-    if (!value) {
-      setArchiveStatus(toggle.checked ? "No backup" : "Off", toggle.checked ? "missing" : "off");
-      summary.textContent = toggle.checked
-        ? "Reload this chat once to create a persistent local backup for export."
-        : "Persistent backup is off. Current-tab history still works, but nothing is kept for export across reloads.";
-      buttons(false);
-      return;
+    setArchiveStatus("On demand", "off");
+    if (value && Number.isFinite(Number(value.messageCount))) {
+      summary.textContent = `${value.messageCount} messages captured for the last export action.`;
+    } else {
+      summary.textContent = "Nothing is backed up continuously. Export captures the current conversation only when you press a download button.";
     }
-    const partial = value.complete === false;
-    setArchiveStatus(partial ? "Partial" : "Ready", partial ? "partial" : "saved");
-    const updated = value.updatedAt ? new Date(value.updatedAt).toLocaleString() : "unknown time";
-    summary.textContent = partial
-      ? `${value.messageCount} visible messages backed up locally · older history may be missing · Updated ${updated}`
-      : `${value.messageCount} messages backed up locally · Updated ${updated}`;
     buttons(true);
   }
 
   async function refresh() {
-    const activeTab = await popupContext.currentTab();
-    const id = await conversationId(activeTab);
-    if (!id) return render(null);
-    const result = await ext.runtime.sendMessage({ type: "cg-get-archive-summary", conversationId: id });
-    if (result?.ok) return render(result.summary);
-    if (result?.reason !== "archive-not-found") await recordIssue("archive", "popup-summary-failed", result?.reason || "Archive summary failed");
     render(null);
   }
 
@@ -129,24 +91,40 @@
   }
 
   async function exportChat(openNew) {
-    feedback.textContent = "Saving current turns…";
+    feedback.textContent = "Capturing this conversation…";
     const activeTab = await popupContext.currentTab();
-    const id = await conversationId(activeTab, true);
-    if (!id) {
-      if (!feedback.textContent) feedback.textContent = "Could not reach a ChatGPT conversation in this tab.";
+    if (!activeTab || activeTab.id == null || !popupContext.isChatGPTTab(activeTab)) {
+      feedback.textContent = "Open a ChatGPT conversation before exporting.";
       return;
     }
-    const result = await ext.runtime.sendMessage({ type: "cg-export-archive", conversationId: id, exportLevel: exportLevel.value });
-    if (!result?.ok || !result.markdown) {
-      const reason = result?.reason || "No Markdown returned";
+    let result;
+    try {
+      result = await ext.tabs.sendMessage(activeTab.id, { type: "cg-build-export-archive" });
+      await clearPageBridgeIssue();
+    } catch (error) {
+      if (!IS_FIREFOX && !(await hasChromeHostAccess(activeTab))) {
+        feedback.textContent = "Chrome has not granted GPT AntiCurse access to chatgpt.com. Use Save & reload first.";
+        return;
+      }
+      await recordIssue("bridge", "popup-page-bridge-failed", error, { export: true });
+      feedback.textContent = `Could not capture this conversation: ${errorText(error)}`;
+      return;
+    }
+    if (!result?.ok) {
+      const reason = result?.reason || "No conversation snapshot returned";
       if (reason !== "archive-not-found") await recordIssue("archive", "export-failed", reason);
-      feedback.textContent = reason === "archive-not-found"
-        ? "No persistent backup is available yet. Enable backup and reload this chat once."
-        : `Export failed: ${reason}`;
+      feedback.textContent = `Export failed: ${reason}`;
       return;
     }
-    download(result.markdown, result.filename);
-    render(result.summary);
+    const options = { id: result.conversationId, title: result.title, sourceUrl: result.sourceUrl };
+    const archive = CGArchive.mergeArchiveWithRendered(result.baseArchive || null, result.rendered || [], options);
+    if (!archive) {
+      feedback.textContent = "Export failed: no conversation content was available.";
+      return;
+    }
+    const markdown = CGArchiveExport.archiveToMarkdown(archive, { level: exportLevel.value });
+    download(markdown, CGArchive.archiveFilename(archive));
+    render(result.summary || CGArchive.archiveSummary(archive));
     feedback.textContent = `${exportLevel.options[exportLevel.selectedIndex].text} exported locally.`;
     if (openNew) {
       await ext.tabs.create({ url: "https://chatgpt.com/" });
@@ -173,7 +151,6 @@
       mode: "recent",
       maxDisplayMessages: 64,
       showGuardNotice: true,
-      archiveEnabled: true,
       archiveExportLevel: "progress",
       cgTotals: null,
       cgLastIssue: null,
@@ -196,15 +173,7 @@
     }
 
     const id = page?.state?.conversationId || popupContext.conversationIdFromTab(activeTab) || null;
-    let archive = null;
-    if (id) {
-      try {
-        const result = await ext.runtime.sendMessage({ type: "cg-get-archive-summary", conversationId: id });
-        archive = result?.ok ? result.summary : { ok: false, reason: result?.reason || "no-response" };
-      } catch (error) {
-        archive = { ok: false, error: errorText(error) };
-      }
-    }
+    const archive = id ? { mode: "on-demand", persisted: false, conversationId: id } : null;
 
     let issueHistory = Array.isArray(stored.cgIssueHistory) ? stored.cgIssueHistory : [];
     if (diagnostics && typeof diagnostics.history === "function") issueHistory = await diagnostics.history();
@@ -233,7 +202,7 @@
         mode: stored.mode === "windowed-visible" ? "windowed-visible" : "recent",
         maxDisplayMessages: Number(stored.maxDisplayMessages) || 64,
         showGuardNotice: stored.showGuardNotice !== false,
-        archiveEnabled: stored.archiveEnabled !== false,
+          archiveMode: "on-demand",
         archiveExportLevel: stored.archiveExportLevel || "progress"
       },
       totals: stored.cgTotals || null,
@@ -257,13 +226,11 @@
     });
   }
 
-  ext.storage.local.get({ archiveEnabled: true, archiveExportLevel: "progress" }).then((saved) => {
-    toggle.checked = saved.archiveEnabled !== false;
+  ext.storage.local.get({ archiveExportLevel: "progress" }).then((saved) => {
     exportLevel.value = ["clean", "progress", "full"].includes(saved.archiveExportLevel) ? saved.archiveExportLevel : "progress";
     updateExportHelp();
     return refresh();
   }).catch((error) => {
-    toggle.checked = false;
     exportLevel.value = "progress";
     updateExportHelp();
     recordIssue("archive", "popup-settings-read-failed", error);
@@ -271,11 +238,6 @@
     render(null);
   });
 
-  toggle.addEventListener("change", () => runAction("Changing backup setting failed", async () => {
-    await ext.storage.local.set({ archiveEnabled: toggle.checked });
-    if (toggle.checked) await conversationId(await popupContext.currentTab(), true);
-    await refresh();
-  }));
   exportLevel.addEventListener("change", () => runAction("Saving export detail failed", async () => {
     updateExportHelp();
     await ext.storage.local.set({ archiveExportLevel: exportLevel.value });

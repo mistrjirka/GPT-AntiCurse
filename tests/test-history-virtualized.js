@@ -49,7 +49,8 @@ for (const browser of ["firefox", "chrome"]) {
 const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
 assert(firefoxManifest.background.scripts.indexOf("trim.js") < firefoxManifest.background.scripts.indexOf("trim-logical.js"));
 assert(firefoxManifest.background.scripts.indexOf("trim-logical.js") < firefoxManifest.background.scripts.indexOf("trim-pipeline.js"));
-assert(firefoxManifest.background.scripts.indexOf("trim-pipeline.js") < firefoxManifest.background.scripts.indexOf("archive.js"));
+assert(!firefoxManifest.background.scripts.includes("archive.js"), "Firefox background should keep conversation export/history out of persistence plumbing");
+assert(!firefoxManifest.background.scripts.includes("archive-export.js"), "Markdown export belongs to the explicit popup path, not the Firefox background");
 
 const chromeManifest = JSON.parse(source("chrome/manifest.json"));
 const chromeMain = chromeManifest.content_scripts[0].js;

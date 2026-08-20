@@ -122,16 +122,25 @@ function renderTrimmedStats(stats) {
   const recent = Number.isFinite(logical) ? logical : Math.max(0, Number(stats.displayAfter) || 0);
   const bytesMeasured = Number.isFinite(Number(stats.originalBytes)) && Number.isFinite(Number(stats.outputBytes));
   const removedBytes = bytesMeasured ? Math.max(0, Number(stats.originalBytes) - Number(stats.outputBytes)) : null;
+  const simplifiedTools = Math.max(0, Number(stats.technicalUiToolCallsHidden) || 0);
+  const uiOnly = simplifiedTools > 0 && removed === 0 && (!removedBytes || removedBytes <= 0);
 
-  if (bytesMeasured) {
+  if (uiOnly) {
+    primaryMetric.textContent = formatNumber(simplifiedTools);
+    document.getElementById("summaryText").textContent = "completed rich tool cards simplified";
+    document.getElementById("summarySub").textContent = `Technical records stay in the conversation graph, but ChatGPT does not build their expensive completed tool UI. Kept ${formatNumber(recent)} recent conversation units.`;
+    setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
+  } else if (bytesMeasured && removedBytes > 0) {
     primaryMetric.textContent = formatBytes(removedBytes);
     document.getElementById("summaryText").textContent = "response data removed from page state";
     document.getElementById("summarySub").textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}% fewer internal nodes · kept ${formatNumber(recent)} recent conversation units in ChatGPT.`;
     document.getElementById("bytesSaved").textContent = `${formatBytes(removedBytes)} (${formatBytes(stats.originalBytes)} → ${formatBytes(stats.outputBytes)})`;
   } else {
-    primaryMetric.textContent = `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}%`;
-    document.getElementById("summaryText").textContent = "fewer internal nodes in this load";
-    document.getElementById("summarySub").textContent = `Kept ${formatNumber(recent)} recent conversation units in ChatGPT. Older history stays available through AntiCurse.`;
+    primaryMetric.textContent = simplifiedTools > 0 ? formatNumber(simplifiedTools) : `${percentage >= 99.5 ? percentage.toFixed(1) : Math.round(percentage)}%`;
+    document.getElementById("summaryText").textContent = simplifiedTools > 0 ? "completed rich tool cards simplified" : "fewer internal nodes in this load";
+    document.getElementById("summarySub").textContent = simplifiedTools > 0
+      ? `Also removed ${formatNumber(removed)} internal nodes. Kept ${formatNumber(recent)} recent conversation units.`
+      : `Kept ${formatNumber(recent)} recent conversation units in ChatGPT. Older history stays available through AntiCurse.`;
   }
 
   document.getElementById("removedNodes").textContent = formatNumber(removed);

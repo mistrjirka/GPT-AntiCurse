@@ -144,6 +144,62 @@ function testOrdinaryBelowLimitConversationStillPassesThrough() {
   assert.equal(result.stats.technicalCompaction, false);
 }
 
+
+function completedToolConversation(calls = 12, endTurn = true) {
+  const mapping = { root: node("root", null, null) };
+  let parent = "root";
+  mapping.user = node("user", parent, "user"); link(mapping, parent, "user"); parent = "user";
+  for (let i = 0; i < calls; i++) {
+    const call = `call-${i}`;
+    mapping[call] = node(call, parent, "assistant");
+    mapping[call].message.recipient = "tool";
+    link(mapping, parent, call); parent = call;
+    const result = `result-${i}`;
+    mapping[result] = node(result, parent, "tool");
+    link(mapping, parent, result); parent = result;
+    const progress = `progress-${i}`;
+    mapping[progress] = node(progress, parent, "assistant");
+    link(mapping, parent, progress); parent = progress;
+  }
+  mapping.answer = node("answer", parent, "assistant");
+  mapping.answer.message.end_turn = endTurn;
+  mapping.answer.message.status = endTurn ? "finished_successfully" : "in_progress";
+  link(mapping, parent, "answer"); parent = "answer";
+  return { mapping, current_node: parent, root: "root" };
+}
+
+function testPathologicalCompletedToolsStayInGraphButLeaveRichUi() {
+  const source = completedToolConversation(12, true);
+  const before = Object.keys(source.mapping).length;
+  const result = T.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
+  assert.equal(result.changed, true, "pathological completed tool UI should be simplified");
+  assert.equal(result.stats.technicalUiSimplified, true);
+  assert.equal(result.stats.technicalUiToolCallsHidden, 12);
+  assert.equal(result.stats.technicalUiToolResultsHidden, 12);
+  assert.equal(Object.keys(result.data.mapping).length, before, "UI simplification must retain graph nodes and ancestry");
+  assert.equal(result.stats.discardedNodes, 0, "UI simplification must not count retained technical nodes as discarded");
+  assert.equal(result.data.mapping["call-0"].message.recipient, "tool", "tool semantics must remain intact");
+  assert.equal(result.data.mapping["call-0"].message.metadata.is_visually_hidden_from_conversation, true);
+  assert.equal(result.data.mapping["result-0"].message.metadata.is_visually_hidden_from_conversation, true);
+  assert.equal(result.data.mapping.answer.message.metadata.is_visually_hidden_from_conversation, undefined, "final answer must remain native/visible");
+  assert.equal(result.data.current_node, source.current_node);
+}
+
+function testActiveToolExchangeIsNeverSimplifiedWithoutCompletionSignal() {
+  const source = completedToolConversation(20, false);
+  const result = T.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
+  assert.equal(result.stats.technicalUiSimplified, false, "live/current exchange must retain native technical UI");
+  assert.equal(result.data.mapping["call-0"].message.metadata.is_visually_hidden_from_conversation, undefined);
+  assert.equal(result.data.mapping["result-0"].message.metadata.is_visually_hidden_from_conversation, undefined);
+}
+
+function testSmallCompletedToolExchangeKeepsNativeUi() {
+  const source = completedToolConversation(3, true);
+  const result = T.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
+  assert.equal(result.stats.technicalUiSimplified, false, "normal small tool runs should keep native tool cards");
+  assert.equal(result.data.mapping["call-0"].message.metadata.is_visually_hidden_from_conversation, undefined);
+}
+
 function testAdjacentUsersStayDistinct() {
   const mapping = { root: node("root", null, null) };
   let parent = "root";
@@ -163,6 +219,9 @@ const tests = [
   testBelowLogicalLimitCompactsPathologicalAgentState,
   testTechnicalTailAlsoHonorsRawNodeBudget,
   testOrdinaryBelowLimitConversationStillPassesThrough,
+  testPathologicalCompletedToolsStayInGraphButLeaveRichUi,
+  testActiveToolExchangeIsNeverSimplifiedWithoutCompletionSignal,
+  testSmallCompletedToolExchangeKeepsNativeUi,
   testAdjacentUsersStayDistinct
 ];
 for (const test of tests) test();

@@ -13,8 +13,6 @@ const trimCore = source("chrome/trim.js");
 const trimLogical = source("chrome/trim-logical.js");
 const trimPipeline = source("chrome/trim-pipeline.js");
 const archiveCore = source("chrome/archive.js");
-const archiveStore = source("chrome/archive-store.js");
-const archiveBackground = source("chrome/archive-background.js");
 const archiveExport = source("chrome/archive-export.js");
 const archiveCapture = source("chrome/archive-capture.js");
 const domReady = source("chrome/dom-ready.js");
@@ -46,28 +44,22 @@ assert(!trimLogical.includes("trim.trimConversation ="), "logical budgeting must
 assert(trimPipeline.includes("global.CGTrim = api"), "one explicit pipeline must compose the production trimmer");
 assert(trimPipeline.includes("trimConversation: logical.trimConversation"), "production trimming must select the logical policy explicitly");
 
-assert(archiveStore.includes("dbPromise = opening.catch"), "IndexedDB open failures must be recoverable");
-assert((archiveStore.match(/dbPromise = null/g) || []).length >= 3, "IndexedDB promise must reset on initial state, failure, and version change");
-assert(archiveStore.includes("db.onversionchange"), "IndexedDB connections must close/reset for a version change");
-
-assert(!archiveBackground.includes("activeByTab"), "MV3 archive lookup must not depend on an ephemeral tab->conversation global cache");
-assert(archiveBackground.includes("message && message.conversationId"), "archive reads must use an explicit durable conversation id");
-assert(archiveBackground.includes("CGArchiveExport.archiveToMarkdown"), "archive export must depend on the named export module explicitly");
 assert(archiveExport.includes("global.CGArchiveExport = api"), "archive export must publish its own named module");
 assert(!archiveExport.includes("A.archiveToMarkdown ="), "archive export must not monkey-patch the core archive module");
 assert(!archiveCore.includes("archiveToMarkdown"), "archive core must not retain a second Markdown exporter");
-
-assert(!archiveCapture.includes("setTimeout(startObserver"), "archive thread discovery must not poll the DOM forever");
-assert(archiveCapture.includes("discoveryObserver"), "archive thread discovery should be mutation-driven");
-assert(archiveCapture.includes("disconnectDiscoveryObserver();\n    scheduleCapture(250)"), "whole-document discovery must disconnect once the thread is attached");
-assert(archiveCapture.includes("shellObserver.observe(shell, { childList: true })"), "thread replacement should use a narrow direct-child shell observer");
-assert(archiveCapture.includes("discoveryActive: !!discoveryObserver"), "debug state should expose whether broad discovery is temporarily active");
-assert(archiveCapture.includes("if (!archiveEnabled) return;"), "DOM backup observers must stay off when persistent backup is disabled");
-assert(!archiveCapture.includes(".innerText"), "tail backup extraction should not use innerText and force layout");
-assert(archiveCapture.includes("debug()"), "archive bridge must expose a content-free health snapshot");
-assert(archiveCapture.includes("LIVE_CAPTURE_TAIL_TURNS = 8"), "live streaming backup capture should scan only a small rendered tail");
-assert(archiveCapture.includes("RECOVERY_CAPTURE_TAIL_TURNS = 96"), "explicit recovery/export flushes must retain the larger recovery window");
-assert(archiveCapture.includes("function scheduleCapture(delay = 2500)"), "streaming backup capture should be throttled on mutation-heavy chats");
+assert(archiveCapture.includes("buildExportCapture"), "conversation export must be built on explicit demand");
+assert(archiveCapture.includes('message.type === "cg-build-export-archive"'), "content script must expose the explicit on-demand export action");
+assert(archiveCapture.includes("EXPORT_CAPTURE_TAIL_TURNS = 96"), "explicit export must merge a bounded rendered tail");
+assert(!archiveCapture.includes("MutationObserver"), "continuous backup observers must be removed");
+assert(!archiveCapture.includes("setTimeout("), "conversation export must not schedule background capture work");
+assert(!archiveCapture.includes("pagehide"), "pagehide must not capture conversation text");
+assert(!archiveCapture.includes("indexedDB"), "on-demand export capture must remain memory-only");
+assert(archiveCapture.includes("debug()"), "transient archive bridge must expose a content-free health snapshot");
+assert(!chromeBackground.includes("CGArchiveStore"), "Chromium service worker must never persist conversation text");
+assert(!chromeBackgroundEntry.includes("archive-store.js"), "Chromium worker must not load the removed archive store");
+assert(!chromeBackgroundEntry.includes("archive-background.js"), "Chromium worker must not load the removed persistence plumbing");
+assert(!chromeManifest.permissions.includes("unlimitedStorage"), "Chromium no longer needs unlimitedStorage without persistent backups");
+assert(!firefoxManifest.permissions.includes("unlimitedStorage"), "Firefox no longer needs unlimitedStorage without persistent backups");
 
 assert(domReady.includes('"dom-ready", "callback-failed"'), "hydration callback failures must become diagnostics");
 assert(domReady.includes("readyPromise.then(() => callback()).catch"), "hydration callback rejection must be observed");
@@ -110,6 +102,9 @@ assert(backupPopup.includes("packageTarget"), "debug report must distinguish pac
 assert(backupPopup.includes("runtimeBrowser"), "debug report must distinguish actual runtime browser separately");
 assert(backupPopup.includes("backgroundKind"), "debug report must expose manifest background architecture");
 assert(backupPopup.includes("backgroundHealth"), "debug report must actively probe background health");
+assert(backupPopup.includes('type: "cg-build-export-archive"'), "popup export must request an in-memory snapshot from the active tab");
+assert(backupPopup.includes("CGArchiveExport.archiveToMarkdown"), "popup must render the in-memory snapshot directly to Markdown");
+assert(!backupPopup.includes("cg-export-archive"), "popup must not use persistent archive export plumbing");
 
 assert(windowed.includes("extensionManifest.browser_specific_settings"), "history routing must keep using packaged manifest identity");
 assert(windowed.includes("PACKAGE_TARGET"), "history debug must report package identity");

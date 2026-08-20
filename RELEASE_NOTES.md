@@ -1,32 +1,34 @@
-# GPT AntiCurse v0.6.5
+# GPT AntiCurse v0.6.6
 
-Agent-heavy conversation responsiveness and diagnostics release.
+JavaScript/React load reduction for tool-heavy agent conversations, plus memory-only on-demand export.
 
-## Agent/tool-heavy conversations
+## Cheaper completed agent turns
 
-- Fixes a case where long agentic chats could bypass useful trimming because many tool calls, progress records, and hidden technical nodes collapsed into fewer than the configured number of logical conversation units.
-- Detects excessive technical graph pressure even when the visible/logical conversation is still below the normal Recent-N limit.
-- Compacts older agent state to stable user and final-assistant anchors while preserving the logical conversation history and current node.
-- Bounds the fully preserved recent technical tail by both logical units and a raw-node budget, so a few very tool-heavy exchanges cannot keep an unbounded amount of React-visible state.
-- Preserves the newest complete exchange when it alone exceeds the technical-node budget rather than slicing live/recent tool state in the middle.
+- Targets ChatGPT's expensive rich tool UI rather than only shrinking the recent-message window.
+- When the retained conversation contains a pathological completed agent workload (12 or more completed tool calls), AntiCurse keeps the technical graph records, payloads, roles, recipients, and ancestry intact but marks completed tool-call/result records non-visual before ChatGPT processes the response.
+- The final assistant answer remains native and visible.
+- The current/latest exchange is simplified only when the response carries an explicit completion signal (`end_turn`, a completed status, or finish details). Active/in-progress tool runs are left untouched.
+- Small tool runs stay unchanged and retain their native tool cards.
+- New diagnostics report whether rich technical UI was simplified and how many completed tool calls/results were affected.
 
-## Mobile and runtime overhead
+In the synthetic mobile-style Playwright/React stress fixture used during development, keeping the same 132 graph nodes while making completed technical records non-visual reduced median JavaScript scripting time by about 41% and total task time by about 38% at 4× CPU throttling. This is benchmark evidence for the optimization mechanism, not a guarantee of the same speedup on every ChatGPT build or phone.
 
-- Reduces live backup DOM scanning to the newest 8 rendered turns; the wider 96-turn scan remains available for recovery and explicit export/final flush paths.
-- Increases live backup-capture throttling from 1.2 s to 2.5 s to reduce repeated work during streaming and mutation-heavy pages.
-- Removes a redundant scroll-position read in the windowed-history hot path.
+## Export is now fully on demand
 
-## Diagnostics
+- Removes continuous conversation backup, live backup MutationObservers, periodic rendered-tail hashing/merging, pagehide backup work, and conversation IndexedDB persistence.
+- Markdown export now captures an in-memory snapshot only when **Download Markdown** or **Download & new chat** is pressed.
+- The export snapshot combines the untouched transient conversation history with the currently rendered tail, generates Markdown locally, and is then discarded.
+- Chromium still keeps a transient current-page history snapshot so **Load previous** works without delivering old turns to React.
+- Firefox continues to serve older history from its per-tab response cache.
+- Removes the `unlimitedStorage` permission and the archive-store/background persistence modules.
 
-- Distinguishes a true below-limit pass-through from loads that were bypassed or not optimized, so startup/hydration or other fail-open paths no longer look like successful "no trimming needed" cases.
-- Adds technical-compaction statistics including technical overhead, preserved tail size, node budget, and dropped technical nodes.
+## Status and diagnostics
+
+- Loads that only simplify completed rich tool UI now report that optimization directly instead of misleadingly showing `0% trimmed`.
+- Debug state identifies export as `on-demand` and reports no persistent backup mode.
 
 ## Regression coverage
 
-- Adds synthetic and browser-level coverage for pathological below-window agent graphs and raw-node-tail budgeting.
-- Chromium extension, hydration-boundary, native-fidelity, Firefox extension, Firefox native-fidelity, packaging, Android compatibility, and shared-code checks remain release gates.
-
-## Scope
-
-- Normal Recent-N behavior for conversations that genuinely exceed the visible window remains unchanged: recent hidden/tool state is still preserved.
-- The more aggressive completed-turn tool-history compaction explored in profiling is not part of this release.
+- Adds graph-preservation tests for completed technical UI simplification, including protection for active tool runs and small normal tool exchanges.
+- Chromium E2E verifies that explicit memory-only export can still recover old history that was never delivered to ChatGPT's React tree.
+- Existing Chromium hydration/fidelity, Firefox response-filter/fidelity, Android compatibility, packaging, and code-quality checks remain release gates.

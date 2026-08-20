@@ -16,6 +16,7 @@
   const TECHNICAL_TAIL_NODE_BUDGET = 64;
   const TECHNICAL_PRESSURE_MIN_OVERHEAD = 48;
   const TECHNICAL_PRESSURE_RATIO = 2;
+  const TECHNICAL_UI_SIMPLIFY_MIN_CALLS = 12;
 
   function getMessage(node) {
     return node && node.message ? node.message : null;
@@ -30,6 +31,88 @@
     if (getRole(node) !== "assistant") return false;
     const recipient = String(getMessage(node)?.recipient || "").trim().toLowerCase();
     return !!recipient && recipient !== "all" && recipient !== "assistant";
+  }
+
+  function isToolResult(node) {
+    return getRole(node) === "tool";
+  }
+
+  function completionSignal(node) {
+    const message = getMessage(node);
+    if (!message || getRole(node) !== "assistant" || isToolTargetedAssistant(node)) return false;
+    if (message.end_turn === true) return true;
+    const status = String(message.status || message.metadata?.status || "").trim().toLowerCase();
+    if (["finished", "finished_successfully", "complete", "completed"].includes(status)) return true;
+    return !!(message.metadata && message.metadata.finish_details);
+  }
+
+  function completedTechnicalExchanges(data) {
+    const chain = activeChain(data);
+    const exchanges = [];
+    let current = null;
+
+    for (const id of chain) {
+      const node = data.mapping[id];
+      if (getRole(node) === "user") {
+        if (current) exchanges.push(current);
+        current = { ids: [id], technical: [], toolCalls: 0, finalAssistant: null };
+        continue;
+      }
+      if (!current) continue;
+      current.ids.push(id);
+      if (isToolTargetedAssistant(node)) {
+        current.technical.push(id);
+        current.toolCalls++;
+      } else if (isToolResult(node)) {
+        current.technical.push(id);
+      } else if (getRole(node) === "assistant" && !core.isExplicitlyHidden(node)) {
+        current.finalAssistant = id;
+      }
+    }
+    if (current) exchanges.push(current);
+
+    return exchanges.filter((exchange, index) => {
+      if (!exchange.technical.length || !exchange.finalAssistant) return false;
+      // Any exchange followed by a later user turn is necessarily complete.
+      if (index < exchanges.length - 1) return true;
+      // The newest exchange is simplified only with an explicit completion
+      // signal so reloading during an active tool run cannot hide live state.
+      return completionSignal(data.mapping[exchange.finalAssistant]);
+    });
+  }
+
+  function simplifyCompletedTechnicalUi(data) {
+    const exchanges = completedTechnicalExchanges(data);
+    const toolCalls = exchanges.reduce((sum, exchange) => sum + exchange.toolCalls, 0);
+    if (toolCalls < TECHNICAL_UI_SIMPLIFY_MIN_CALLS) {
+      return { changed: false, data, toolCalls, toolResults: 0 };
+    }
+
+    const technicalIds = new Set();
+    for (const exchange of exchanges) for (const id of exchange.technical) technicalIds.add(id);
+    if (!technicalIds.size) return { changed: false, data, toolCalls, toolResults: 0 };
+
+    const mapping = Object.create(null);
+    let toolCallsHidden = 0;
+    let toolResultsHidden = 0;
+    for (const [id, node] of Object.entries(data.mapping || {})) {
+      if (!technicalIds.has(id) || !node || !node.message) {
+        mapping[id] = node;
+        continue;
+      }
+      const message = node.message;
+      const metadata = { ...(message.metadata || {}), is_visually_hidden_from_conversation: true, anticurse_simplified_technical: true };
+      mapping[id] = { ...node, message: { ...message, metadata } };
+      if (isToolTargetedAssistant(node)) toolCallsHidden++;
+      else if (isToolResult(node)) toolResultsHidden++;
+    }
+
+    return {
+      changed: toolCallsHidden > 0,
+      data: { ...data, mapping },
+      toolCalls: toolCallsHidden,
+      toolResults: toolResultsHidden
+    };
   }
 
   function activeChain(data) {
@@ -228,21 +311,37 @@
     result.stats.technicalOverheadThreshold = compacted.pressure.threshold;
     result.stats.technicalCompaction = compacted.changed;
 
-    if (!compacted.changed) return result;
-
     const mappingBefore = Math.max(0, Number(result.stats.mappingNodesBefore) || Object.keys(data.mapping || {}).length);
-    result.changed = true;
-    result.data = compacted.data;
-    result.reason = "trimmed";
-    result.stats.mappingNodesAfter = Object.keys(compacted.data.mapping || {}).length;
-    result.stats.discardedNodes = Math.max(0, mappingBefore - result.stats.mappingNodesAfter);
-    result.stats.displayAfter = visibleRows(compacted.data).length;
-    result.stats.logicalDisplayAfter = logicalUnitCount(compacted.data);
-    result.stats.currentNodePreserved = !!(compacted.data.current_node && compacted.data.current_node === data.current_node);
-    result.stats.technicalTailUnits = compacted.tailUnits;
-    result.stats.technicalTailNodes = compacted.tailNodeCount;
-    result.stats.technicalTailNodeBudget = TECHNICAL_TAIL_NODE_BUDGET;
-    result.stats.technicalNodesDropped = compacted.nodesDropped;
+    if (compacted.changed) {
+      result.changed = true;
+      result.data = compacted.data;
+      result.reason = "trimmed";
+      result.stats.mappingNodesAfter = Object.keys(compacted.data.mapping || {}).length;
+      result.stats.discardedNodes = Math.max(0, mappingBefore - result.stats.mappingNodesAfter);
+      result.stats.displayAfter = visibleRows(compacted.data).length;
+      result.stats.logicalDisplayAfter = logicalUnitCount(compacted.data);
+      result.stats.currentNodePreserved = !!(compacted.data.current_node && compacted.data.current_node === data.current_node);
+      result.stats.technicalTailUnits = compacted.tailUnits;
+      result.stats.technicalTailNodes = compacted.tailNodeCount;
+      result.stats.technicalTailNodeBudget = TECHNICAL_TAIL_NODE_BUDGET;
+      result.stats.technicalNodesDropped = compacted.nodesDropped;
+    }
+
+    const simplified = simplifyCompletedTechnicalUi(result.data);
+    result.stats.technicalUiSimplified = simplified.changed;
+    result.stats.technicalUiToolCallsHidden = simplified.toolCalls;
+    result.stats.technicalUiToolResultsHidden = simplified.toolResults;
+    result.stats.technicalUiSimplifyMinCalls = TECHNICAL_UI_SIMPLIFY_MIN_CALLS;
+    if (simplified.changed) {
+      result.changed = true;
+      result.data = simplified.data;
+      result.reason = "trimmed";
+      // Nodes are deliberately retained; only their visual eligibility changes.
+      result.stats.mappingNodesAfter = Object.keys(simplified.data.mapping || {}).length;
+      result.stats.discardedNodes = Math.max(0, mappingBefore - result.stats.mappingNodesAfter);
+      result.stats.displayAfter = visibleRows(simplified.data).length;
+      result.stats.logicalDisplayAfter = logicalUnitCount(simplified.data);
+    }
     return result;
   }
 
@@ -252,8 +351,11 @@
     logicalUnitCount,
     technicalPressure,
     compactTechnicalHistory,
+    completedTechnicalExchanges,
+    simplifyCompletedTechnicalUi,
     TECHNICAL_TAIL_UNITS,
-    TECHNICAL_TAIL_NODE_BUDGET
+    TECHNICAL_TAIL_NODE_BUDGET,
+    TECHNICAL_UI_SIMPLIFY_MIN_CALLS
   });
   global.CGTrimLogical = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

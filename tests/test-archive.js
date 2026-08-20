@@ -83,7 +83,7 @@ function testPartialWarningAndFilename() {
   };
 
   const markdown = E.archiveToMarkdown(partial);
-  assert(markdown.includes("Warning: this backup was reconstructed from currently rendered turns"));
+  assert(markdown.includes("Warning: this export snapshot was reconstructed from currently rendered turns"));
 
   const filename = A.archiveFilename(partial);
   assert(filename.endsWith(".md"));

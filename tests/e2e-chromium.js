@@ -172,6 +172,15 @@ async function configure(worker, mode) {
   }, { mode });
 }
 
+async function buildExportArchiveFromPage(worker) {
+  return worker.evaluate(async () => {
+    const tabs = await chrome.tabs.query({ url: "https://chatgpt.com/*" });
+    const tab = tabs[tabs.length - 1];
+    if (!tab) return { ok: false, reason: "fixture-tab-not-found" };
+    return chrome.tabs.sendMessage(tab.id, { type: "cg-build-export-archive" });
+  });
+}
+
 async function contentDebug(worker) {
   return worker.evaluate(async () => {
     const tabs = await chrome.tabs.query({ url: "https://chatgpt.com/*" });
@@ -301,6 +310,16 @@ async function recentPagingTest(context, worker) {
   await configure(worker, "recent");
   const page = await openFixture(context);
   await assertTrimInvariant(page);
+
+  // Export is now one-shot and memory-only. An explicit request must capture
+  // the untouched old history plus the current rendered tail without involving
+  // the Chromium service worker or IndexedDB.
+  const exported = await buildExportArchiveFromPage(worker);
+  assert.equal(exported && exported.ok, true, `explicit in-memory export capture failed: ${JSON.stringify(exported)}`);
+  assert(exported.baseArchive && Array.isArray(exported.baseArchive.messages), "export capture must return untouched transient history");
+  assert(exported.baseArchive.messages.some((message) => /user-0/.test(message.text || "")), "one-shot export must retain older history omitted from React");
+  assert.equal(exported.baseArchive.id, "e2e");
+  assert(Array.isArray(exported.rendered), "export capture must include the current rendered tail for one-shot merging");
   await assertUnderLimitAgentCompaction(page);
 
   const button = page.locator("#cg-window-history-host .cg-history-previous");

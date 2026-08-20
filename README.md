@@ -68,6 +68,8 @@ This is **not network bandwidth saved**: the response has already reached the br
 
 If byte sizes are not available, AntiCurse shows the percentage of internal conversation nodes removed instead. Raw node counts, processing time, cumulative totals, and diagnostics are under **Technical details**.
 
+For pathological completed agent runs with many tool calls, AntiCurse can also keep the technical graph records intact while marking completed tool-call/result records non-visual. This lets ChatGPT skip building large rich tool-card trees without deleting the underlying records or the final answer. Active/in-progress tool runs are left untouched.
+
 ## Older history stays available
 
 AntiCurse does not put every older turn back into ChatGPT's active conversation state when you scroll upward. It renders older visible history in its own bounded history area and keeps only a small number of those archived pages mounted at once.
@@ -76,9 +78,9 @@ AntiCurse does not put every older turn back into ChatGPT's active conversation 
 
 In **Recent N + button** mode, click **Load previous** to reveal another page. In **Auto window** mode, scroll to the top and AntiCurse loads the next page automatically.
 
-## Backup and Markdown export
+## Markdown export
 
-**Persistent backup** is optional. When enabled, AntiCurse keeps a local copy of the conversation in extension storage so it can still be exported after a reload.
+Export is **on demand**. AntiCurse does not continuously scan or persist your conversation for backup. When you press an export button, it combines the untouched transient conversation history with the currently rendered tail in memory, creates the Markdown file locally, and then drops that temporary snapshot.
 
 The export menu has three useful levels:
 
@@ -88,7 +90,7 @@ The export menu has three useful levels:
 
 ![Rendered export options showing Final answers only, Readable conversation, and Full technical log](docs/screenshots/export-options.svg)
 
-A **Partial** backup can still be exported, but some older history may be missing. **Ready** means the stored archive is complete according to the data AntiCurse has seen.
+Older-history loading remains available during the current page session without storing a persistent conversation backup.
 
 ## Privacy
 
@@ -97,7 +99,7 @@ AntiCurse runs locally in the browser.
 - No telemetry or analytics.
 - No remote extension code.
 - AntiCurse does not upload your conversation to its own server.
-- Persistent backups stay in browser extension storage.
+- Conversation text is not continuously persisted in extension storage; export snapshots are assembled in memory only when requested.
 - A Markdown file is created only when you choose to download one.
 - Debug reports contain health information and diagnostics, not conversation text.
 

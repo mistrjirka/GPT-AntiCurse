@@ -1,7 +1,6 @@
 /*
- * Pure conversation backup helpers.
- * Persistent storage lives in archive-store.js; this file only normalizes,
- * merges, summarizes, and names active visible conversation history.
+ * Pure helpers for transient conversation history and on-demand export.
+ * This file normalizes, merges, summarizes, and names visible conversation history.
  */
 (function (global) {
   "use strict";

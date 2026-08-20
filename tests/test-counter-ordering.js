@@ -49,7 +49,6 @@ const chrome = {
 const context = {
   chrome,
   console,
-  CGArchiveStore: { async get() { return null; } },
   CGAntiCurseDiagnostics: { record() { return Promise.resolve(null); } }
 };
 context.globalThis = context;

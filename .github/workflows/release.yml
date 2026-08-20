@@ -36,8 +36,6 @@ jobs:
           cmp firefox/conversation-scope.js chrome/conversation-scope.js
           cmp firefox/archive-export.js chrome/archive-export.js
           cmp firefox/archive-export.css chrome/archive-export.css
-          cmp firefox/archive-store.js chrome/archive-store.js
-          cmp firefox/archive-background.js chrome/archive-background.js
           cmp firefox/archive-capture.js chrome/archive-capture.js
           cmp firefox/dom-ready.js chrome/dom-ready.js
           cmp firefox/history-markdown.js chrome/history-markdown.js

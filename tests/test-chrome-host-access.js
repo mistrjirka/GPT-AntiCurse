@@ -28,7 +28,7 @@ assert(popup.includes("await chrome.tabs.reload(tab.id)"), "successful host acce
 assert(popup.includes('setStatus("Needs access"'), "withheld host access needs a distinct user-visible state");
 assert(popup.includes('setStatus("Reload required"'), "a granted host with no content script must be diagnosed as a stale/missing bridge");
 assert(popup.includes('diagnostics.record("bridge", "content-script-missing"'), "missing page receiver must be a bridge diagnostic, not an archive diagnostic");
-assert(backupPopup.includes('if (flush) await recordIssue("bridge", "popup-page-bridge-failed"'), "backup UI must only record its secondary bridge failure for explicit backup/export actions");
+assert(backupPopup.includes('recordIssue("bridge", "popup-page-bridge-failed", error, { export: true })'), "export UI must record page-bridge failures only on the explicit export action");
 assert(backupPopup.includes("popupContext.hasPackageHostAccess"), "backup UI must share package host-access detection");
 assert(backupPopup.includes("chrome.permissions.contains"), "debug report should still probe the actual Chromium runtime permission independently");
 assert(popupHtml.indexOf('src="popup-context.js"') < popupHtml.indexOf('src="popup.js"'), "shared popup context must load before popup controllers");

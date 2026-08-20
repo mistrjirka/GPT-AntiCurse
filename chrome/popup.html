@@ -20,13 +20,13 @@
       <label class="row"><span class="label"><b>History mode</b><small id="modeHelp">Keep the latest window and load older turns with a button.</small></span><select id="mode" aria-describedby="modeHelp"><option value="recent">Recent N + button</option><option value="windowed-visible">Auto window</option></select></label>
       <label class="row"><span class="label"><b>Window size</b><small>Recent conversation units kept natively by ChatGPT</small></span><input id="limit" type="number" min="4" max="500" step="2"></label>
       <label class="row"><span class="label"><b>On-page status</b></span><input id="showNotice" type="checkbox"></label>
-      <label class="row"><span class="label"><b>Persistent backup</b><small>Keeps a local copy across reloads and enables Markdown export</small></span><input id="archiveEnabled" type="checkbox"></label>
+      <div class="row"><span class="label"><b>Conversation export</b><small>Captured only when you export; no continuous conversation backup runs in the page.</small></span><span>On demand</span></div>
     </section>
     <div class="buttons" style="grid-template-columns:1fr"><button id="reload" class="primary">Save &amp; reload</button></div>
     <div id="feedback" role="status" aria-live="polite"></div>
     <section class="backup card" aria-labelledby="backupTitle">
       <div class="backup-head"><b id="backupTitle">Export this chat</b><span id="archiveStatus" data-state="checking" role="status" aria-live="polite">Checking…</span></div>
-      <div id="archiveSummary" class="backup-summary">Checking local backup…</div>
+      <div id="archiveSummary" class="backup-summary">Ready for on-demand export</div>
       <label class="archive-export-row">
         <span class="archive-export-label"><b>Export content</b><small id="archiveExportHelp">Recommended: readable conversation without tool-call noise.</small></span>
         <select id="archiveExportLevel" aria-describedby="archiveExportHelp">
@@ -40,6 +40,8 @@
     <details><summary>Technical details</summary><dl><dt>Internal nodes removed</dt><dd id="removedNodes">—</dd><dt id="bytesSavedLabel">Measured payload reduction</dt><dd id="bytesSaved">—</dd><dt>Processing time</dt><dd id="processing">—</dd><dt>Last issue</dt><dd id="lastIssue">None</dd><dt>Optimized loads</dt><dd id="totalResponses">0</dd><dt>Total internal nodes removed</dt><dd id="totalRemoved">0</dd><dt id="totalBytesLabel">Measured payload reduction total</dt><dd id="totalBytes">0 B</dd></dl><div class="details-actions"><span>Diagnostics stay local; debug reports contain no chat text.</span><button id="exportDebug" class="link-button">Download debug report</button><button id="resetTotals" class="link-button">Reset counters</button></div></details>
   </div>
   <script src="diagnostics.js"></script>
+  <script src="archive.js"></script>
+  <script src="archive-export.js"></script>
   <script src="popup-context.js"></script>
   <script src="popup.js"></script>
   <script src="backup-popup.js"></script>

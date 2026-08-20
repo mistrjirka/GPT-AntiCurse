@@ -182,9 +182,15 @@ function render(stats) {
     const visible = Math.max(0, Number(lastStats.displayAfter) || 0);
     const logical = Number(lastStats.logicalDisplayAfter);
     const recent = Number.isFinite(logical) ? logical : visible;
-    const metric = savedBytes != null ? `${formatBytes(savedBytes)} trimmed` : `${savedPercent}% trimmed`;
+    const simplifiedTools = Math.max(0, Number(lastStats.technicalUiToolCallsHidden) || 0);
+    const uiOnly = simplifiedTools > 0 && removed === 0 && (!savedBytes || savedBytes <= 0);
+    const metric = uiOnly
+      ? `${simplifiedTools.toLocaleString()} tool cards simplified`
+      : savedBytes != null && savedBytes > 0
+        ? `${formatBytes(savedBytes)} trimmed`
+        : removed > 0 ? `${savedPercent}% trimmed` : `${simplifiedTools.toLocaleString()} tool cards simplified`;
     renderTrimmedBadge(el, metric, recent);
-    el.title = `${savedBytes != null ? `${formatBytes(savedBytes)} of response payload removed before ChatGPT page code processed it\n` : ""}Removed ${removed.toLocaleString()} internal mapping nodes (${savedPercent}%)\nKept ${recent.toLocaleString()} recent conversation units\nFilter processing: ${lastStats.processingMs} ms`;
+    el.title = `${savedBytes != null && savedBytes > 0 ? `${formatBytes(savedBytes)} of response payload removed before ChatGPT page code processed it\n` : ""}${removed > 0 ? `Removed ${removed.toLocaleString()} internal mapping nodes (${savedPercent}%)\n` : ""}${simplifiedTools > 0 ? `Suppressed rich UI for ${simplifiedTools.toLocaleString()} completed tool calls while retaining their graph records\n` : ""}Kept ${recent.toLocaleString()} recent conversation units\nFilter processing: ${lastStats.processingMs} ms`;
 
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {

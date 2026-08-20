@@ -1,16 +1,16 @@
 # GPT AntiCurse Privacy Policy
 
-Last updated: 18 August 2026
+Last updated: 20 August 2026
 
-GPT AntiCurse is a browser extension for keeping very long ChatGPT conversations responsive. The extension processes ChatGPT conversation data locally in the browser so it can reduce the amount of old conversation state kept active by the page, provide access to older visible history, and optionally create a local backup for Markdown export.
+GPT AntiCurse is a browser extension for keeping very long ChatGPT conversations responsive. The extension processes ChatGPT conversation data locally in the browser so it can reduce the amount of old conversation state kept active by the page, provide access to older visible history, and create a local Markdown export only when you request one.
 
 ## Data the extension processes
 
 GPT AntiCurse may process the following data while you use it on `https://chatgpt.com/`:
 
 - **Personal communications:** text contained in your ChatGPT conversations, including user and assistant messages.
-- **Website content:** ChatGPT conversation responses and visible conversation content needed for trimming, older-history loading, backup, and export.
-- **ChatGPT page URL / conversation identifier:** the extension reads the active ChatGPT URL to determine which conversation is currently open and to keep history, status, and backups associated with the correct conversation. GPT AntiCurse does not collect a general history of websites you visit.
+- **Website content:** ChatGPT conversation responses and visible conversation content needed for trimming, older-history loading, and on-demand export.
+- **ChatGPT page URL / conversation identifier:** the extension reads the active ChatGPT URL to determine which conversation is currently open and to keep history and status associated with the correct conversation. GPT AntiCurse does not collect a general history of websites you visit.
 - **Extension settings and local diagnostics:** settings, optimization counters, status information, and bounded diagnostic metadata used to operate and troubleshoot the extension.
 
 ## How the data is used
@@ -22,17 +22,14 @@ Conversation data may be used locally to:
 - reduce old conversation state before ChatGPT page code processes it;
 - display older archived turns when requested;
 - calculate local optimization statistics such as payload reduction;
-- maintain an optional persistent local conversation backup;
 - create a Markdown export when you request one; and
 - produce local diagnostic information for troubleshooting.
 
 ## Local storage
 
-GPT AntiCurse uses browser extension storage for settings, local counters, diagnostics, and—when **Persistent backup** is enabled—conversation archives.
+GPT AntiCurse uses browser extension storage for settings, local counters, and bounded diagnostics. Conversation text is not stored there by the current extension.
 
-Long conversations can exceed ordinary extension storage quotas, so the extension requests `unlimitedStorage` for the optional local backup feature.
-
-Stored extension data remains on your device until it is replaced or removed through browser/extension data clearing or by uninstalling the extension. Downloaded Markdown or debug-report files are ordinary files under your control after download.
+Downloaded Markdown or debug-report files are ordinary files under your control after download. A browser upgraded from an older AntiCurse release may retain legacy extension-storage data until the browser clears or replaces that extension data; v0.6.6 does not use those legacy conversation backups during normal browsing or export.
 
 ## Data transmission and sharing
 
@@ -52,16 +49,15 @@ Your normal use of ChatGPT still communicates with OpenAI/ChatGPT as it would wi
 
 GPT AntiCurse requests only permissions needed for its functionality:
 
-- **storage** — saves extension settings, counters, diagnostics, and local backup metadata/data.
+- **storage** — saves extension settings, counters, and bounded diagnostics.
 - **tabs** — identifies the active ChatGPT tab, communicates with the content script, reloads the tab after settings/site-access changes, and can open a fresh ChatGPT tab when you choose **Download & new chat**.
-- **unlimitedStorage** — allows optional local backups of very long conversations that may exceed the normal extension storage quota.
 - **host access to `https://chatgpt.com/*`** — allows the extension to operate on ChatGPT conversation pages and responses. GPT AntiCurse does not request host access to unrelated websites.
 
-## Persistent backup and exports
+## On-demand exports
 
-Persistent backup is optional. When enabled, conversation content is stored in the extension's local browser storage so older history can remain available and the conversation can be exported after a reload.
+AntiCurse does not continuously back up conversation text. During normal browsing, older-history data is kept transiently for the current page/tab so the lightweight history view can work.
 
-Markdown export happens only when you explicitly request it. The generated file is downloaded to your device.
+When you explicitly request Markdown export, AntiCurse assembles a temporary conversation snapshot in memory from the transient response history and currently rendered tail, generates the file locally, and does not persist that snapshot to extension storage.
 
 ## Debug reports
 

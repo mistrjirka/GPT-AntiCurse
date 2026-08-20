@@ -12,8 +12,7 @@ const DEFAULT_SETTINGS = {
   enabled: true,
   mode: "recent",
   maxDisplayMessages: 64,
-  showGuardNotice: true,
-  archiveEnabled: true
+  showGuardNotice: true
 };
 const EMPTY_TOTALS = Object.freeze({
   responsesTrimmed: 0,
@@ -30,7 +29,7 @@ const STATS_KEY_PREFIX = "cg-tab-stats:";
 const HISTORY_KEY_PREFIX = "cg-tab-history:";
 const BACKGROUND_STARTED_AT = new Date().toISOString();
 
-let settings = { ...DEFAULT_SETTINGS, archiveEnabled: false };
+let settings = { ...DEFAULT_SETTINGS };
 let totals = { ...EMPTY_TOTALS };
 let settingsInitialized = false;
 let initializationFailed = false;
@@ -88,16 +87,20 @@ const settingsReady = browser.storage.local.get({ ...DEFAULT_SETTINGS, cgTotals:
 }).catch((error) => {
   initializationFailed = true;
   settingsInitialized = true;
-  settings = { ...DEFAULT_SETTINGS, archiveEnabled: false };
+  settings = { ...DEFAULT_SETTINGS };
   totals = { ...EMPTY_TOTALS };
   recordIssue("settings", "firefox-storage-read-failed", error);
   return false;
 });
 
 function conversationIdFromEndpoint(urlString) {
-  return CGArchive && typeof CGArchive.conversationIdFromUrl === "function"
-    ? CGArchive.conversationIdFromUrl(urlString)
-    : null;
+  try {
+    const url = new URL(urlString);
+    const match = url.pathname.match(/^\/backend-api\/conversation\/([^/]+)\/?$/);
+    return match ? decodeURIComponent(match[1]) : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function isConversationDocument(urlString) {
@@ -288,23 +291,6 @@ function transformConversation(parsed, conversationId) {
   return { mode, transformed, history: buildHistoryArchive(parsed, transformed, mode, limit, conversationId) };
 }
 
-function persistAuthoritativeArchive(parsed, details) {
-  if (!settings.archiveEnabled) return;
-  let archive;
-  try {
-    archive = CGArchive.createArchive(parsed, { endpointUrl: details.url });
-  } catch (error) {
-    recordIssue("archive", "network-archive-build-failed", error);
-    return;
-  }
-  if (!archive) {
-    recordIssue("archive", "network-archive-build-empty", "The Firefox network response could not be converted to an archive.");
-    return;
-  }
-  CGArchiveBackground.saveNetworkArchive(archive).then((result) => {
-    if (!result || result.ok !== true) recordIssue("archive", "network-persist-rejected", result && result.reason ? result.reason : "Archive write was not confirmed.");
-  }).catch((error) => recordIssue("archive", "network-persist-failed", error));
-}
 
 function copyChunk(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
@@ -388,7 +374,7 @@ async function processResponse(filter, chunks, totalBytes, details) {
       return;
     }
 
-    if (!settings.enabled && !settings.archiveEnabled) {
+    if (!settings.enabled) {
       writeOriginal(filter, chunks);
       publishStats(details.tabId, statsForRequest(details, {
         mode: "passthrough",
@@ -402,7 +388,6 @@ async function processResponse(filter, chunks, totalBytes, details) {
 
     const parsed = decodeJson(chunks, totalBytes);
     const conversationId = endpointConversationId || parsed?.id || parsed?.conversation_id || null;
-    persistAuthoritativeArchive(parsed, details);
     publishConversationScope(details.tabId, conversationId);
 
     if (!settings.enabled) {
@@ -571,7 +556,6 @@ browser.runtime.onMessage.addListener((message, sender) => {
       if (LIMITED_MODES.has(message.mode)) next.mode = message.mode;
       if (Number.isFinite(Number(message.maxDisplayMessages))) next.maxDisplayMessages = normalizeMessageLimit(message.maxDisplayMessages);
       if (typeof message.showGuardNotice === "boolean") next.showGuardNotice = message.showGuardNotice;
-      if (typeof message.archiveEnabled === "boolean") next.archiveEnabled = message.archiveEnabled;
       return browser.storage.local.set(next).then(() => {
         settings = applySettingChanges(settings, next);
         return settings;

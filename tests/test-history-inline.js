@@ -66,7 +66,7 @@ assert(windowed.includes("scope.isCurrent(token)"), "history replies must be che
 assert(windowed.includes('settings.mode === "windowed-visible"'), "auto mode must remain explicit");
 assert(windowed.includes("function snapshotKey"), "history controller must identify equivalent snapshots");
 assert(windowed.includes("historyKey === nextKey"), "equivalent history deliveries must not reset loaded pages");
-assert(windowed.includes('type: "cg-get-window-history"'), "both browsers must have a durable history fallback through extension messaging");
+assert(windowed.includes('type: "cg-get-window-history"'), "Firefox history may fall back to its per-tab response cache through extension messaging");
 assert(windowed.includes("NETWORK_ARCHIVE_EVENT"), "Chromium current-page history must use the single transient archive event");
 assert(windowed.includes("transientHistory"), "Chromium must consume the isolated transient archive without replay timers");
 assert(!windowed.includes("setInterval("), "history attachment must be event-driven rather than constantly polled");
@@ -74,29 +74,23 @@ assert(windowed.includes('nativeScroller.hasAttribute("data-scroll-from-end")'),
 assert(windowed.includes("userInteracted"), "initial scroll correction must not fight user input");
 assert(windowed.includes("missing-after-trim"), "trim-without-history must become a visible diagnostic rather than a silent missing button");
 
-assert.equal(firefoxArchiveCapture, chromeArchiveCapture, "archive tail capture logic must stay byte-identical across browsers");
-assert(firefoxArchiveCapture.includes("CGConversationScope.create()"), "tail capture must use the shared conversation scope instead of a second parser");
-assert(firefoxArchiveCapture.includes("observedScope"), "DOM observers must stay bound to the conversation generation they were attached to");
-assert(firefoxArchiveCapture.includes("conversationConfirmed"), "SPA tail capture must wait until the current conversation is confirmed");
-assert(!firefoxArchiveCapture.includes("currentConversationId"), "tail capture must not keep a sticky previous-conversation id fallback");
-assert(!/location\.pathname\.match/.test(firefoxArchiveCapture), "tail capture must not duplicate conversation URL parsing");
-assert(firefoxArchiveCapture.includes('type: "cg-merge-rendered-archive"'), "tail capture must still merge rendered updates through the background archive service");
-assert(
-  firefoxArchiveCapture.indexOf("lastFingerprint = nextFingerprint") > firefoxArchiveCapture.indexOf("await ext.runtime.sendMessage"),
-  "a DOM snapshot must be marked persisted only after the background merge succeeds"
-);
-
-assert(chromeBackground.includes('message.type === "cg-get-window-history"'), "Chromium service worker must serve durable archived history");
-assert(chromeBackground.includes("CGArchiveStore.get(conversationId)"), "Chromium durable history must come from extension-origin IndexedDB");
-assert(chromeBackground.includes('source: "extension-indexeddb"'), "Chromium history responses should expose their durable source for diagnostics");
-assert(chromeBackground.includes("history-read-failed"), "IndexedDB history failures must be distinguishable from archive absence");
+assert.equal(firefoxArchiveCapture, chromeArchiveCapture, "transient history/export capture logic must stay byte-identical across browsers");
+assert(firefoxArchiveCapture.includes("CGConversationScope.create()"), "on-demand export must use the shared conversation scope instead of a second parser");
+assert(firefoxArchiveCapture.includes("buildExportCapture"), "export capture must be built only on explicit request");
+assert(firefoxArchiveCapture.includes("EXPORT_CAPTURE_TAIL_TURNS = 96"), "on-demand export should merge a bounded rendered tail into authoritative history");
+assert(!firefoxArchiveCapture.includes("MutationObserver"), "normal browsing must not install backup mutation observers");
+assert(!firefoxArchiveCapture.includes("indexedDB"), "content-side export must remain memory-only");
+assert(!firefoxArchiveCapture.includes("currentConversationId"), "transient history must not keep a sticky previous-conversation id fallback");
+assert(!/location\.pathname\.match/.test(firefoxArchiveCapture), "export capture must not duplicate conversation URL parsing");
+assert(!chromeBackground.includes('message.type === "cg-get-window-history"'), "Chromium service worker must not persist or serve conversation history");
+assert(!chromeBackground.includes("CGArchiveStore"), "Chromium normal browsing must keep conversation text out of persistent storage");
 
 assert(chromeMain.includes("hydrationReady"), "the single Chromium interceptor must own the hydration barrier");
 assert(chromeMain.includes("waitForTransformSafety"), "conversation transformation must wait for settings/hydration safety");
 assert(chromeMain.includes('window.addEventListener("load"'), "Chromium transformation must cross the page load boundary on SSR loads");
 assert((chromeMain.match(/requestAnimationFrame/g) || []).length >= 2, "Chromium transformation should cross two animation frames");
 assert(chromeMain.includes("requestIdleCallback"), "Chromium transformation should wait for an idle slice before changing an SSR conversation graph");
-assert(chromeMain.includes("publishArchive(data, endpointUrl)"), "the untouched conversation must be archived against its response endpoint before transformation");
+assert(chromeMain.includes("publishArchive(data, endpointUrl)"), "the untouched conversation must seed transient older-history before transformation");
 assert(chromeMain.includes("startup-barrier-timeout"), "a hydration/settings timeout must fail open with an explicit reason");
 assert.equal((chromeMain.match(/Object\.defineProperty\(Response\.prototype/g) || []).length, 2, "only one module should own the two Response body wrappers");
 

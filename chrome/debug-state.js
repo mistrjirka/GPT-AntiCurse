@@ -57,7 +57,6 @@
       mode: "recent",
       maxDisplayMessages: 64,
       showGuardNotice: true,
-      archiveEnabled: true,
       archiveExportLevel: "progress",
       cgLastIssue: null
     });
@@ -86,7 +85,7 @@
         mode: saved.mode === "windowed-visible" ? "windowed-visible" : "recent",
         maxDisplayMessages: Number(saved.maxDisplayMessages) || 64,
         showGuardNotice: saved.showGuardNotice !== false,
-        archiveEnabled: saved.archiveEnabled !== false,
+          archiveMode: "on-demand",
         archiveExportLevel: saved.archiveExportLevel || "progress"
       },
       native: {
