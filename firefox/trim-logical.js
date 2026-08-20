@@ -100,8 +100,15 @@
         mapping[id] = node;
         continue;
       }
+      // Leave already-hidden technical records byte-for-byte untouched. They
+      // already cost no rich conversation UI, so rewriting/counting them would
+      // add response churn without a performance benefit.
+      if (core.isExplicitlyHidden(node)) {
+        mapping[id] = node;
+        continue;
+      }
       const message = node.message;
-      const metadata = { ...(message.metadata || {}), is_visually_hidden_from_conversation: true, anticurse_simplified_technical: true };
+      const metadata = { ...(message.metadata || {}), is_visually_hidden_from_conversation: true };
       mapping[id] = { ...node, message: { ...message, metadata } };
       if (isToolTargetedAssistant(node)) toolCallsHidden++;
       else if (isToolResult(node)) toolResultsHidden++;

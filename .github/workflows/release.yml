@@ -37,6 +37,7 @@ jobs:
           cmp firefox/archive-export.js chrome/archive-export.js
           cmp firefox/archive-export.css chrome/archive-export.css
           cmp firefox/archive-capture.js chrome/archive-capture.js
+          cmp firefox/export-extract.js chrome/export-extract.js
           cmp firefox/dom-ready.js chrome/dom-ready.js
           cmp firefox/history-markdown.js chrome/history-markdown.js
           cmp firefox/history-virtualized.js chrome/history-virtualized.js
@@ -70,6 +71,7 @@ jobs:
             tests/test-trim-logical.js
             tests/test-archive.js
             tests/test-archive-export.js
+            tests/test-export-extract.js
             tests/test-diagnostics.js
             tests/test-counter-ordering.js
             tests/test-stats-scope.js
@@ -79,6 +81,7 @@ jobs:
             tests/test-history-request-loop.js
             tests/test-packaging.js
             tests/test-firefox-android.js
+            tests/test-firefox-export-bypass.js
             tests/test-no-silent-catches.js
             tests/test-chrome-host-access.js
             tests/test-reliability.js

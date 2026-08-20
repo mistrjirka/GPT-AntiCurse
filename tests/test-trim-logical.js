@@ -185,6 +185,23 @@ function testPathologicalCompletedToolsStayInGraphButLeaveRichUi() {
   assert.equal(result.data.current_node, source.current_node);
 }
 
+
+function testAlreadyHiddenTechnicalRecordsAreNotRewrittenOrCounted() {
+  const source = completedToolConversation(12, true);
+  source.mapping["call-0"].message.metadata.is_visually_hidden_from_conversation = true;
+  source.mapping["result-0"].message.metadata.is_visually_hidden_from_conversation = true;
+  const originalCall = source.mapping["call-0"];
+  const originalResult = source.mapping["result-0"];
+  const result = T.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
+  assert.equal(result.stats.technicalUiSimplified, true);
+  assert.equal(result.stats.technicalUiToolCallsHidden, 11, "already-hidden calls must not be reported as newly simplified");
+  assert.equal(result.stats.technicalUiToolResultsHidden, 11, "already-hidden results must not be reported as newly simplified");
+  assert.strictEqual(result.data.mapping["call-0"], originalCall, "already-hidden tool call should be reused byte-for-byte");
+  assert.strictEqual(result.data.mapping["result-0"], originalResult, "already-hidden tool result should be reused byte-for-byte");
+  assert.equal(result.data.mapping["call-1"].message.metadata.is_visually_hidden_from_conversation, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(result.data.mapping["call-1"].message.metadata, "anticurse_simplified_technical"), false);
+}
+
 function testActiveToolExchangeIsNeverSimplifiedWithoutCompletionSignal() {
   const source = completedToolConversation(20, false);
   const result = T.trimConversation(source, { mode: "recent", maxDisplayMessages: 64 });
@@ -220,6 +237,7 @@ const tests = [
   testTechnicalTailAlsoHonorsRawNodeBudget,
   testOrdinaryBelowLimitConversationStillPassesThrough,
   testPathologicalCompletedToolsStayInGraphButLeaveRichUi,
+  testAlreadyHiddenTechnicalRecordsAreNotRewrittenOrCounted,
   testActiveToolExchangeIsNeverSimplifiedWithoutCompletionSignal,
   testSmallCompletedToolExchangeKeepsNativeUi,
   testAdjacentUsersStayDistinct

@@ -42,6 +42,8 @@ function conversation(exchanges = 40, assistantFragments = 4) {
 
     const hidden = `hidden-${exchange}`;
     mapping[hidden] = makeNode(hidden, parent, "assistant", { is_visually_hidden_from_conversation: true });
+    mapping[hidden].message.recipient = "Development_Sandbox.exec_command";
+    mapping[hidden].message.content.parts = [JSON.stringify({ path: "/Development_Sandbox/exec_command", args: { command: `echo export-tool-${exchange}` } })];
     link(mapping, parent, hidden);
     parent = hidden;
 
@@ -166,8 +168,7 @@ async function configure(worker, mode) {
       enabled: true,
       mode,
       maxDisplayMessages: 8,
-      showGuardNotice: false,
-      archiveEnabled: true
+      showGuardNotice: false
     });
   }, { mode });
 }
@@ -177,7 +178,7 @@ async function buildExportArchiveFromPage(worker) {
     const tabs = await chrome.tabs.query({ url: "https://chatgpt.com/*" });
     const tab = tabs[tabs.length - 1];
     if (!tab) return { ok: false, reason: "fixture-tab-not-found" };
-    return chrome.tabs.sendMessage(tab.id, { type: "cg-build-export-archive" });
+    return chrome.tabs.sendMessage(tab.id, { type: "cg-build-export-archive", exportLevel: "full" });
   });
 }
 
@@ -316,10 +317,22 @@ async function recentPagingTest(context, worker) {
   // the Chromium service worker or IndexedDB.
   const exported = await buildExportArchiveFromPage(worker);
   assert.equal(exported && exported.ok, true, `explicit in-memory export capture failed: ${JSON.stringify(exported)}`);
-  assert(exported.baseArchive && Array.isArray(exported.baseArchive.messages), "export capture must return untouched transient history");
+  assert.equal(exported.authoritative, true, "Chromium export must refetch the authoritative conversation instead of relying on transient visible history");
+  assert(exported.baseArchive && Array.isArray(exported.baseArchive.messages), "export capture must return an authoritative raw-graph archive");
   assert(exported.baseArchive.messages.some((message) => /user-0/.test(message.text || "")), "one-shot export must retain older history omitted from React");
+  const oldTool = exported.baseArchive.messages.find((message) => message.id === "hidden-0");
+  assert(oldTool, "authoritative export must recover an old explicit tool call hidden from the page graph");
+  assert.equal(oldTool.recipient, "Development_Sandbox.exec_command");
+  assert((oldTool.text || "").includes("export-tool-0"));
   assert.equal(exported.baseArchive.id, "e2e");
   assert(Array.isArray(exported.rendered), "export capture must include the current rendered tail for one-shot merging");
+
+  const fallback = await buildExportArchiveFromPage(worker);
+  assert.equal(fallback && fallback.ok, true, `temporary authoritative-fetch failure must still produce a fallback export: ${JSON.stringify(fallback)}`);
+  assert.equal(fallback.authoritative, false, "fallback export must never claim authoritative completeness");
+  assert.equal(fallback.sourceReason, "http-status");
+  assert(fallback.baseArchive && fallback.baseArchive.complete === false, "fallback archive must be explicitly partial");
+  assert(fallback.baseArchive.messages.some((message) => /user-0/.test(message.text || "")), "fallback should use the transient visible-history archive when it is available");
   await assertUnderLimitAgentCompaction(page);
 
   const button = page.locator("#cg-window-history-host .cg-history-previous");
@@ -430,7 +443,13 @@ async function autoWindowTest(context, worker) {
     await context.route("https://chatgpt.com/c/e2e", async (route) => {
       await route.fulfill({ status: 200, contentType: "text/html", body: FIXTURE_HTML });
     });
+    let conversationRequestCount = 0;
     await context.route("https://chatgpt.com/backend-api/conversation/e2e", async (route) => {
+      conversationRequestCount++;
+      if (conversationRequestCount === 3) {
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary export fixture failure" }) });
+        return;
+      }
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fullConversation) });
     });
 

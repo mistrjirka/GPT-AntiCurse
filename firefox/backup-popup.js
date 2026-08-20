@@ -97,15 +97,15 @@
       feedback.textContent = "Open a ChatGPT conversation before exporting.";
       return;
     }
+    if (!IS_FIREFOX && !(await hasChromeHostAccess(activeTab))) {
+      feedback.textContent = "Chrome has not granted GPT AntiCurse access to chatgpt.com. Use Save & reload first.";
+      return;
+    }
     let result;
     try {
-      result = await ext.tabs.sendMessage(activeTab.id, { type: "cg-build-export-archive" });
+      result = await ext.tabs.sendMessage(activeTab.id, { type: "cg-build-export-archive", exportLevel: exportLevel.value });
       await clearPageBridgeIssue();
     } catch (error) {
-      if (!IS_FIREFOX && !(await hasChromeHostAccess(activeTab))) {
-        feedback.textContent = "Chrome has not granted GPT AntiCurse access to chatgpt.com. Use Save & reload first.";
-        return;
-      }
       await recordIssue("bridge", "popup-page-bridge-failed", error, { export: true });
       feedback.textContent = `Could not capture this conversation: ${errorText(error)}`;
       return;
@@ -125,7 +125,9 @@
     const markdown = CGArchiveExport.archiveToMarkdown(archive, { level: exportLevel.value });
     download(markdown, CGArchive.archiveFilename(archive));
     render(result.summary || CGArchive.archiveSummary(archive));
-    feedback.textContent = `${exportLevel.options[exportLevel.selectedIndex].text} exported locally.`;
+    feedback.textContent = result.authoritative
+      ? `${exportLevel.options[exportLevel.selectedIndex].text} exported locally from the full conversation.`
+      : `${exportLevel.options[exportLevel.selectedIndex].text} exported from partial fallback history; older technical detail may be missing.`;
     if (openNew) {
       await ext.tabs.create({ url: "https://chatgpt.com/" });
       window.close();

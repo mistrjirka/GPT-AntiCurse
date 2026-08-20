@@ -80,7 +80,7 @@ In **Recent N + button** mode, click **Load previous** to reveal another page. I
 
 ## Markdown export
 
-Export is **on demand**. AntiCurse does not continuously scan or persist your conversation for backup. When you press an export button, it combines the untouched transient conversation history with the currently rendered tail in memory, creates the Markdown file locally, and then drops that temporary snapshot.
+Export is **on demand**. AntiCurse does not continuously scan or persist your conversation for backup. When you press an export button, it requests the current conversation once from ChatGPT using your existing browser session, extracts the export-relevant history in memory, merges the currently rendered tail, creates the Markdown file locally, and then drops that temporary snapshot. If that fresh request fails, AntiCurse can fall back to transient/rendered history but marks the export as partial.
 
 The export menu has three useful levels:
 
@@ -98,7 +98,7 @@ AntiCurse runs locally in the browser.
 
 - No telemetry or analytics.
 - No remote extension code.
-- AntiCurse does not upload your conversation to its own server.
+- AntiCurse does not upload your conversation to its own server. An explicit export makes one additional same-origin request to ChatGPT itself so older history and explicit tool calls can be reconstructed reliably.
 - Conversation text is not continuously persisted in extension storage; export snapshots are assembled in memory only when requested.
 - A Markdown file is created only when you choose to download one.
 - Debug reports contain health information and diagnostics, not conversation text.

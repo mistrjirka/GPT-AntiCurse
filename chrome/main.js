@@ -100,9 +100,37 @@
   }
 
   function conversationIdFromEndpoint(urlString) {
-    return globalThis.CGArchive && typeof globalThis.CGArchive.conversationIdFromUrl === "function"
-      ? globalThis.CGArchive.conversationIdFromUrl(urlString)
-      : null;
+    try {
+      const url = new URL(urlString, location.href);
+      const match = url.pathname.match(/^\/backend-api\/conversation\/([^/]+)\/?$/);
+      return match ? decodeURIComponent(match[1]) : null;
+    } catch (error) {
+      void error;
+      return null;
+    }
+  }
+
+  function transientArchiveFromConversation(data, endpointUrl) {
+    if (!globalThis.CGTrim || typeof globalThis.CGTrim.extractVisibleHistory !== "function") return null;
+    const id = String(
+      data?.id || data?.conversation_id || conversationIdFromEndpoint(endpointUrl) || ""
+    ).trim();
+    if (!id) return null;
+    const messages = globalThis.CGTrim.extractVisibleHistory(data).map((message, index) => ({
+      id: message.id || `message-${index}`,
+      role: message.role,
+      text: typeof message.text === "string" ? message.text : String(message.text || ""),
+      createTime: message.createTime == null ? null : message.createTime
+    }));
+    return {
+      schemaVersion: 1,
+      id,
+      title: typeof data?.title === "string" && data.title.trim() ? data.title.trim() : "ChatGPT conversation",
+      sourceUrl: `${location.origin}/c/${encodeURIComponent(id)}`,
+      updatedAt: new Date().toISOString(),
+      complete: true,
+      messages
+    };
   }
 
   function publish(type, payload) {
@@ -210,7 +238,7 @@
       };
     }
     try {
-      const archive = CGArchive.createArchive(data, { endpointUrl });
+      const archive = transientArchiveFromConversation(data, endpointUrl);
       const archiveBuildMs = elapsed(buildStarted);
       if (!archive) {
         publishDiagnostic("archive-build-empty", "The conversation response could not be converted to an archive.", { conversationId });

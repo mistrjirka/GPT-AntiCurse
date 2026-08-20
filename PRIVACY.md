@@ -29,7 +29,7 @@ Conversation data may be used locally to:
 
 GPT AntiCurse uses browser extension storage for settings, local counters, and bounded diagnostics. Conversation text is not stored there by the current extension.
 
-Downloaded Markdown or debug-report files are ordinary files under your control after download. A browser upgraded from an older AntiCurse release may retain legacy extension-storage data until the browser clears or replaces that extension data; v0.6.6 does not use those legacy conversation backups during normal browsing or export.
+Downloaded Markdown or debug-report files are ordinary files under your control after download. A browser upgraded from an older AntiCurse release may retain legacy extension-storage data until the browser clears or replaces that extension data; v0.6.7 does not use those legacy conversation backups during normal browsing or export.
 
 ## Data transmission and sharing
 
@@ -43,7 +43,7 @@ The extension:
 - does not load or execute remotely hosted extension code; and
 - does not provide collected user data to third parties.
 
-Your normal use of ChatGPT still communicates with OpenAI/ChatGPT as it would without the extension. GPT AntiCurse does not add an additional developer-controlled destination for that data.
+Your normal use of ChatGPT still communicates with OpenAI/ChatGPT as it would without the extension. When you explicitly request a Markdown export, GPT AntiCurse makes one additional same-origin request to ChatGPT for the currently open conversation using your existing browser session. That request goes to ChatGPT, not to the extension developer or any developer-controlled server.
 
 ## Permissions
 
@@ -57,7 +57,7 @@ GPT AntiCurse requests only permissions needed for its functionality:
 
 AntiCurse does not continuously back up conversation text. During normal browsing, older-history data is kept transiently for the current page/tab so the lightweight history view can work.
 
-When you explicitly request Markdown export, AntiCurse assembles a temporary conversation snapshot in memory from the transient response history and currently rendered tail, generates the file locally, and does not persist that snapshot to extension storage.
+When you explicitly request Markdown export, AntiCurse first requests the currently open conversation from ChatGPT using your existing authenticated browser session. It extracts the export-relevant user/assistant history and explicit tool calls in memory, merges the currently rendered tail, generates the file locally, and does not persist that snapshot to extension storage. If the fresh ChatGPT request fails, AntiCurse may use transient/rendered history as a partial fallback and labels that export as incomplete.
 
 ## Debug reports
 

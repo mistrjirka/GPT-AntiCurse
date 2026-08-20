@@ -28,6 +28,13 @@ const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const STATS_KEY_PREFIX = "cg-tab-stats:";
 const HISTORY_KEY_PREFIX = "cg-tab-history:";
 const BACKGROUND_STARTED_AT = new Date().toISOString();
+const EXPORT_HEADER_NAME = "x-gpt-anticurse-export";
+const EXPORT_CONFIRM_HEADER_NAME = "x-gpt-anticurse-export-bypassed";
+const EXPORT_BYPASS_TTL_MS = 10000;
+const responseFilterStates = new Map();
+const exportBypassTokens = new Map();
+let exportBypassDisconnects = 0;
+let invalidExportBypassMarkers = 0;
 
 let settings = { ...DEFAULT_SETTINGS };
 let totals = { ...EMPTY_TOTALS };
@@ -356,10 +363,84 @@ function writeTransformedResponse(filter, details, transformed, totalBytes, star
   }, conversationId), details.timeStamp);
 }
 
-async function processResponse(filter, chunks, totalBytes, details) {
+function exportBypassToken() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") return globalThis.crypto.randomUUID();
+  if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === "function") {
+    const bytes = new Uint32Array(4);
+    globalThis.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (value) => value.toString(16).padStart(8, "0")).join("");
+  }
+  return null;
+}
+
+function cleanupExportBypassTokens(now = Date.now()) {
+  for (const [token, value] of exportBypassTokens) {
+    if (!value || value.expiresAt <= now) exportBypassTokens.delete(token);
+  }
+}
+
+function createExportBypass(sender, conversationId) {
+  const tabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : -1;
+  if (tabId < 0 || !conversationId) return { ok: false, reason: "invalid-export-bypass-request" };
+  cleanupExportBypassTokens();
+  const token = exportBypassToken();
+  if (!token) return { ok: false, reason: "secure-random-unavailable" };
+  exportBypassTokens.set(token, {
+    tabId,
+    conversationId: String(conversationId),
+    expiresAt: Date.now() + EXPORT_BYPASS_TTL_MS
+  });
+  return { ok: true, token, expiresInMs: EXPORT_BYPASS_TTL_MS };
+}
+
+function stripExportRequestMarker(details) {
+  const headers = Array.isArray(details && details.requestHeaders) ? details.requestHeaders : [];
+  let suppliedToken = "";
+  const requestHeaders = [];
+  for (const header of headers) {
+    if (String(header && header.name || "").toLowerCase() === EXPORT_HEADER_NAME) {
+      suppliedToken = String(header && header.value || "");
+      continue;
+    }
+    requestHeaders.push(header);
+  }
+  if (!suppliedToken) return {};
+
+  cleanupExportBypassTokens();
+  const grant = exportBypassTokens.get(suppliedToken);
+  const conversationId = conversationIdFromEndpoint(details && details.url);
+  const valid = !!grant &&
+    grant.expiresAt > Date.now() &&
+    grant.tabId === details.tabId &&
+    grant.conversationId === conversationId;
+  if (grant) exportBypassTokens.delete(suppliedToken);
+  if (valid) {
+    const state = responseFilterStates.get(details.requestId);
+    if (state) state.exportBypass = true;
+  } else {
+    invalidExportBypassMarkers++;
+  }
+  // Never leak the private extension marker to ChatGPT, valid or invalid.
+  return { requestHeaders };
+}
+
+function confirmExportBypassResponse(details) {
+  const state = responseFilterStates.get(details && details.requestId);
+  const headers = Array.isArray(details && details.responseHeaders) ? details.responseHeaders : [];
+  const responseHeaders = headers.filter((header) => String(header && header.name || "").toLowerCase() !== EXPORT_CONFIRM_HEADER_NAME);
+  if (!state || !state.exportBypass) return responseHeaders.length === headers.length ? {} : { responseHeaders };
+  responseHeaders.push({ name: "X-GPT-AntiCurse-Export-Bypassed", value: "1" });
+  return { responseHeaders };
+}
+
+async function processResponse(filter, chunks, totalBytes, details, exportBypass = false) {
   const started = performance.now();
   const endpointConversationId = conversationIdFromEndpoint(details.url);
   try {
+    if (exportBypass) {
+      writeOriginal(filter, chunks);
+      return;
+    }
     const initialized = await settingsReady;
     if (!initialized || initializationFailed) {
       writeOriginal(filter, chunks);
@@ -441,8 +522,21 @@ function interceptConversation(details) {
   const chunks = [];
   let totalBytes = 0;
   let finished = false;
+  const filterState = { exportBypass: false };
+  responseFilterStates.set(details.requestId, filterState);
 
   filter.ondata = (event) => {
+    if (filterState.exportBypass && chunks.length === 0) {
+      // Pass the first bytes through before disconnecting. This follows the
+      // StreamFilter's safe data-path semantics and avoids retaining the full
+      // export response in the background on memory-constrained mobile devices.
+      finished = true;
+      responseFilterStates.delete(details.requestId);
+      exportBypassDisconnects++;
+      filter.write(event.data);
+      filter.disconnect();
+      return;
+    }
     const chunk = copyChunk(event.data);
     chunks.push(chunk);
     totalBytes += chunk.byteLength;
@@ -450,7 +544,8 @@ function interceptConversation(details) {
   filter.onstop = () => {
     if (finished) return;
     finished = true;
-    processResponse(filter, chunks, totalBytes, details).catch((error) => {
+    responseFilterStates.delete(details.requestId);
+    processResponse(filter, chunks, totalBytes, details, filterState.exportBypass).catch((error) => {
       recordIssue("interceptor", "firefox-response-handler-failed", error);
       try {
         writeOriginal(filter, chunks);
@@ -463,6 +558,7 @@ function interceptConversation(details) {
   filter.onerror = () => {
     if (finished) return;
     finished = true;
+    responseFilterStates.delete(details.requestId);
     const error = filter.error || "StreamFilter error";
     recordIssue("interceptor", "firefox-stream-filter-error", error);
     publishStats(details.tabId, statsForRequest(details, {
@@ -497,6 +593,18 @@ browser.webRequest.onBeforeRequest.addListener(
   ["blocking"]
 );
 
+browser.webRequest.onBeforeSendHeaders.addListener(
+  stripExportRequestMarker,
+  { urls: ["https://chatgpt.com/backend-api/conversation/*"] },
+  ["blocking", "requestHeaders"]
+);
+
+browser.webRequest.onHeadersReceived.addListener(
+  confirmExportBypassResponse,
+  { urls: ["https://chatgpt.com/backend-api/conversation/*"] },
+  ["blocking", "responseHeaders"]
+);
+
 function statsMatchConversation(stats, requestedId) {
   return !requestedId || !stats || !stats.conversationId || stats.conversationId === requestedId;
 }
@@ -513,8 +621,15 @@ browser.runtime.onMessage.addListener((message, sender) => {
       initializationFailed,
       hotStatsTabs: lastStatsByTab.size,
       hotHistoryTabs: historyByTab.size,
-      sessionWritesPending: sessionWriteQueues.size
+      sessionWritesPending: sessionWriteQueues.size,
+      activeResponseFilters: responseFilterStates.size,
+      pendingExportBypasses: exportBypassTokens.size,
+      exportBypassDisconnects,
+      invalidExportBypassMarkers
     });
+  }
+  if (message.type === "cg-create-export-bypass") {
+    return Promise.resolve(createExportBypass(sender, message.conversationId));
   }
   if (message.type === "cg-get-stats") {
     const tabId = sender.tab ? sender.tab.id : message.tabId;
@@ -567,6 +682,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 
 browser.tabs.onRemoved.addListener((tabId) => {
   lastStatsByTab.delete(tabId);
+  for (const [token, grant] of exportBypassTokens) if (grant && grant.tabId === tabId) exportBypassTokens.delete(token);
   historyByTab.delete(tabId);
   sessionWriteQueues.delete(sessionKey(STATS_KEY_PREFIX, tabId));
   sessionWriteQueues.delete(sessionKey(HISTORY_KEY_PREFIX, tabId));

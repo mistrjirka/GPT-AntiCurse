@@ -20,6 +20,7 @@
   const ROLE_SELECTOR = '[data-message-author-role="user"], [data-message-author-role="assistant"]';
   const EXPORT_CAPTURE_TAIL_TURNS = 96;
   const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
+  const EXPORT_EXTRACT = globalThis.CGExportExtract;
   const scope = globalThis.CGConversationScope.create();
   const IS_FIREFOX = !!(ext.runtime.getManifest().browser_specific_settings?.gecko);
 
@@ -156,29 +157,104 @@
     return archiveFromHistory(history, token.id);
   }
 
+  async function fetchAuthoritativeConversation(token) {
+    if (!scope.isCurrent(token) || !token.id) return { ok: false, reason: "conversation-changed" };
+    const endpointUrl = `${location.origin}/backend-api/conversation/${encodeURIComponent(token.id)}`;
+    const headers = { accept: "application/json" };
+    if (IS_FIREFOX) {
+      let grant;
+      try {
+        grant = await ext.runtime.sendMessage({ type: "cg-create-export-bypass", conversationId: token.id });
+      } catch (error) {
+        return { ok: false, reason: "export-bypass-grant-failed", error: String(error && error.message ? error.message : error), endpointUrl };
+      }
+      if (!grant || grant.ok !== true || !grant.token) return { ok: false, reason: grant?.reason || "export-bypass-grant-failed", endpointUrl };
+      headers["X-GPT-AntiCurse-Export"] = grant.token;
+    }
+    let response;
+    try {
+      response = await fetch(endpointUrl, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers
+      });
+    } catch (error) {
+      return { ok: false, reason: "network-failed", error: String(error && error.message ? error.message : error), endpointUrl };
+    }
+    if (!response.ok) return { ok: false, reason: "http-status", status: response.status, endpointUrl };
+    if (IS_FIREFOX && response.headers.get("X-GPT-AntiCurse-Export-Bypassed") !== "1") {
+      return { ok: false, reason: "export-bypass-unconfirmed", endpointUrl };
+    }
+    try {
+      const data = await response.json();
+      if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl };
+      const mapping = data && data.mapping;
+      if (!mapping || typeof mapping !== "object" || !data.current_node || !mapping[data.current_node]) {
+        return { ok: false, reason: "unsupported-conversation-shape", endpointUrl };
+      }
+      return { ok: true, data, endpointUrl };
+    } catch (error) {
+      return { ok: false, reason: "json-parse-failed", error: String(error && error.message ? error.message : error), endpointUrl };
+    }
+  }
+
   async function buildExportCapture() {
     syncScope();
     const token = scope.snapshot();
     if (!token.id) return { ok: false, reason: "not-a-conversation" };
 
-    let baseArchive;
-    try {
-      baseArchive = await authoritativeArchive(token);
-    } catch (error) {
-      await recordIssue("export-history-read-failed", error, { conversationId: token.id });
-      return { ok: false, reason: "history-read-failed", conversationId: token.id };
+    const source = await fetchAuthoritativeConversation(token);
+    if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", conversationId: token.id };
+
+    let baseArchive = null;
+    let authoritative = false;
+    if (source.ok) {
+      baseArchive = EXPORT_EXTRACT && typeof EXPORT_EXTRACT.createArchive === "function"
+        ? EXPORT_EXTRACT.createArchive(source.data, {
+            id: token.id,
+            title: source.data && source.data.title,
+            sourceUrl: location.href
+          })
+        : null;
+      authoritative = !!baseArchive;
+    }
+
+    if (!baseArchive) {
+      try {
+        baseArchive = await authoritativeArchive(token);
+      } catch (error) {
+        await recordIssue("export-history-read-failed", error, { conversationId: token.id });
+      }
+      if (baseArchive) baseArchive = { ...baseArchive, complete: false };
     }
     if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", conversationId: token.id };
 
     const rendered = collectRenderedMessages(EXPORT_CAPTURE_TAIL_TURNS);
-    if (!baseArchive && !rendered.length) return { ok: false, reason: "archive-not-found", conversationId: token.id };
+    if (authoritative && baseArchive && EXPORT_EXTRACT && typeof EXPORT_EXTRACT.mergeRenderedTail === "function") {
+      baseArchive = EXPORT_EXTRACT.mergeRenderedTail(baseArchive, rendered);
+    }
+    if (!baseArchive && !rendered.length) {
+      return { ok: false, reason: source.reason || "archive-not-found", conversationId: token.id };
+    }
+    if (!source.ok) {
+      await recordIssue("export-source-fetch-failed", source.error || source.reason || "Authoritative export fetch failed", {
+        conversationId: token.id,
+        reason: source.reason || null,
+        status: Number(source.status) || null
+      });
+    }
     return {
       ok: true,
       conversationId: token.id,
-      title: document.title,
+      title: source.data?.title || document.title,
       sourceUrl: location.href,
+      authoritative,
+      sourceReason: source.ok ? null : source.reason,
       baseArchive,
-      rendered
+      // Authoritative raw archives already reconcile the rendered tail against
+      // their visible projection. Partial fallbacks still use the legacy popup merge.
+      rendered: authoritative ? [] : rendered
     };
   }
 
