@@ -1,6 +1,6 @@
 # GPT AntiCurse Privacy Policy
 
-Last updated: 20 August 2026
+Last updated: 21 August 2026
 
 GPT AntiCurse is a browser extension for keeping very long ChatGPT conversations responsive. The extension processes ChatGPT conversation data locally in the browser so it can reduce the amount of old conversation state kept active by the page, provide access to older visible history, and create a local Markdown export only when you request one.
 
@@ -29,7 +29,7 @@ Conversation data may be used locally to:
 
 GPT AntiCurse uses browser extension storage for settings, local counters, and bounded diagnostics. Conversation text is not stored there by the current extension.
 
-Downloaded Markdown or debug-report files are ordinary files under your control after download. A browser upgraded from an older AntiCurse release may retain legacy extension-storage data until the browser clears or replaces that extension data; v0.6.8 does not use those legacy conversation backups during normal browsing or export.
+Downloaded Markdown or debug-report files are ordinary files under your control after download. A browser upgraded from an older AntiCurse release may retain legacy extension-storage data until the browser clears or replaces that extension data; v0.6.9 does not use those legacy conversation backups during normal browsing or export.
 
 ## Data transmission and sharing
 
@@ -43,7 +43,7 @@ The extension:
 - does not load or execute remotely hosted extension code; and
 - does not provide collected user data to third parties.
 
-Your normal use of ChatGPT still communicates with OpenAI/ChatGPT as it would without the extension. When you explicitly request a Markdown export, GPT AntiCurse makes one additional same-origin request to ChatGPT for the currently open conversation using your existing browser session. That request goes to ChatGPT, not to the extension developer or any developer-controlled server.
+Your normal use of ChatGPT still communicates with OpenAI/ChatGPT as it would without the extension. When you explicitly request a Markdown export, GPT AntiCurse may first request the current ChatGPT session information and then make multiple same-origin cursor-page requests to ChatGPT for the currently open conversation. These requests go to ChatGPT, not to the extension developer or any developer-controlled server. The access token used for those requests is kept only in memory for the duration of the export and is not stored or included in exported/diagnostic files.
 
 ## Permissions
 
@@ -57,7 +57,7 @@ GPT AntiCurse requests only permissions needed for its functionality:
 
 AntiCurse does not continuously back up conversation text. During normal browsing, older-history data is kept transiently for the current page/tab so the lightweight history view can work.
 
-When you explicitly request Markdown export, AntiCurse first requests the currently open conversation from ChatGPT using your existing authenticated browser session. It extracts the export-relevant user/assistant history, recognized structured plans, and explicit tool calls in memory, merges the currently rendered tail, generates the file locally, and does not persist that snapshot to extension storage. If the fresh ChatGPT request fails, AntiCurse may use transient/rendered history as a partial fallback and labels that export as incomplete.
+When you explicitly request Markdown export, AntiCurse obtains the current ChatGPT access token in memory (normally from the ChatGPT session endpoint, with the current page bootstrap as a fallback) and follows ChatGPT's cursor-paginated conversation endpoint until the active conversation graph is assembled. It extracts the export-relevant user/assistant history, recognized structured plans, and explicit tool calls in memory, merges the currently rendered tail, generates the file locally, and does not persist the token or conversation snapshot to extension storage. If the authenticated/paginated ChatGPT request fails, AntiCurse may use transient/rendered history as a partial fallback and labels that export as incomplete.
 
 ## Debug reports
 

@@ -80,7 +80,7 @@ In **Recent N + button** mode, click **Load previous** to reveal another page. I
 
 ## Markdown export
 
-Export is **on demand**. AntiCurse does not continuously scan or persist your conversation for backup. When you press an export button, it requests the current conversation once from ChatGPT using your existing browser session, extracts the export-relevant history in memory, merges the currently rendered tail, creates the Markdown file locally, and then drops that temporary snapshot. If that fresh request fails, AntiCurse can fall back to transient/rendered history but marks the export as partial.
+Export is **on demand**. AntiCurse does not continuously scan or persist your conversation for backup. When you press an export button, it obtains the current ChatGPT session token in memory and follows ChatGPT's cursor-paginated conversation endpoint until the active conversation graph is assembled. It then extracts the export-relevant history, reconciles the currently rendered tail, creates the Markdown file locally, and drops the temporary graph and token. If the authenticated/paginated fetch fails, AntiCurse can fall back to transient/rendered history but marks the export as partial.
 
 The export menu has three useful levels:
 
@@ -98,7 +98,7 @@ AntiCurse runs locally in the browser.
 
 - No telemetry or analytics.
 - No remote extension code.
-- AntiCurse does not upload your conversation to its own server. An explicit export makes one additional same-origin request to ChatGPT itself so older history and explicit tool calls can be reconstructed reliably.
+- AntiCurse does not upload your conversation to its own server. An explicit export may make one session request plus multiple same-origin cursor-page requests to ChatGPT itself so a virtualized long conversation can be reconstructed reliably. The access token is used only in memory for that export.
 - Conversation text is not continuously persisted in extension storage; export snapshots are assembled in memory only when requested.
 - A Markdown file is created only when you choose to download one.
 - Debug reports contain health information and diagnostics, not conversation text.

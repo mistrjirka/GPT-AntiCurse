@@ -6,9 +6,9 @@
  * this content-script lifetime so the lightweight older-history view can work.
  * Firefox keeps equivalent per-tab history in its background event page.
  *
- * When the user explicitly exports, captureRenderedTail() merges the currently
- * rendered tail into that authoritative transient history and returns one
- * in-memory archive to the popup. Nothing is written to IndexedDB.
+ * When the user explicitly exports, AntiCurse fetches the authenticated cursor-
+ * paginated conversation graph in memory, reconciles the currently rendered tail,
+ * and returns one archive to the popup. Nothing is written to IndexedDB.
  */
 (() => {
   "use strict";
