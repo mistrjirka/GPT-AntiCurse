@@ -84,6 +84,7 @@ const FIXTURE_HTML = String.raw`<!doctype html>
 </style>
 </head>
 <body>
+<script type="application/json" id="client-bootstrap">{"authStatus":"logged_in","session":{"accessToken":"bootstrap-access-token"}}</script>
 <div data-scroll-root>
   <div role="presentation" class="contents">
     <div id="thread"></div>
@@ -318,6 +319,7 @@ async function recentPagingTest(context, worker) {
   const exported = await buildExportArchiveFromPage(worker);
   assert.equal(exported && exported.ok, true, `explicit in-memory export capture failed: ${JSON.stringify(exported)}`);
   assert.equal(exported.authoritative, true, "Chromium export must refetch the authoritative conversation instead of relying on transient visible history");
+  assert.equal(exported.sourcePages, 2, "long export must merge every cursor page before extraction");
   assert(exported.baseArchive && Array.isArray(exported.baseArchive.messages), "export capture must return an authoritative raw-graph archive");
   assert(exported.baseArchive.messages.some((message) => /user-0/.test(message.text || "")), "one-shot export must retain older history omitted from React");
   const oldTool = exported.baseArchive.messages.find((message) => message.id === "hidden-0");
@@ -326,6 +328,13 @@ async function recentPagingTest(context, worker) {
   assert((oldTool.text || "").includes("export-tool-0"));
   assert.equal(exported.baseArchive.id, "e2e");
   assert(Array.isArray(exported.rendered), "export capture must include the current rendered tail for one-shot merging");
+
+  const bootstrapExport = await buildExportArchiveFromPage(worker);
+  assert.equal(bootstrapExport && bootstrapExport.ok, true, `client-bootstrap auth fallback failed: ${JSON.stringify(bootstrapExport)}`);
+  assert.equal(bootstrapExport.authoritative, true);
+  assert.equal(bootstrapExport.sourceAuth, "client-bootstrap", "failed auth-session lookup should fall back to the page bootstrap token");
+  assert.equal(bootstrapExport.sourcePages, 2);
+  assert(bootstrapExport.baseArchive.messages.some((message) => message.id === "hidden-0"), "bootstrap-auth export must remain complete across cursor pages");
 
   const fallback = await buildExportArchiveFromPage(worker);
   assert.equal(fallback && fallback.ok, true, `temporary authoritative-fetch failure must still produce a fallback export: ${JSON.stringify(fallback)}`);
@@ -425,6 +434,29 @@ async function autoWindowTest(context, worker) {
   await page.close();
 }
 
+function paginatedConversationPages(full) {
+  const entries = Object.entries(full.mapping);
+  const split = Math.floor(entries.length / 2);
+  return {
+    first: {
+      id: full.id,
+      conversation_id: full.conversation_id,
+      title: full.title,
+      mapping: Object.fromEntries(entries.slice(split)),
+      current_node: full.current_node,
+      root: full.root,
+      cursor: "older-page-2"
+    },
+    second: {
+      id: full.id,
+      conversation_id: full.conversation_id,
+      title: full.title,
+      mapping: Object.fromEntries(entries.slice(0, split)),
+      cursor: null
+    }
+  };
+}
+
 (async () => {
   const extensionPath = path.resolve(__dirname, "..", "chrome");
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "anticurse-e2e-"));
@@ -443,14 +475,44 @@ async function autoWindowTest(context, worker) {
     await context.route("https://chatgpt.com/c/e2e", async (route) => {
       await route.fulfill({ status: 200, contentType: "text/html", body: FIXTURE_HTML });
     });
-    let conversationRequestCount = 0;
-    await context.route("https://chatgpt.com/backend-api/conversation/e2e", async (route) => {
-      conversationRequestCount++;
-      if (conversationRequestCount === 3) {
-        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary export fixture failure" }) });
+    const pages = paginatedConversationPages(fullConversation);
+    let authSessionRequests = 0;
+    let exportStarts = 0;
+    await context.route("https://chatgpt.com/api/auth/session", async (route) => {
+      authSessionRequests++;
+      if (authSessionRequests === 1) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ accessToken: "e2e-access-token" })
+        });
         return;
       }
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fullConversation) });
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "auth fixture unavailable" }) });
+    });
+    await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversation\/e2e(?:\?.*)?$/, async (route) => {
+      const request = route.request();
+      const auth = request.headers()["authorization"] || "";
+      const url = new URL(request.url());
+      // The fixture page load models ChatGPT's ordinary request. Export requests
+      // are distinguished by a Bearer token from session/bootstrap auth.
+      if (!auth) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fullConversation) });
+        return;
+      }
+      assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected export auth: ${auth}`);
+      const cursor = url.searchParams.get("cursor");
+      if (!cursor) {
+        exportStarts++;
+        if (exportStarts === 3) {
+          await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary export fixture failure" }) });
+          return;
+        }
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.first) });
+        return;
+      }
+      assert.equal(cursor, "older-page-2", "export must follow the cursor returned by the first page");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.second) });
     });
 
     const worker = await waitForServiceWorker(context);

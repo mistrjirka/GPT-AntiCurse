@@ -19,6 +19,7 @@
   const TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
   const ROLE_SELECTOR = '[data-message-author-role="user"], [data-message-author-role="assistant"]';
   const EXPORT_CAPTURE_TAIL_TURNS = 96;
+  const EXPORT_MAX_PAGES = 100;
   const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
   const EXPORT_EXTRACT = globalThis.CGExportExtract;
   const scope = globalThis.CGConversationScope.create();
@@ -157,27 +158,88 @@
     return archiveFromHistory(history, token.id);
   }
 
-  async function fetchAuthoritativeConversation(token) {
-    if (!scope.isCurrent(token) || !token.id) return { ok: false, reason: "conversation-changed" };
-    const endpointUrl = `${location.origin}/backend-api/conversation/${encodeURIComponent(token.id)}`;
-    const headers = { accept: "application/json" };
-    if (IS_FIREFOX) {
-      let grant;
-      try {
-        grant = await ext.runtime.sendMessage({ type: "cg-create-export-bypass", conversationId: token.id });
-      } catch (error) {
-        return { ok: false, reason: "export-bypass-grant-failed", error: String(error && error.message ? error.message : error), endpointUrl };
-      }
-      if (!grant || grant.ok !== true || !grant.token) return { ok: false, reason: grant?.reason || "export-bypass-grant-failed", endpointUrl };
-      headers["X-GPT-AntiCurse-Export"] = grant.token;
+  function bootstrapAccessToken() {
+    const node = document.getElementById("client-bootstrap");
+    const text = node && typeof node.textContent === "string" ? node.textContent.trim() : "";
+    if (!text) return null;
+    try {
+      const bootstrap = JSON.parse(text);
+      const accessToken = typeof bootstrap?.session?.accessToken === "string"
+        ? bootstrap.session.accessToken.trim()
+        : "";
+      return accessToken || null;
+    } catch (error) {
+      void error;
+      return null;
     }
+  }
+
+  async function fetchSessionAccessToken(token) {
+    if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed" };
+    let response;
+    try {
+      response = await fetch(`${location.origin}/api/auth/session`, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: { accept: "application/json" }
+      });
+    } catch (error) {
+      return { ok: false, reason: "auth-session-network-failed", error: String(error && error.message ? error.message : error) };
+    }
+    if (!response.ok) return { ok: false, reason: "auth-session-http-status", status: response.status };
+    try {
+      const session = await response.json();
+      if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed" };
+      const accessToken = typeof session?.accessToken === "string" ? session.accessToken.trim() : "";
+      if (!accessToken) return { ok: false, reason: "auth-session-token-missing" };
+      return { ok: true, accessToken, authSource: "auth-session" };
+    } catch (error) {
+      return { ok: false, reason: "auth-session-json-parse-failed", error: String(error && error.message ? error.message : error) };
+    }
+  }
+
+  async function resolveAccessToken(token) {
+    const session = await fetchSessionAccessToken(token);
+    if (session.ok) return session;
+    if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed" };
+    const accessToken = bootstrapAccessToken();
+    if (accessToken) return { ok: true, accessToken, authSource: "client-bootstrap", authFallbackReason: session.reason };
+    return session;
+  }
+
+  async function firefoxBypassHeader(token) {
+    if (!IS_FIREFOX) return { ok: true, headers: {} };
+    let grant;
+    try {
+      grant = await ext.runtime.sendMessage({ type: "cg-create-export-bypass", conversationId: token.id });
+    } catch (error) {
+      return { ok: false, reason: "export-bypass-grant-failed", error: String(error && error.message ? error.message : error) };
+    }
+    if (!grant || grant.ok !== true || !grant.token) {
+      return { ok: false, reason: grant?.reason || "export-bypass-grant-failed" };
+    }
+    return { ok: true, headers: { "X-GPT-AntiCurse-Export": grant.token } };
+  }
+
+  async function fetchConversationPage(token, accessToken, cursor) {
+    const base = `${location.origin}/backend-api/conversation/${encodeURIComponent(token.id)}`;
+    const endpointUrl = cursor ? `${base}?cursor=${encodeURIComponent(cursor)}` : base;
+    const bypass = await firefoxBypassHeader(token);
+    if (!bypass.ok) return { ...bypass, endpointUrl };
+    if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl };
+
     let response;
     try {
       response = await fetch(endpointUrl, {
         method: "GET",
         credentials: "same-origin",
         cache: "no-store",
-        headers
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${accessToken}`,
+          ...bypass.headers
+        }
       });
     } catch (error) {
       return { ok: false, reason: "network-failed", error: String(error && error.message ? error.message : error), endpointUrl };
@@ -189,14 +251,75 @@
     try {
       const data = await response.json();
       if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl };
-      const mapping = data && data.mapping;
-      if (!mapping || typeof mapping !== "object" || !data.current_node || !mapping[data.current_node]) {
+      if (!data || typeof data !== "object" || !data.mapping || typeof data.mapping !== "object" || Array.isArray(data.mapping)) {
         return { ok: false, reason: "unsupported-conversation-shape", endpointUrl };
       }
       return { ok: true, data, endpointUrl };
     } catch (error) {
       return { ok: false, reason: "json-parse-failed", error: String(error && error.message ? error.message : error), endpointUrl };
     }
+  }
+
+  async function fetchAuthoritativeConversation(token) {
+    if (!scope.isCurrent(token) || !token.id) return { ok: false, reason: "conversation-changed" };
+    const auth = await resolveAccessToken(token);
+    if (!auth.ok) return auth;
+
+    const mapping = Object.create(null);
+    const seenCursors = new Set();
+    let cursor = null;
+    let currentNode = null;
+    let title = "";
+    let root = null;
+    let conversationId = token.id;
+    let pageCount = 0;
+    let endpointUrl = null;
+
+    while (pageCount < EXPORT_MAX_PAGES) {
+      const page = await fetchConversationPage(token, auth.accessToken, cursor);
+      if (!page.ok) return { ...page, pageCount };
+      endpointUrl = page.endpointUrl;
+      const data = page.data;
+      Object.assign(mapping, data.mapping || {});
+      if (!currentNode && data.current_node) currentNode = data.current_node;
+      if (!title && typeof data.title === "string") title = data.title;
+      if (!root && data.root) root = data.root;
+      if (data.id || data.conversation_id) conversationId = data.id || data.conversation_id;
+      pageCount++;
+
+      const nextCursor = typeof data.cursor === "string" ? data.cursor.trim() : "";
+      if (!nextCursor || Object.keys(data.mapping || {}).length === 0) {
+        cursor = null;
+        break;
+      }
+      if (seenCursors.has(nextCursor)) {
+        return { ok: false, reason: "pagination-cursor-repeated", endpointUrl, pageCount };
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    if (cursor && pageCount >= EXPORT_MAX_PAGES) {
+      return { ok: false, reason: "pagination-page-limit", endpointUrl, pageCount };
+    }
+    if (!currentNode || !mapping[currentNode]) {
+      return { ok: false, reason: "unsupported-conversation-shape", endpointUrl, pageCount };
+    }
+    return {
+      ok: true,
+      endpointUrl,
+      pageCount,
+      authSource: auth.authSource || null,
+      authFallbackReason: auth.authFallbackReason || null,
+      data: {
+        id: conversationId,
+        conversation_id: conversationId,
+        title,
+        mapping,
+        current_node: currentNode,
+        root
+      }
+    };
   }
 
   async function buildExportCapture() {
@@ -251,6 +374,8 @@
       sourceUrl: location.href,
       authoritative,
       sourceReason: source.ok ? null : source.reason,
+      sourcePages: source.ok ? source.pageCount : Number(source.pageCount) || 0,
+      sourceAuth: source.ok ? source.authSource : null,
       baseArchive,
       // Authoritative raw archives already reconcile the rendered tail against
       // their visible projection. Partial fallbacks still use the legacy popup merge.

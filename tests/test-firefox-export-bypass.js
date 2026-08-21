@@ -100,12 +100,12 @@ async function issueToken(tabId, conversationId) {
   );
 }
 
-function startRequest(requestId, tabId, conversationId) {
+function startRequest(requestId, tabId, conversationId, query = "") {
   listeners.beforeRequest({
     requestId,
     tabId,
     method: "GET",
-    url: `https://chatgpt.com/backend-api/conversation/${conversationId}`,
+    url: `https://chatgpt.com/backend-api/conversation/${conversationId}${query}`,
     timeStamp: Date.now()
   });
   return filters.get(requestId);
@@ -167,6 +167,38 @@ function startRequest(requestId, tabId, conversationId) {
   health = await listeners.runtimeMessage({ type: "cg-background-health" }, {});
   assert.equal(health.invalidExportBypassMarkers, 1);
   assert.equal(health.activeResponseFilters, 0);
+
+  // Cursor pagination obtains a distinct one-shot bypass for each page. Query
+  // parameters must not change the conversation-id scope check.
+  const page1 = await issueToken(7, "conv-pages");
+  const page1Filter = startRequest("page-1", 7, "conv-pages");
+  listeners.beforeSendHeaders({
+    requestId: "page-1",
+    tabId: 7,
+    url: "https://chatgpt.com/backend-api/conversation/conv-pages",
+    requestHeaders: [{ name: "X-GPT-AntiCurse-Export", value: page1.token }]
+  });
+  const page1Response = listeners.headersReceived({ requestId: "page-1", responseHeaders: [] });
+  assert(page1Response.responseHeaders.some((header) => /Export-Bypassed/i.test(header.name)));
+  page1Filter.ondata({ data: new Uint8Array([4]).buffer });
+
+  const page2 = await issueToken(7, "conv-pages");
+  assert.notEqual(page2.token, page1.token, "each cursor page must receive a fresh one-shot token");
+  const page2Filter = startRequest("page-2", 7, "conv-pages", "?cursor=older-page");
+  listeners.beforeSendHeaders({
+    requestId: "page-2",
+    tabId: 7,
+    url: "https://chatgpt.com/backend-api/conversation/conv-pages?cursor=older-page",
+    requestHeaders: [{ name: "X-GPT-AntiCurse-Export", value: page2.token }]
+  });
+  const page2Response = listeners.headersReceived({ requestId: "page-2", responseHeaders: [] });
+  assert(page2Response.responseHeaders.some((header) => /Export-Bypassed/i.test(header.name)));
+  page2Filter.ondata({ data: new Uint8Array([5]).buffer });
+
+  health = await listeners.runtimeMessage({ type: "cg-background-health" }, {});
+  assert.equal(health.pendingExportBypasses, 0);
+  assert.equal(health.activeResponseFilters, 0);
+  assert.equal(health.exportBypassDisconnects, 3, "initial valid request plus two cursor pages should each disconnect once");
 
   // A valid token is scoped to both tab and conversation and consumed at most once.
   const scoped = await issueToken(9, "conv-b");
