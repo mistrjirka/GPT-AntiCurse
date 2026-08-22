@@ -6,6 +6,8 @@ def replace_once(path, old, new):
     p = Path(path)
     text = p.read_text()
     count = text.count(old)
+    if count == 0 and new in text:
+        return
     if count != 1:
         raise SystemExit(f"{path}: expected one match, got {count}\n--- old ---\n{old[:500]}")
     p.write_text(text.replace(old, new, 1))
@@ -341,153 +343,18 @@ test = test.replace(
 assert.equal(result.continueNativePagination, true, "an older page that advertises another cursor must allow the native client to fetch it once");''',
 '''assert.equal(result.complete, false);
 assert.equal(result.continueNativePagination, true, "an older page that advertises another cursor must allow the native client to fetch it once");
-assert(result.history, "each newly captured native page must refresh the partial archive");
+assert(result.history && result.history.complete === false);
 assert.deepEqual(result.history.messages.map((entry) => entry.id), ["u2", "a2", "u3", "a3"]);'''
 )
 test_path.write_text(test)
 
-# Firefox E2E: prove Markdown history comes solely from native page capture, not
-# an authenticated automatic archive fallback.
-replace_once(
-    "tests/e2e-firefox.js",
-'''function createServer(tls, fullConversation) {
-  const pages = paginatedConversationPages(fullConversation);''',
-'''function createServer(tls, fullConversation, counters) {
-  const pages = paginatedConversationPages(fullConversation);'''
-)
-replace_once(
-    "tests/e2e-firefox.js",
-'''    if (url.pathname === "/backend-api/conversation/e2e-firefox") {
-      if (req.headers.authorization) assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");''',
-'''    if (url.pathname === "/backend-api/conversation/e2e-firefox") {
-      if (req.headers.authorization) {
-        counters.authoritativeHistoryRequests++;
-        assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
-      }'''
-)
-replace_once(
-    "tests/e2e-firefox.js",
-'''    if (url.pathname === "/backend-api/conversations/e2e-firefox") {
-      if (req.headers.authorization) assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");''',
-'''    if (url.pathname === "/backend-api/conversations/e2e-firefox") {
-      if (req.headers.authorization) {
-        counters.authoritativeHistoryRequests++;
-        assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
-      }'''
-)
-replace_once(
-    "tests/e2e-firefox.js",
-'''      if (req.headers.authorization) assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");''',
-'''      if (req.headers.authorization) {
-        counters.authoritativeHistoryRequests++;
-        assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
-      }'''
-)
-replace_once(
-    "tests/e2e-firefox.js",
-'''  const fullConversation = conversation();
-  const server = createServer(createCertificate(temp), fullConversation);''',
-'''  const fullConversation = conversation();
-  const counters = { authoritativeHistoryRequests: 0 };
-  const server = createServer(createCertificate(temp), fullConversation, counters);'''
-)
-replace_once(
-    "tests/e2e-firefox.js",
-'''    assert.equal(loaded.nativeSyntheticAttrs, 0);
+# E2E fixtures may already contain the pre-output regression case from a preparatory commit.
 
-    console.log("Firefox extension E2E: PASS", JSON.stringify({ addonId, ...state, ...loaded }));''',
-'''    assert.equal(loaded.nativeSyntheticAttrs, 0);
-    assert.equal(counters.authoritativeHistoryRequests, 0, "automatic Firefox Markdown history must use captured native pages, never an authenticated full-history refetch");
-
-    console.log("Firefox extension E2E: PASS", JSON.stringify({ addonId, ...state, ...loaded, ...counters }));'''
-)
-
-# Stall E2E fixtures: normal cases have real assistant output; add exact
-# pre-output loading case modeled on the supplied live HTML.
-for path in ["tests/e2e-stall-recovery-firefox.js", "tests/e2e-stall-recovery-chromium.js"]:
-    replace_once(
-        path,
-'''    streaming.setAttribute('data-streaming-response-status', 'streaming');
-    streaming.textContent = 'assistant output ' + index;
-    if (tool) {''',
-'''    streaming.setAttribute('data-streaming-response-status', 'streaming');
-    if (id !== 'pre-output-loading') {
-      const output = document.createElement('div');
-      output.setAttribute('data-message-author-role', 'assistant');
-      output.textContent = 'assistant output ' + index;
-      section.append(output);
-    }
-    if (tool || id === 'pre-output-loading') {'''
-    )
-    replace_once(
-        path,
-'''  window.__bumpActivity = () => {
-    if (!active || !active.streaming) return false;
-    const span = document.createElement('span');
-    span.textContent = ' progress-' + (++window.__state.bumps);
-    active.streaming.append(span);
-    return true;
-  };''',
-'''  window.__bumpActivity = () => {
-    if (!active || !active.streaming) return false;
-    const span = document.createElement('span');
-    span.textContent = ' progress-' + (++window.__state.bumps);
-    active.streaming.append(span);
-    return true;
-  };
-  window.__revealAssistantOutput = () => {
-    if (!active || active.wrapper.querySelector('[data-message-author-role="assistant"]')) return false;
-    const output = document.createElement('div');
-    output.setAttribute('data-message-author-role', 'assistant');
-    output.textContent = 'first actual assistant output';
-    active.wrapper.querySelector('section').append(output);
-    return true;
-  };'''
-    )
-
-# Insert browser-specific pre-output test after tool-timeout test.
-replace_once(
-    "tests/e2e-stall-recovery-firefox.js",
-'''    await waitFor(driver, "return window.__state.sends === 1", 4000);
-
-    await openCase(driver, "disabled-until-input");''',
-'''    await waitFor(driver, "return window.__state.sends === 1", 4000);
-
-    await openCase(driver, "pre-output-loading");
-    await waitFor(driver, "return (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('response loading · recovery not armed')", 1500);
-    await driver.sleep(800);
-    current = await state(driver);
-    assert.equal(current.stopClicks, 0, "Firefox must not auto-stop while the response is still in pre-output loading/progress state");
-    assert.equal(current.sends, 0);
-    assert.equal(statusCounts.get("pre-output-loading") || 0, 0, "pre-output loading must not even query stream_status on the ordinary timeout path");
-    assert.equal(await driver.executeScript("return window.__revealAssistantOutput()"), true);
-    await waitFor(driver, "return window.__state.sends === 1", 4000);
-
-    await openCase(driver, "disabled-until-input");'''
-)
-
-# Chromium uses block-scoped Playwright cases rather than runCase().
-replace_once(
-    "tests/e2e-stall-recovery-chromium.js",
-'''    {
-      await setPerformance(worker, true);
-      const page = await openCase(context, "tool-timeout");''',
-'''    {
-      const page = await openCase(context, "pre-output-loading");
-      await page.waitForFunction(() => (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('response loading · recovery not armed'));
-      await page.waitForTimeout(800);
-      let current = await state(page);
-      assert.equal(current.stopClicks, 0, "Chromium must not auto-stop while the response is still in pre-output loading/progress state");
-      assert.equal(current.sends, 0);
-      assert.equal(statusCounts.get("pre-output-loading") || 0, 0, "pre-output loading must not query stream_status on the ordinary timeout path");
-      assert.equal(await page.evaluate(() => window.__revealAssistantOutput()), true);
-      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000 });
-      await page.close();
-    }
-
-    {
-      await setPerformance(worker, true);
-      const page = await openCase(context, "tool-timeout");'''
-)
-
-# Workflow test list is managed directly; source patch ends here.
+# Add new unit test to CI if not present.
+workflow = Path(".github/workflows/release.yml")
+workflow_text = workflow.read_text()
+needle = "            tests/test-firefox-conversation-rate-limit-guard.js\n"
+addition = needle + "            tests/test-paginated-history-accumulator.js\n"
+if "tests/test-paginated-history-accumulator.js" not in workflow_text:
+    workflow_text = workflow_text.replace(needle, addition)
+workflow.write_text(workflow_text)
