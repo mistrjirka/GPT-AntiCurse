@@ -15,8 +15,9 @@ assert.equal(chrome, firefox, "Pro recovery guard must remain byte-identical acr
 assert(chrome.includes('slug.endsWith("-pro")'), "all explicit *-pro model slugs must be excluded");
 assert(chrome.includes('label.startsWith("pro thinking")'), "current live Pro thinking status must be recognized");
 assert(chrome.includes('decision = "unknown"'), "missing model evidence must remain an explicit state");
-assert(chrome.includes('if (stop && !state.autoRecoveryAllowed)'), "synthetic Stop must fail closed unless non-Pro is proven");
-assert(chrome.includes("if (event.isTrusted) return;"), "human Stop/Send clicks must never be blocked");
+assert(chrome.includes('if (!state.autoRecoveryAllowed)'), "synthetic Stop must fail closed unless non-Pro is proven");
+assert(chrome.includes("rememberAllowedStop(state)"), "a proven non-Pro Stop must authorize only its immediate recovery nudge");
+assert(chrome.includes("if (event.isTrusted)"), "human Stop/Send clicks must never be blocked");
 assert(chrome.includes('button.getAttribute("data-testid") === "stop-button"'));
 assert(chrome.includes("composerContainsOnlyNudge()"), "fixed AntiCurse nudge must be blocked as defense in depth");
 assert(chrome.includes("event.preventDefault()"));
@@ -153,14 +154,16 @@ assert.equal(runtime.event.prevented, false, "explicit non-Pro slug may recover"
 assert.equal(runtime.debug.recoveryDecision, "non-pro");
 assert.equal(runtime.debug.autoRecoveryAllowed, true);
 assert.equal(runtime.debug.blockedClicks, 0);
+assert(runtime.debug.allowedRecoveryNudge, "approved non-Pro Stop should create one-shot nudge authorization");
 
 runtime = runCase({ composerLabel: "Thinking" });
 assert.equal(runtime.event.prevented, false, "known Thinking composer mode may recover without a slug");
 assert.equal(runtime.debug.recoveryDecision, "non-pro");
 assert.equal(runtime.debug.detectionSource, "composer-model-label");
+assert(runtime.debug.allowedRecoveryNudge, "composer-confirmed Thinking Stop should authorize its nudge");
 
 runtime = runCase({ statusLabel: "Pro thinking", composerLabel: "Pro", trusted: true });
 assert.equal(runtime.event.prevented, false, "a real user Stop click on Pro must remain native");
 assert.equal(runtime.debug.blockedClicks, 0);
 
-console.log("Pro model auto-recovery exclusion, live DOM detection, and fail-closed fallback: PASS");
+console.log("Pro model auto-recovery exclusion, live DOM detection, fail-closed fallback, and non-Pro handoff: PASS");
