@@ -67,12 +67,12 @@ function fixtureHtml() {
     button.disabled = false;
   }
 
-  const resumeLoad = id === 'reload-resume' && loads > 1;
-  if (!resumeLoad) {
-    active = makeTurn(1, id === 'tool-timeout');
-    setStop();
-  } else {
-    setSubmit(false);
+  active = makeTurn(1, id === 'tool-timeout');
+  setStop();
+  if (id === 'disabled-until-input') {
+    new MutationObserver(() => {
+      if ((composer.textContent || '').trim()) button.disabled = false;
+    }).observe(composer, { childList: true, subtree: true, characterData: true });
   }
 
   if (id === 'system-delay-banner' && active?.streaming) {
@@ -90,7 +90,7 @@ function fixtureHtml() {
   button.addEventListener('click', () => {
     if (button.getAttribute('data-testid') === 'stop-button') {
       window.__state.stopClicks++;
-      if (id === 'reload-resume') setSubmit(true);
+      if (id === 'disabled-until-input') setSubmit(true);
       else setSubmit(false);
       return;
     }
@@ -287,15 +287,14 @@ async function state(page) {
     }
 
     {
-      const page = await openCase(context, "reload-resume");
-      await page.waitForFunction(() => Number(sessionStorage.getItem('stall-fixture-loads:reload-resume') || 0) >= 2, null, { timeout: 5000 });
+      const page = await openCase(context, "disabled-until-input");
       await page.waitForFunction(() => window.__state && window.__state.sends === 1, null, { timeout: 5000 });
       const s = await state(page);
-      assert.equal(s.loads, 2, "wedged composer recovery may reload at most once");
+      assert.equal(s.loads, 1, "recovery must not reload when Send starts disabled");
+      assert.equal(s.stopClicks, 1);
       assert.equal(s.sentText, ".");
-      assert.equal(Number(await page.evaluate(() => sessionStorage.getItem('stall-fixture-loads:reload-resume'))), 2);
       await page.waitForTimeout(450);
-      assert.equal(Number(await page.evaluate(() => sessionStorage.getItem('stall-fixture-loads:reload-resume'))), 2, "resume must never enter a reload loop");
+      assert.equal(Number(await page.evaluate(() => sessionStorage.getItem('stall-fixture-loads:disabled-until-input'))), 1);
       await page.close();
     }
 

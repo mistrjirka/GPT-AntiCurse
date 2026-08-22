@@ -54,7 +54,7 @@
   async function snapshot() {
     const saved = await ext.storage.local.get({
       enabled: true,
-      mode: "recent",
+      mode: "windowed-visible",
       maxDisplayMessages: 64,
       showGuardNotice: true,
       stallRecoveryEnabled: true,

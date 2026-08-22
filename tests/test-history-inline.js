@@ -132,8 +132,9 @@ assert(!popupHtml.includes("visible-history"), "All visible history must not rem
 assert(!popupHtml.includes("latest-visible"), "Latest visible only must not remain user-facing");
 assert(!popupHtml.includes('id="loadPrevious"'), "popup should not duplicate the on-page Load previous control");
 
-assert(sizing.includes("width:min(360px,100vw)") || sizing.includes("width: min(360px, 100vw)"), "popup must keep its compact desktop width while allowing narrow viewports to shrink");
-assert(sizing.includes("min-width:0") || sizing.includes("min-width: 0"), "popup must not force a 360px minimum width on Firefox Android");
-assert(sizing.includes("max-width:360px") || sizing.includes("max-width: 360px"), "desktop popup width must remain capped at 360px");
-assert(sizing.includes("100vw"), "popup sizing must be able to follow a narrow Android viewport");
+assert(sizing.includes("width:360px!important") || sizing.includes("width: 360px !important"), "desktop popup must claim a stable 360px intrinsic width");
+assert(sizing.includes("min-width:360px!important") || sizing.includes("min-width: 360px !important"), "desktop popup must not collapse to zero intrinsic width in Firefox");
+assert(sizing.includes("@media (max-width:600px) and (pointer:coarse)") || sizing.includes("@media (max-width: 600px) and (pointer: coarse)"), "narrow touch layouts need an explicit mobile sizing override");
+assert(sizing.includes("width:100vw!important") || sizing.includes("width: 100vw !important"), "mobile popup sizing must follow the viewport");
+assert(sizing.includes("min-width:280px!important") || sizing.includes("min-width: 280px !important"), "mobile popup must retain a usable touch width floor");
 console.log("inline history/UI tests: PASS");

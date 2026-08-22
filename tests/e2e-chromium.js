@@ -122,18 +122,34 @@ const FIXTURE_HTML = String.raw`<!doctype html>
     return result.reverse();
   }
 
-  fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10').then((response) => response.json()).then(async (data) => {
-    window.__receivedCursor = data.cursor ?? null;
-    window.__nativePaginationRequests = 0;
-    // If the cursor leaks through AntiCurse, model ChatGPT immediately fetching
-    // and merging raw older graph pages into its own state. Correct v0.7.0
-    // behavior exposes cursor=null, so this loop never executes.
-    while (data.cursor) {
-      window.__nativePaginationRequests++;
-      const older = await fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10&cursor=' + encodeURIComponent(data.cursor)).then((response) => response.json());
-      Object.assign(data.mapping, older.mapping || {});
-      data.cursor = older.cursor ?? null;
+  function normalizePaginated(raw) {
+    if (!raw || !Array.isArray(raw.messages)) return raw;
+    const mapping = {};
+    let parent = null;
+    for (const message of raw.messages) {
+      if (!message || !message.id) continue;
+      const id = message.id;
+      mapping[id] = { id, message, parent, children: [] };
+      if (parent && mapping[parent]) mapping[parent].children = [id];
+      parent = id;
     }
+    const current = raw.current_node && mapping[raw.current_node] ? raw.current_node : parent;
+    return { ...raw, mapping, current_node: current, root: null };
+  }
+
+  fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10').then((response) => response.json()).then(async (raw) => {
+    window.__receivedCursor = raw.page_info?.has_previous_page === true ? (raw.page_info.start_cursor ?? null) : null;
+    window.__nativePaginationRequests = 0;
+    // Current ChatGPT follows before-pages only when page_info still advertises
+    // older history. AntiCurse must suppress that before page code sees it.
+    while (raw.page_info?.has_previous_page === true && raw.page_info.start_cursor) {
+      window.__nativePaginationRequests++;
+      const cursor = raw.page_info.start_cursor;
+      const older = await fetch('/backend-api/conversations/e2e/messages?include_has_versions=true&num_turns=10&before=' + encodeURIComponent(cursor)).then((response) => response.json());
+      raw.messages = (older.messages || []).concat(raw.messages || []);
+      raw.page_info = older.page_info || {};
+    }
+    const data = normalizePaginated(raw);
     window.__receivedConversation = data;
     let visible = 0;
     for (const id of chain(data)) {
@@ -498,6 +514,34 @@ function paginatedConversationPages(full) {
   };
 }
 
+function rawPaginatedConversationPages(full) {
+  const chain = [];
+  const seen = new Set();
+  let id = full.current_node;
+  while (id && full.mapping[id] && !seen.has(id)) {
+    seen.add(id);
+    const node = full.mapping[id];
+    if (node.message) chain.push({ ...node.message, id });
+    id = node.parent || null;
+  }
+  chain.reverse();
+  // This fixture has 10 raw records per exchange. Keep the newest 20 exchanges
+  // in the current document response and expose the oldest 20 through `before`.
+  const split = Math.max(0, chain.length - 200);
+  return {
+    first: {
+      id: full.id, conversation_id: full.conversation_id, title: full.title,
+      messages: chain.slice(split), current_node: full.current_node,
+      page_info: { has_previous_page: true, start_cursor: "older-page-2" }
+    },
+    second: {
+      id: full.id, conversation_id: full.conversation_id, title: full.title,
+      messages: chain.slice(0, split), current_node: chain[split - 1]?.id || null,
+      page_info: { has_previous_page: false, start_cursor: null }
+    }
+  };
+}
+
 (async () => {
   const extensionPath = path.resolve(__dirname, "..", "chrome");
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "anticurse-e2e-"));
@@ -517,6 +561,7 @@ function paginatedConversationPages(full) {
       await route.fulfill({ status: 200, contentType: "text/html", body: FIXTURE_HTML });
     });
     const pages = paginatedConversationPages(fullConversation);
+    const rawPages = rawPaginatedConversationPages(fullConversation);
     let authSessionRequests = 0;
     let exportStarts = 0;
     await context.route("https://chatgpt.com/api/auth/session", async (route) => {
@@ -542,27 +587,21 @@ function paginatedConversationPages(full) {
         assert.equal(plural, true, "ChatGPT fixture must use the current plural conversation document endpoint");
         assert.equal(url.searchParams.get("include_has_versions"), "true");
         assert.equal(url.searchParams.get("num_turns"), "10");
-        const nativeCursor = url.searchParams.get("cursor");
-        if (!nativeCursor) {
-          await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.first) });
-          return;
-        }
-        assert.equal(nativeCursor, "older-page-2", "native pagination fixture received an unexpected cursor");
-        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.second) });
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(rawPages.first) });
         return;
       }
 
       assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected export auth: ${auth}`);
       const cursor = url.searchParams.get("cursor");
-      if (!cursor) {
-        if (!plural) exportStarts++;
+      if (!cursor && !plural) {
+        exportStarts++;
         // Fourth authoritative operation: retire singular and prove a complete
-        // plural fallback. Fifth: a real server failure must remain partial.
-        if (!plural && exportStarts === 4) {
+        // current plural fallback. Fifth: a real server failure stays partial.
+        if (exportStarts === 4) {
           await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "singular retired" }) });
           return;
         }
-        if (!plural && exportStarts === 5) {
+        if (exportStarts === 5) {
           await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary export fixture failure" }) });
           return;
         }
@@ -571,9 +610,22 @@ function paginatedConversationPages(full) {
       if (plural) {
         assert.equal(url.searchParams.get("include_has_versions"), "true");
         assert.equal(url.searchParams.get("num_turns"), "10");
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(rawPages.first) });
+        return;
       }
-      if (cursor) assert.equal(cursor, "older-page-2", "export must follow the cursor returned by the first page");
+      if (cursor) assert.equal(cursor, "older-page-2", "legacy singular export must follow its cursor");
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(cursor ? pages.second : pages.first) });
+    });
+
+    await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversations\/e2e\/messages(?:\?.*)?$/, async (route) => {
+      const request = route.request();
+      const auth = request.headers()["authorization"] || "";
+      assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected paginated export auth: ${auth}`);
+      const url = new URL(request.url());
+      assert.equal(url.searchParams.get("include_has_versions"), "true");
+      assert.equal(url.searchParams.get("num_turns"), "10");
+      assert.equal(url.searchParams.get("before"), "older-page-2");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(rawPages.second) });
     });
 
     const worker = await waitForServiceWorker(context);

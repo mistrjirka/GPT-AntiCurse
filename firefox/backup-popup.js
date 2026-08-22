@@ -150,7 +150,7 @@
     const activeTab = await popupContext.currentTab();
     const stored = await ext.storage.local.get({
       enabled: true,
-      mode: "recent",
+      mode: "windowed-visible",
       maxDisplayMessages: 64,
       showGuardNotice: true,
       archiveExportLevel: "progress",

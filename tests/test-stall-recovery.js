@@ -7,6 +7,8 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const chromeSource = fs.readFileSync(path.join(ROOT, "chrome", "stall-recovery.js"), "utf8");
 const firefoxSource = fs.readFileSync(path.join(ROOT, "firefox", "stall-recovery.js"), "utf8");
+const chromeContent = fs.readFileSync(path.join(ROOT, "chrome", "content.js"), "utf8");
+const firefoxContent = fs.readFileSync(path.join(ROOT, "firefox", "content.js"), "utf8");
 const chromeManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "chrome", "manifest.json"), "utf8"));
 const firefoxManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "firefox", "manifest.json"), "utf8"));
 const chromePopup = fs.readFileSync(path.join(ROOT, "chrome", "popup.html"), "utf8");
@@ -27,8 +29,9 @@ assert(chromeSource.includes("hasLongWaitBanner(activeTurn) ? 0"), "banner must 
 assert(chromeSource.includes("document.visibilityState !== \"visible\""));
 assert(chromeSource.includes("hasUserDraft()"));
 assert(chromeSource.includes("attemptedTurnKey"));
-assert(chromeSource.includes("sessionStorage.setItem"));
-assert(chromeSource.includes("location.reload()"));
+assert(!chromeSource.includes("sessionStorage.setItem"), "stall recovery must not persist a reload-resume marker");
+assert(!chromeSource.includes("location.reload()"), "stall recovery must never reload the page");
+assert(chromeSource.includes("Insert the nudge first"), "recovery must populate the composer before requiring Send to become enabled");
 assert(chromeSource.includes('paragraph.textContent = "."'));
 assert(!chromeSource.includes("setInterval("), "watchdog must be event-driven, never interval-polled");
 assert(!chromeSource.includes("innerHTML"));
@@ -38,6 +41,13 @@ assert(chromeSource.includes('turnListObserver.observe(turnList, { childList: tr
 assert(chromeSource.includes('activityObserver.observe(activeTurn, {'), "only the active turn subtree should be observed for progress");
 assert(chromeSource.includes('discoveryObserver.observe(root, { childList: true, subtree: true })'), "broad discovery may exist only as temporary fallback");
 assert(chromeSource.includes("discoveryTimer = setTimeout(clearDiscovery, 10_000)"), "broad discovery must self-expire");
+assert(chromeSource.includes("__gpt_anticurse_stall_status__"), "watchdog must publish live recovery state");
+assert(chromeSource.includes("countdownRemainingMs"), "watchdog debug state must expose the live countdown");
+for (const [browser, content] of [["chrome", chromeContent], ["firefox", firefoxContent]]) {
+  assert(content.includes("__gpt_anticurse_stall_status__"), `${browser}: on-page status must listen for recovery countdowns`);
+  assert(content.includes("auto-continue in"), `${browser}: bottom-right status must render the countdown`);
+  assert(content.includes("auto-continue resuming"), `${browser}: status must show active recovery phase`);
+}
 
 for (const [browser, manifest, popup] of [["chrome", chromeManifest, chromePopup], ["firefox", firefoxManifest, firefoxPopup]]) {
   const scripts = manifest.content_scripts.flatMap((entry) => entry.js || []);

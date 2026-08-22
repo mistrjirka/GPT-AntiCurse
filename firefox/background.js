@@ -10,7 +10,7 @@
 
 const DEFAULT_SETTINGS = {
   enabled: true,
-  mode: "recent",
+  mode: "windowed-visible",
   maxDisplayMessages: 64,
   showGuardNotice: true,
   stallRecoveryEnabled: true
@@ -36,6 +36,7 @@ const EXPORT_CONFIRM_HEADER_NAME = "x-gpt-anticurse-export-bypassed";
 const EXPORT_BYPASS_TTL_MS = 10000;
 const responseFilterStates = new Map();
 const exportBypassTokens = new Map();
+const standaloneExportBypassRequests = new Map();
 let exportBypassDisconnects = 0;
 let invalidExportBypassMarkers = 0;
 
@@ -110,6 +111,21 @@ function conversationIdFromEndpoint(urlString) {
 
 function isConversationDocument(urlString) {
   return !!conversationIdFromEndpoint(urlString);
+}
+
+function exportConversationIdFromUrl(urlString) {
+  const exact = conversationIdFromEndpoint(urlString);
+  if (exact) return exact;
+  try {
+    const url = new URL(urlString);
+    if (url.protocol !== "https:" || url.hostname !== "chatgpt.com") return null;
+    const match = url.pathname.match(/^\/backend-api\/conversations\/([^/]+)\/messages\/?$/);
+    if (!match) return null;
+    const id = decodeURIComponent(match[1]).trim();
+    return id || null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function removedNodeCount(stats) {
@@ -275,6 +291,192 @@ function publishHistory(tabId, history, requestStartedAt) {
   return true;
 }
 
+function paginatedConversationEnvelope(data) {
+  return !!data &&
+    typeof data === "object" &&
+    !Array.isArray(data) &&
+    Array.isArray(data.messages) &&
+    !!data.page_info &&
+    typeof data.page_info === "object" &&
+    !Array.isArray(data.page_info);
+}
+
+function paginatedCursor(data) {
+  if (!paginatedConversationEnvelope(data)) return null;
+  const pageInfo = data.page_info || {};
+  if (pageInfo.has_previous_page !== true) return null;
+  const cursor = typeof pageInfo.start_cursor === "string" ? pageInfo.start_cursor.trim() : "";
+  return cursor || null;
+}
+
+function messageRole(message) {
+  return message && message.author ? message.author.role : undefined;
+}
+
+function messageHidden(message) {
+  const metadata = message && message.metadata;
+  return !!(metadata && (
+    metadata.is_visually_hidden_from_conversation === true ||
+    metadata.is_user_system_message === true
+  ));
+}
+
+function messageToolTargeted(message) {
+  if (messageRole(message) !== "assistant") return false;
+  const recipient = String(message && message.recipient || "").trim().toLowerCase();
+  return !!recipient && recipient !== "all" && recipient !== "assistant";
+}
+
+function messageText(message) {
+  const content = message && message.content;
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (typeof content.text === "string") return content.text;
+  if (!Array.isArray(content.parts)) return "";
+  const parts = [];
+  for (const part of content.parts) {
+    if (typeof part === "string") parts.push(part);
+    else if (part && typeof part === "object") {
+      if (typeof part.text === "string") parts.push(part.text);
+      else if (typeof part.content === "string") parts.push(part.content);
+      else if (part.asset_pointer || part.image_url || part.content_type === "image_asset_pointer") parts.push("[Image / attachment]");
+      else if (part.content_type) parts.push(`[${part.content_type}]`);
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+function paginatedVisibleHistory(data) {
+  if (!paginatedConversationEnvelope(data)) return [];
+  const messages = [];
+  for (let index = 0; index < data.messages.length; index++) {
+    const message = data.messages[index];
+    const role = messageRole(message);
+    if ((role !== "user" && role !== "assistant") || messageHidden(message) || messageToolTargeted(message)) continue;
+    messages.push({
+      id: message && message.id ? message.id : `paginated-message-${index}`,
+      role,
+      text: messageText(message),
+      createTime: message && message.create_time ? message.create_time : null
+    });
+  }
+  return messages;
+}
+
+function paginatedGraph(data, conversationId) {
+  const mapping = Object.create(null);
+  const orderedIds = [];
+  for (const message of data.messages || []) {
+    const id = String(message && message.id || "").trim();
+    if (!id || mapping[id]) continue;
+    orderedIds.push(id);
+    mapping[id] = { id, message, parent: null, children: [] };
+  }
+  for (let index = 0; index < orderedIds.length; index++) {
+    const id = orderedIds[index];
+    mapping[id].parent = index > 0 ? orderedIds[index - 1] : null;
+    mapping[id].children = index + 1 < orderedIds.length ? [orderedIds[index + 1]] : [];
+  }
+  const requestedCurrent = String(data.current_node || "").trim();
+  const currentNode = requestedCurrent && mapping[requestedCurrent]
+    ? requestedCurrent
+    : orderedIds[orderedIds.length - 1] || null;
+  return {
+    ...data,
+    id: data.id || data.conversation_id || conversationId,
+    conversation_id: data.conversation_id || data.id || conversationId,
+    mapping,
+    current_node: currentNode
+  };
+}
+
+function activeMessagesFromGraph(data) {
+  const mapping = data && data.mapping;
+  let id = data && data.current_node;
+  if (!mapping || !id || !mapping[id]) return [];
+  const reversed = [];
+  const seen = new Set();
+  while (id && mapping[id] && !seen.has(id)) {
+    seen.add(id);
+    const node = mapping[id];
+    if (node.message) reversed.push(node.message);
+    id = node.parent || null;
+  }
+  reversed.reverse();
+  return reversed;
+}
+
+function buildPaginatedHistoryArchive(parsed, mode, limit, conversationId) {
+  if (!LIMITED_MODES.has(mode) || !conversationId || !paginatedConversationEnvelope(parsed)) return null;
+  // When the server says older pages exist, do not pretend this newest page is a
+  // complete archive. The isolated authoritative-history path will fetch it.
+  if (parsed.page_info?.has_previous_page === true || paginatedCursor(parsed)) return null;
+  const messages = paginatedVisibleHistory(parsed);
+  return {
+    ok: true,
+    conversationId,
+    messages,
+    nativeVisibleCount: Math.min(messages.length, limit),
+    pageSize: limit,
+    maxRendered: Math.max(limit, Math.min(500, limit * 3)),
+    source: "firefox-network-filter-paginated"
+  };
+}
+
+function transformPaginatedConversation(parsed, conversationId, mode, limit) {
+  const pageInfo = parsed.page_info || {};
+  const hadOlderPages = pageInfo.has_previous_page === true || !!paginatedCursor(parsed);
+  const graph = paginatedGraph(parsed, conversationId);
+  const trimmed = graph.current_node
+    ? CGTrim.trimConversation(graph, { mode, maxDisplayMessages: limit })
+    : { changed: false, data: graph, reason: "below-limit", stats: {} };
+  const keptMessages = activeMessagesFromGraph(trimmed.data);
+  const rawMessagesChanged = keptMessages.length !== parsed.messages.length || !!trimmed.changed;
+  const changed = hadOlderPages || rawMessagesChanged;
+  const data = changed
+    ? {
+        ...parsed,
+        messages: keptMessages,
+        current_node: trimmed.data.current_node || parsed.current_node,
+        page_info: {
+          ...pageInfo,
+          has_previous_page: false,
+          start_cursor: null
+        }
+      }
+    : parsed;
+  const renderedBefore = paginatedVisibleHistory(parsed).length;
+  const renderedAfter = paginatedVisibleHistory({ ...parsed, messages: keptMessages }).length;
+  const stats = {
+    ...(trimmed.stats || {}),
+    trimMode: mode,
+    mappingNodesBefore: Math.max(0, Number(trimmed.stats?.mappingNodesBefore) || parsed.messages.length),
+    mappingNodesAfter: Math.max(0, Number(trimmed.stats?.mappingNodesAfter) || keptMessages.length),
+    discardedNodes: Math.max(0, parsed.messages.length - keptMessages.length),
+    displayBefore: renderedBefore,
+    displayAfter: renderedAfter,
+    logicalDisplayAfter: Number.isFinite(Number(trimmed.stats?.logicalDisplayAfter))
+      ? Number(trimmed.stats.logicalDisplayAfter)
+      : renderedAfter,
+    currentNodePreserved: (trimmed.data.current_node || parsed.current_node) === parsed.current_node,
+    paginationFirewall: true,
+    paginationCursorSuppressed: hadOlderPages,
+    paginatedConversationEnvelope: true,
+    paginatedMessages: parsed.messages.length,
+    paginatedMessagesAfter: keptMessages.length
+  };
+  return {
+    mode,
+    transformed: {
+      changed,
+      data,
+      reason: changed ? "trimmed" : "below-limit",
+      stats
+    },
+    history: buildPaginatedHistoryArchive(parsed, mode, limit, conversationId)
+  };
+}
+
 function buildHistoryArchive(parsed, transformed, mode, limit, conversationId) {
   if (!LIMITED_MODES.has(mode) || !conversationId) return null;
   if (typeof parsed?.cursor === "string" && parsed.cursor.trim()) return null;
@@ -297,6 +499,15 @@ function buildHistoryArchive(parsed, transformed, mode, limit, conversationId) {
 function transformConversation(parsed, conversationId, cursorRequest = false) {
   const mode = resolveMode(settings.mode);
   const limit = normalizeMessageLimit(settings.maxDisplayMessages);
+
+  // ChatGPT's current plural endpoint returns a raw paginated envelope
+  // { messages, page_info, current_node, ... }. The page converts that envelope
+  // to a mapping only *after* Response.json() resolves. Preserve that API shape
+  // and only terminate native older-page pagination; AntiCurse owns older history
+  // through its isolated authenticated path.
+  if (paginatedConversationEnvelope(parsed)) {
+    return transformPaginatedConversation(parsed, conversationId, mode, limit);
+  }
 
   if (cursorRequest && PAGINATION && typeof PAGINATION.apply === "function") {
     const blocked = PAGINATION.apply(parsed, { cursorRequest: true });
@@ -413,6 +624,9 @@ function cleanupExportBypassTokens(now = Date.now()) {
   for (const [token, value] of exportBypassTokens) {
     if (!value || value.expiresAt <= now) exportBypassTokens.delete(token);
   }
+  for (const [requestId, value] of standaloneExportBypassRequests) {
+    if (!value || value.expiresAt <= now) standaloneExportBypassRequests.delete(requestId);
+  }
 }
 
 function createExportBypass(sender, conversationId) {
@@ -444,7 +658,7 @@ function stripExportRequestMarker(details) {
 
   cleanupExportBypassTokens();
   const grant = exportBypassTokens.get(suppliedToken);
-  const conversationId = conversationIdFromEndpoint(details && details.url);
+  const conversationId = exportConversationIdFromUrl(details && details.url);
   const valid = !!grant &&
     grant.expiresAt > Date.now() &&
     grant.tabId === details.tabId &&
@@ -452,7 +666,17 @@ function stripExportRequestMarker(details) {
   if (grant) exportBypassTokens.delete(suppliedToken);
   if (valid) {
     const state = responseFilterStates.get(details.requestId);
-    if (state) state.exportBypass = true;
+    if (state) {
+      state.exportBypass = true;
+    } else {
+      // `/conversations/<id>/messages` is intentionally not a normal AntiCurse
+      // interception target. For a validated private history fetch we only strip
+      // the one-shot marker and confirm the bypass back to the content script.
+      standaloneExportBypassRequests.set(details.requestId, {
+        tabId: details.tabId,
+        expiresAt: Date.now() + EXPORT_BYPASS_TTL_MS
+      });
+    }
   } else {
     invalidExportBypassMarkers++;
   }
@@ -461,10 +685,15 @@ function stripExportRequestMarker(details) {
 }
 
 function confirmExportBypassResponse(details) {
+  cleanupExportBypassTokens();
   const state = responseFilterStates.get(details && details.requestId);
+  const standalone = standaloneExportBypassRequests.get(details && details.requestId);
+  if (standalone) standaloneExportBypassRequests.delete(details.requestId);
   const headers = Array.isArray(details && details.responseHeaders) ? details.responseHeaders : [];
   const responseHeaders = headers.filter((header) => String(header && header.name || "").toLowerCase() !== EXPORT_CONFIRM_HEADER_NAME);
-  if (!state || !state.exportBypass) return responseHeaders.length === headers.length ? {} : { responseHeaders };
+  if (!(state && state.exportBypass) && !standalone) {
+    return responseHeaders.length === headers.length ? {} : { responseHeaders };
+  }
   responseHeaders.push({ name: "X-GPT-AntiCurse-Export-Bypassed", value: "1" });
   return { responseHeaders };
 }
@@ -661,6 +890,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       sessionWritesPending: sessionWriteQueues.size,
       activeResponseFilters: responseFilterStates.size,
       pendingExportBypasses: exportBypassTokens.size,
+      pendingStandaloneExportBypasses: standaloneExportBypassRequests.size,
       exportBypassDisconnects,
       invalidExportBypassMarkers
     });
@@ -721,6 +951,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 browser.tabs.onRemoved.addListener((tabId) => {
   lastStatsByTab.delete(tabId);
   for (const [token, grant] of exportBypassTokens) if (grant && grant.tabId === tabId) exportBypassTokens.delete(token);
+  for (const [requestId, grant] of standaloneExportBypassRequests) if (grant && grant.tabId === tabId) standaloneExportBypassRequests.delete(requestId);
   historyByTab.delete(tabId);
   sessionWriteQueues.delete(sessionKey(STATS_KEY_PREFIX, tabId));
   sessionWriteQueues.delete(sessionKey(HISTORY_KEY_PREFIX, tabId));

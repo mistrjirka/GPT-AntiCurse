@@ -235,9 +235,12 @@ async function waitForValue(driver, script, timeout = 12000) {
     assert(nativeState.nodes < Object.keys(fullConversation.mapping).length, "Firefox response filter must trim before the page renders");
 
     const button = await driver.wait(until.elementLocated(By.css("#cg-window-history-host .cg-history-previous")), 10000);
-    await driver.wait(until.elementIsVisible(button), 10000);
-    assert.equal(await button.getText(), "Load previous 8", "four archived exchanges should equal eight logical turns");
-    await button.click();
+    assert.equal(await button.isDisplayed(), false, "fresh installs should use Auto window in Firefox fidelity test");
+    await driver.executeScript(`
+      const root=document.querySelector('[data-scroll-root]');
+      root.scrollTop=root.scrollHeight; root.dispatchEvent(new Event('scroll',{bubbles:true}));
+      root.scrollTop=0; root.dispatchEvent(new Event('scroll',{bubbles:true}));
+    `);
     await waitForValue(driver, "return document.querySelectorAll('#cg-window-history-host .cg-history-turn').length > 0");
 
     const result = await driver.executeScript(`

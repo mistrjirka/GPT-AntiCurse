@@ -181,14 +181,63 @@
     return { ok: true, headers: { "X-GPT-AntiCurse-Export": grant.token } };
   }
 
+  function paginatedEnvelope(data) {
+    return !!data &&
+      typeof data === "object" &&
+      !Array.isArray(data) &&
+      Array.isArray(data.messages) &&
+      !!data.page_info &&
+      typeof data.page_info === "object" &&
+      !Array.isArray(data.page_info);
+  }
+
+  function paginatedPageCursor(data) {
+    if (!paginatedEnvelope(data) || data.page_info.has_previous_page !== true) return "";
+    return typeof data.page_info.start_cursor === "string" ? data.page_info.start_cursor.trim() : "";
+  }
+
+  function paginatedMessagesToGraph(messages, conversationId, serverCurrentNode) {
+    const ordered = [];
+    const byId = new Map();
+    for (const message of Array.isArray(messages) ? messages : []) {
+      const id = String(message && message.id || "").trim();
+      if (!id) continue;
+      if (!byId.has(id)) ordered.push(id);
+      byId.set(id, message);
+    }
+    const rootId = `paginated-root:${conversationId}`;
+    const mapping = Object.create(null);
+    mapping[rootId] = { id: rootId, parent: null, children: ordered.length ? [ordered[0]] : [] };
+    for (let index = 0; index < ordered.length; index++) {
+      const id = ordered[index];
+      mapping[id] = {
+        id,
+        message: byId.get(id),
+        parent: index === 0 ? rootId : ordered[index - 1],
+        children: index + 1 < ordered.length ? [ordered[index + 1]] : []
+      };
+    }
+    const requestedCurrent = String(serverCurrentNode || "").trim();
+    const currentNode = requestedCurrent && mapping[requestedCurrent]
+      ? requestedCurrent
+      : ordered[ordered.length - 1] || rootId;
+    return { mapping, root: rootId, currentNode };
+  }
+
   function exportEndpointUrl(token, cursor, endpointFamily) {
-    const base = `${location.origin}/backend-api/${endpointFamily}/${encodeURIComponent(token.id)}`;
+    const encodedId = encodeURIComponent(token.id);
+    const paginatedMessages = endpointFamily === "conversations" && !!cursor;
+    const base = paginatedMessages
+      ? `${location.origin}/backend-api/conversations/${encodedId}/messages`
+      : `${location.origin}/backend-api/${endpointFamily}/${encodedId}`;
     const params = new URLSearchParams();
     if (endpointFamily === "conversations") {
       params.set("include_has_versions", "true");
       params.set("num_turns", "10");
+      if (cursor) params.set("before", cursor);
+    } else if (cursor) {
+      params.set("cursor", cursor);
     }
-    if (cursor) params.set("cursor", cursor);
     const query = params.toString();
     return query ? `${base}?${query}` : base;
   }
@@ -221,10 +270,12 @@
     try {
       const data = await response.json();
       if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl, endpointFamily };
-      if (!data || typeof data !== "object" || !data.mapping || typeof data.mapping !== "object" || Array.isArray(data.mapping)) {
+      const mappingShape = !!data && typeof data === "object" && !!data.mapping && typeof data.mapping === "object" && !Array.isArray(data.mapping);
+      const paginatedShape = endpointFamily === "conversations" && paginatedEnvelope(data);
+      if (!mappingShape && !paginatedShape) {
         return { ok: false, reason: "unsupported-conversation-shape", endpointUrl, endpointFamily };
       }
-      return { ok: true, data, endpointUrl, endpointFamily };
+      return { ok: true, data, shape: paginatedShape ? "paginated-messages" : "mapping", endpointUrl, endpointFamily };
     } catch (error) {
       return { ok: false, reason: "json-parse-failed", error: String(error && error.message ? error.message : error), endpointUrl, endpointFamily };
     }
@@ -258,6 +309,8 @@
 
     const mapping = Object.create(null);
     const seenCursors = new Set();
+    let rawMessages = [];
+    let rawPaginated = false;
     let cursor = null;
     let currentNode = null;
     let title = "";
@@ -273,15 +326,28 @@
       endpointUrl = page.endpointUrl;
       endpointFamily = page.endpointFamily;
       const data = page.data;
-      Object.assign(mapping, data.mapping || {});
+
+      if (page.shape === "paginated-messages") {
+        if (pageCount > 0 && !rawPaginated) return { ok: false, reason: "pagination-shape-changed", endpointUrl, pageCount };
+        rawPaginated = true;
+        // The current endpoint returns newest page first; each `before` request is
+        // an older chronological slice, so prepend it to reconstruct oldest->newest.
+        rawMessages = (Array.isArray(data.messages) ? data.messages : []).concat(rawMessages);
+      } else {
+        if (rawPaginated) return { ok: false, reason: "pagination-shape-changed", endpointUrl, pageCount };
+        Object.assign(mapping, data.mapping || {});
+      }
+
       if (!currentNode && data.current_node) currentNode = data.current_node;
       if (!title && typeof data.title === "string") title = data.title;
       if (!root && data.root) root = data.root;
       if (data.id || data.conversation_id) conversationId = data.id || data.conversation_id;
       pageCount++;
 
-      const nextCursor = typeof data.cursor === "string" ? data.cursor.trim() : "";
-      if (!nextCursor || Object.keys(data.mapping || {}).length === 0) {
+      const nextCursor = page.shape === "paginated-messages"
+        ? paginatedPageCursor(data)
+        : (typeof data.cursor === "string" ? data.cursor.trim() : "");
+      if (!nextCursor) {
         cursor = null;
         break;
       }
@@ -295,6 +361,14 @@
     if (cursor && pageCount >= EXPORT_MAX_PAGES) {
       return { ok: false, reason: "pagination-page-limit", endpointUrl, pageCount };
     }
+
+    if (rawPaginated) {
+      const graph = paginatedMessagesToGraph(rawMessages, conversationId, currentNode);
+      Object.assign(mapping, graph.mapping);
+      root = graph.root;
+      currentNode = graph.currentNode;
+    }
+
     if (!currentNode || !mapping[currentNode]) {
       return { ok: false, reason: "unsupported-conversation-shape", endpointUrl, pageCount };
     }

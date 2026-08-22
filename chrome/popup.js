@@ -192,7 +192,7 @@ function renderStats(stats) {
   setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
 }
 async function initialize() {
-  const saved = await chrome.storage.local.get({ enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true, stallRecoveryEnabled: true, cgTotals: EMPTY_TOTALS, cgLastIssue: null });
+  const saved = await chrome.storage.local.get({ enabled: true, mode: "windowed-visible", maxDisplayMessages: 64, showGuardNotice: true, stallRecoveryEnabled: true, cgTotals: EMPTY_TOTALS, cgLastIssue: null });
   enabledInput.checked = saved.enabled;
   modeSelect.value = normalizeMode(saved.mode);
   limitInput.value = saved.maxDisplayMessages;

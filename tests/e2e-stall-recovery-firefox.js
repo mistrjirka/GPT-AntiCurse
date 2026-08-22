@@ -69,12 +69,12 @@ function fixtureHtml() {
     button.disabled = false;
   }
 
-  const resumeLoad = id === 'reload-resume' && loads > 1;
-  if (!resumeLoad) {
-    active = makeTurn(1, id === 'tool-timeout');
-    setStop();
-  } else {
-    setSubmit(false);
+  active = makeTurn(1, id === 'tool-timeout');
+  setStop();
+  if (id === 'disabled-until-input') {
+    new MutationObserver(() => {
+      if ((composer.textContent || '').trim()) button.disabled = false;
+    }).observe(composer, { childList: true, subtree: true, characterData: true });
   }
   if (id === 'system-delay-banner' && active?.streaming) {
     const banner = document.createElement('span');
@@ -91,7 +91,7 @@ function fixtureHtml() {
   button.addEventListener('click', () => {
     if (button.getAttribute('data-testid') === 'stop-button') {
       window.__state.stopClicks++;
-      if (id === 'reload-resume') setSubmit(true);
+      if (id === 'disabled-until-input') setSubmit(true);
       else setSubmit(false);
       return;
     }
@@ -249,19 +249,20 @@ async function openCase(driver, id) {
     await waitFor(driver, "return window.__state.sends === 1", 4000);
 
     await openCase(driver, "tool-timeout");
+    await waitFor(driver, "return (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('tool auto-continue in')", 1500);
     await driver.sleep(330);
     assert.equal((await state(driver)).sends, 0, "Firefox active tool must use the longer timeout");
     assert.equal(statusCounts.get("tool-timeout") || 0, 0);
     await waitFor(driver, "return window.__state.sends === 1", 4000);
 
-    await openCase(driver, "reload-resume");
-    await waitFor(driver, "return Number(sessionStorage.getItem('stall-firefox-loads:reload-resume') || 0) >= 2", 6000);
+    await openCase(driver, "disabled-until-input");
     await waitFor(driver, "return window.__state && window.__state.sends === 1", 6000);
     current = await state(driver);
-    assert.equal(current.loads, 2, "Firefox wedged composer recovery may reload at most once");
+    assert.equal(current.loads, 1, "Firefox recovery must not reload when Send starts disabled");
+    assert.equal(current.stopClicks, 1);
     assert.equal(current.sentText, ".");
     await driver.sleep(450);
-    assert.equal(Number(await driver.executeScript("return sessionStorage.getItem('stall-firefox-loads:reload-resume')")), 2);
+    assert.equal(Number(await driver.executeScript("return sessionStorage.getItem('stall-firefox-loads:disabled-until-input')")), 1);
 
     console.log("Firefox stall-recovery E2E: PASS", JSON.stringify({ addonId, statusCounts: Object.fromEntries(statusCounts) }));
   } finally {

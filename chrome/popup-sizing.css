@@ -1,6 +1,6 @@
-body{width:min(360px,100vw)!important;min-width:0!important;max-width:360px!important;}
+body{width:360px!important;min-width:360px!important;max-width:360px!important;}
 @media (max-width:600px) and (pointer:coarse){
-  body{width:100vw!important;max-width:none!important;}
+  body{width:100vw!important;min-width:280px!important;max-width:100vw!important;}
   .app{padding:12px!important;}
   .row{min-height:52px;}
   button,select,input[type="number"]{min-height:44px;}

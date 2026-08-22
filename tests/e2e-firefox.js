@@ -64,19 +64,29 @@ function conversation(exchanges = 50, assistantFragments = 4) {
 }
 
 function paginatedConversationPages(full) {
-  const entries = Object.entries(full.mapping);
-  // Keep the newest 40 exchanges in the initial page so the normal Recent 64
-  // trimming path is still exercised; the oldest 10 live behind the cursor.
-  const split = Math.min(entries.length, 101);
+  const chain = [];
+  const seen = new Set();
+  let id = full.current_node;
+  while (id && full.mapping[id] && !seen.has(id)) {
+    seen.add(id);
+    const node = full.mapping[id];
+    if (node.message) chain.push({ ...node.message, id });
+    id = node.parent || null;
+  }
+  chain.reverse();
+  // 10 raw records per exchange in this fixture. Keep the newest 40 exchanges
+  // on the initial current ChatGPT page; the oldest 10 live behind `before`.
+  const split = Math.max(0, chain.length - 400);
   return {
     first: {
       id: full.id, conversation_id: full.conversation_id, title: full.title,
-      mapping: Object.fromEntries(entries.slice(split)), current_node: full.current_node,
-      root: full.root, cursor: "older-firefox-page"
+      messages: chain.slice(split), current_node: full.current_node,
+      page_info: { has_previous_page: true, start_cursor: "older-firefox-page" }
     },
     second: {
       id: full.id, conversation_id: full.conversation_id, title: full.title,
-      mapping: Object.fromEntries(entries.slice(0, split)), cursor: null
+      messages: chain.slice(0, split), current_node: chain[split - 1]?.id || null,
+      page_info: { has_previous_page: false, start_cursor: null }
     }
   };
 }
@@ -101,14 +111,28 @@ html,body{margin:0;height:100%;font-family:system-ui,sans-serif}[data-scroll-roo
   function hidden(node){ const m=node&&node.message&&node.message.metadata; return !!(m&&(m.is_visually_hidden_from_conversation===true||m.is_user_system_message===true)); }
   function role(node){ return node&&node.message&&node.message.author&&node.message.author.role; }
   function chain(data){ const r=[],s=new Set(); let id=data.current_node; while(id&&data.mapping[id]&&!s.has(id)){s.add(id);r.push(id);id=data.mapping[id].parent||null;} return r.reverse(); }
-  fetch('/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10').then(r=>r.json()).then(async data=>{
-    window.__receivedCursor=data.cursor??null;
-    window.__nativePaginationRequests=0;
-    while(data.cursor){
-      window.__nativePaginationRequests++;
-      const older=await fetch('/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10&cursor='+encodeURIComponent(data.cursor)).then(r=>r.json());
-      Object.assign(data.mapping,older.mapping||{}); data.cursor=older.cursor??null;
+  function normalizePaginated(raw){
+    if(!raw||!Array.isArray(raw.messages)) return raw;
+    const mapping={}; let parent=null;
+    for(const message of raw.messages){
+      if(!message||!message.id) continue;
+      const id=message.id; mapping[id]={id,message,parent,children:[]};
+      if(parent&&mapping[parent]) mapping[parent].children=[id];
+      parent=id;
     }
+    const current=raw.current_node&&mapping[raw.current_node]?raw.current_node:parent;
+    return {...raw,mapping,current_node:current,root:null};
+  }
+  fetch('/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10').then(r=>r.json()).then(async raw=>{
+    window.__receivedCursor=raw.page_info?.has_previous_page===true?(raw.page_info.start_cursor??null):null;
+    window.__nativePaginationRequests=0;
+    while(raw.page_info?.has_previous_page===true&&raw.page_info.start_cursor){
+      window.__nativePaginationRequests++;
+      const cursor=raw.page_info.start_cursor;
+      const older=await fetch('/backend-api/conversations/e2e-firefox/messages?include_has_versions=true&num_turns=10&before='+encodeURIComponent(cursor)).then(r=>r.json());
+      raw.messages=(older.messages||[]).concat(raw.messages||[]); raw.page_info=older.page_info||{};
+    }
+    const data=normalizePaginated(raw);
     window.__receivedConversation=data;
     window.__receivedMappingNodes=Object.keys(data.mapping).length;
     let visible=0;
@@ -153,19 +177,27 @@ function createServer(tls, fullConversation) {
       res.end(JSON.stringify({ accessToken: "firefox-e2e-token" }));
       return;
     }
-    if (url.pathname === "/backend-api/conversation/e2e-firefox" || url.pathname === "/backend-api/conversations/e2e-firefox") {
-      const auth = req.headers.authorization || "";
-      const cursor = url.searchParams.get("cursor");
-      if (auth) assert.equal(auth, "Bearer firefox-e2e-token");
-      if (!auth) {
-        assert.equal(url.pathname, "/backend-api/conversations/e2e-firefox");
-        assert.equal(url.searchParams.get("include_has_versions"), "true");
-        assert.equal(url.searchParams.get("num_turns"), "10");
-      }
-      if (cursor) assert.equal(cursor, "older-firefox-page");
-      const body = cursor ? pages.second : pages.first;
+    if (url.pathname === "/backend-api/conversation/e2e-firefox") {
+      if (req.headers.authorization) assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "singular endpoint retired" }));
+      return;
+    }
+    if (url.pathname === "/backend-api/conversations/e2e-firefox") {
+      if (req.headers.authorization) assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
+      assert.equal(url.searchParams.get("include_has_versions"), "true");
+      assert.equal(url.searchParams.get("num_turns"), "10");
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(body));
+      res.end(JSON.stringify(pages.first));
+      return;
+    }
+    if (url.pathname === "/backend-api/conversations/e2e-firefox/messages") {
+      assert.equal(req.headers.authorization || "", "Bearer firefox-e2e-token");
+      assert.equal(url.searchParams.get("include_has_versions"), "true");
+      assert.equal(url.searchParams.get("num_turns"), "10");
+      assert.equal(url.searchParams.get("before"), "older-firefox-page");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(pages.second));
       return;
     }
     res.writeHead(404, { "content-type": "text/plain" });
@@ -238,21 +270,22 @@ async function waitForValue(driver, script, timeout = 12000) {
     assert.equal(state.nativePaginationRequests, 0, "Firefox page code must not fetch raw older cursor pages");
 
     const button = await driver.wait(until.elementLocated(By.css("#cg-window-history-host .cg-history-previous")), 10000);
-    await driver.wait(until.elementIsVisible(button), 10000);
-    assert.equal(await button.getText(), "Load previous 36", "only 36 older logical turns remain in this fixture");
+    assert.equal(await button.isDisplayed(), false, "fresh installs should default to Auto window without a manual history button");
 
-    const marker = await driver.findElement(By.css("#cg-window-history-host .cg-history-marker"));
-    assert((await marker.getText()).includes("36 older turns available"));
-    await button.click();
-    await driver.sleep(80);
+    await driver.executeScript(`
+      const root=document.querySelector('[data-scroll-root]');
+      root.scrollTop=root.scrollHeight; root.dispatchEvent(new Event('scroll',{bubbles:true}));
+      root.scrollTop=0; root.dispatchEvent(new Event('scroll',{bubbles:true}));
+    `);
+    await waitForValue(driver, "return document.querySelectorAll('#cg-window-history-host .cg-history-page').length > 0");
 
     const loaded = await driver.executeScript(`return {
-      marker: document.querySelector('#cg-window-history-host .cg-history-marker').textContent,
       pages: document.querySelectorAll('#cg-window-history-host .cg-history-page').length,
+      turns: document.querySelectorAll('#cg-window-history-host .cg-history-turn').length,
       nativeSyntheticAttrs: document.querySelectorAll('#cg-window-history-host [data-message-author-role], #cg-window-history-host [data-turn-id]').length
     }`);
-    assert(loaded.marker.includes("36 older turns loaded"));
     assert(loaded.pages >= 1 && loaded.pages <= 3);
+    assert(loaded.turns > 0, "Auto window must render older archived turns after reaching the top");
     assert.equal(loaded.nativeSyntheticAttrs, 0);
 
     console.log("Firefox extension E2E: PASS", JSON.stringify({ addonId, ...state, ...loaded }));

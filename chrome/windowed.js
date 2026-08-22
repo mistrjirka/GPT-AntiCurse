@@ -9,7 +9,7 @@
   const RUNTIME_BROWSER = /Firefox\//.test(String(navigator.userAgent || "")) ? "firefox" : "chromium";
   const NETWORK_ARCHIVE_EVENT = "__gpt_anticurse_archive_ready__";
   const STATS_EVENT = "__gpt_anticurse_stats_ready__";
-  const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
+  const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "windowed-visible", maxDisplayMessages: 64 });
   const TOP_EPSILON = 16;
   const HISTORY_WATCHDOG_MS = 2000;
   const HISTORY_RETRY_BASE_MS = 1000;

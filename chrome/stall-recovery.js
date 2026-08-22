@@ -10,7 +10,7 @@
     stallRecoveryToolTimeoutSeconds: 300,
     stallRecoveryGraceSeconds: 10
   });
-  const RESUME_KEY = "__gpt_anticurse_stall_resume_v1__";
+  const STALL_STATUS_EVENT = "__gpt_anticurse_stall_status__";
   const TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
   const TURN_CONTAINER_SELECTOR = '[data-turn-id-container]';
   const STREAMING_SELECTOR = '[data-streaming-response-status]';
@@ -34,6 +34,8 @@
   let visibilityListenerInstalled = false;
   let discoveryObserver = null;
   let discoveryTimer = null;
+  let countdownUiTimer = null;
+  let recoveryPhase = null;
 
   function clampSeconds(value, fallback, min, max) {
     const number = Number(value);
@@ -51,6 +53,56 @@
   function clearTimer() {
     if (stallTimer !== null) clearTimeout(stallTimer);
     stallTimer = null;
+  }
+
+  function clearCountdownUiTimer() {
+    if (countdownUiTimer !== null) clearTimeout(countdownUiTimer);
+    countdownUiTimer = null;
+  }
+
+  function recoveryRemainingMs() {
+    if (!activeTurn || !stopButton()) return null;
+    if (hasLongWaitBanner(activeTurn)) return 0;
+    return Math.max(0, thresholdMs() - (Date.now() - lastActivityAt));
+  }
+
+  function publishRecoveryStatus() {
+    clearCountdownUiTimer();
+    const id = conversationId();
+    const active = settings.stallRecoveryEnabled && !!activeTurn && !!stopButton();
+    if (!active) {
+      recoveryPhase = null;
+      window.dispatchEvent(new CustomEvent(STALL_STATUS_EVENT, { detail: { active: false, conversationId: id } }));
+      return;
+    }
+
+    const longWaitBanner = hasLongWaitBanner(activeTurn);
+    const tool = runningTool(activeTurn);
+    const draftBlocked = hasUserDraft();
+    const hidden = document.visibilityState !== "visible";
+    const remainingMs = recoveryRemainingMs();
+    const phase = recoveryPhase ||
+      (hidden ? "paused-hidden" : draftBlocked ? "paused-draft" : longWaitBanner ? "checking" : "countdown");
+
+    window.dispatchEvent(new CustomEvent(STALL_STATUS_EVENT, { detail: {
+      active: true,
+      conversationId: id,
+      phase,
+      remainingMs,
+      tool,
+      longWaitBanner,
+      draftBlocked,
+      hidden
+    } }));
+
+    // Recovery itself stays deadline/event-driven. This timer only refreshes the
+    // visible countdown while a streaming turn exists.
+    if (!recoveryPhase && !longWaitBanner) countdownUiTimer = setTimeout(publishRecoveryStatus, 1000);
+  }
+
+  function setRecoveryPhase(phase) {
+    recoveryPhase = phase || null;
+    publishRecoveryStatus();
   }
 
   function conversationId() {
@@ -129,17 +181,19 @@
 
   function scheduleStallCheck(delayOverride) {
     clearTimer();
-    if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) return;
+    if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) { publishRecoveryStatus(); return; }
     const elapsed = Date.now() - lastActivityAt;
     const delay = delayOverride == null
       ? (hasLongWaitBanner(activeTurn) ? 0 : Math.max(0, thresholdMs() - elapsed))
       : Math.max(0, delayOverride);
     stallTimer = setTimeout(checkForStall, delay);
+    publishRecoveryStatus();
   }
 
   function markActivity() {
     lastActivityAt = Date.now();
     recoveryGeneration++;
+    recoveryPhase = null;
     scheduleStallCheck();
   }
 
@@ -151,7 +205,8 @@
     activeTurnKey = turnKey(activeTurn);
     clearTimer();
     recoveryGeneration++;
-    if (!activeTurn) return;
+    recoveryPhase = null;
+    if (!activeTurn) { publishRecoveryStatus(); return; }
 
     lastActivityAt = Date.now();
     activityObserver = new MutationObserver((records) => {
@@ -316,25 +371,6 @@
     });
   }
 
-  function setResumeMarker(id) {
-    try {
-      sessionStorage.setItem(RESUME_KEY, JSON.stringify({ id, action: "send-dot", expiresAt: Date.now() + 90_000 }));
-      return true;
-    } catch { return false; }
-  }
-
-  function takeResumeMarker() {
-    try {
-      const raw = sessionStorage.getItem(RESUME_KEY);
-      sessionStorage.removeItem(RESUME_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw);
-      if (!parsed || parsed.action !== "send-dot" || parsed.id !== conversationId()) return null;
-      if (!Number.isFinite(parsed.expiresAt) || parsed.expiresAt < Date.now()) return null;
-      return parsed;
-    } catch { return null; }
-  }
-
   function replaceComposerWithNudge(node) {
     if (!node || !node.isConnected || (node.textContent || "").trim()) return false;
     node.focus({ preventScroll: true });
@@ -349,14 +385,23 @@
 
   async function sendNudge() {
     if (hasUserDraft()) return false;
-    let submit = document.querySelector(SUBMIT_SELECTOR);
-    if (!submit || submit.disabled || submit.getAttribute("aria-disabled") === "true") return false;
-    if (!replaceComposerWithNudge(composer())) return false;
+    const input = composer();
+    if (!replaceComposerWithNudge(input)) return false;
     await new Promise((resolve) => requestAnimationFrame(resolve));
     // The user can type during this frame. Never send if the composer changed
     // from AntiCurse's exact fixed nudge or gained an attachment.
     if (!composerContainsOnlyNudge()) return false;
-    submit = document.querySelector(SUBMIT_SELECTOR);
+
+    // ChatGPT can keep Send disabled while the composer is empty and enable or
+    // replace it only after the input event. Insert the nudge first, then wait.
+    const submitReady = await waitForCondition(() => {
+      if (!composerContainsOnlyNudge()) return false;
+      const candidate = document.querySelector(SUBMIT_SELECTOR);
+      return !!candidate && !candidate.disabled && candidate.getAttribute("aria-disabled") !== "true";
+    }, input.closest("form") || document.documentElement, 3_000);
+    if (!submitReady || !composerContainsOnlyNudge()) return false;
+
+    const submit = document.querySelector(SUBMIT_SELECTOR);
     if (!submit || submit.disabled || submit.getAttribute("aria-disabled") === "true") return false;
     submit.click();
     return waitForCondition(
@@ -372,21 +417,17 @@
     if (hasUserDraft()) { scheduleStallCheck(30_000); return; }
     const stop = stopButton();
     if (!stop) return;
+    setRecoveryPhase("recovering");
     attemptedTurns.add(identity);
     if (attemptedTurns.size > 256) attemptedTurns.delete(attemptedTurns.values().next().value);
     attemptedTurnKey = key;
     stop.click();
     const stopped = await waitForCondition(() => !stopButton(), document.documentElement, 10_000);
-    if (!stopped || hasUserDraft()) return;
-    if (await sendNudge()) return;
-    // A stopped run can leave an empty composer whose submit control is still
-    // absent/disabled. Reload only in that clearly wedged, still-empty state.
-    // If sendNudge inserted anything or the user typed meanwhile, do nothing.
-    const input = composer();
-    const submit = document.querySelector(SUBMIT_SELECTOR);
-    const submitUsable = !!submit && !submit.disabled && submit.getAttribute("aria-disabled") !== "true";
-    if (!input || !input.isConnected || stopButton() || draftText() || hasAttachmentDraft() || submitUsable) return;
-    if (setResumeMarker(id)) location.reload();
+    if (!stopped || hasUserDraft()) { setRecoveryPhase(null); return; }
+    if (await sendNudge()) { setRecoveryPhase(null); return; }
+    // Never reload the chat as a recovery fallback. If ChatGPT does not expose
+    // a usable Send control after Stop, leave the page in place and fail safely.
+    setRecoveryPhase(null);
   }
 
   async function checkForStall() {
@@ -407,38 +448,34 @@
     const id = conversationId();
     const key = activeTurnKey;
     const generation = recoveryGeneration;
-    if (!longWaitBanner && await streamStatus(id) !== "IS_STREAMING") return;
-    if (generation !== recoveryGeneration || key !== activeTurnKey) return;
+    setRecoveryPhase("checking");
+    if (!longWaitBanner && await streamStatus(id) !== "IS_STREAMING") { setRecoveryPhase(null); return; }
+    if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
 
     if (!longWaitBanner) {
       const graceMs = settings.stallRecoveryGraceSeconds * 1000;
-      if (graceMs > 0) await new Promise((resolve) => setTimeout(resolve, graceMs));
-      if (generation !== recoveryGeneration || key !== activeTurnKey) return;
-      if (Date.now() - lastActivityAt < threshold || hasUserDraft() || !stopButton()) return;
+      if (graceMs > 0) {
+        setRecoveryPhase("grace");
+        await new Promise((resolve) => setTimeout(resolve, graceMs));
+      }
+      if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
+      if (Date.now() - lastActivityAt < threshold || hasUserDraft() || !stopButton()) { setRecoveryPhase(null); return; }
       // The ordinary heuristic always requires a second exact backend
       // confirmation immediately before intervention.
-      if (await streamStatus(id) !== "IS_STREAMING") return;
-      if (generation !== recoveryGeneration || key !== activeTurnKey) return;
+      setRecoveryPhase("checking");
+      if (await streamStatus(id) !== "IS_STREAMING") { setRecoveryPhase(null); return; }
+      if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
     } else if (!hasLongWaitBanner(activeTurn) || hasUserDraft() || !stopButton()) {
+      setRecoveryPhase(null);
       return;
     }
 
     await recoverStall(id, key, generation);
   }
 
-  async function resumeAfterReload(marker) {
-    if (!marker || !settings.stallRecoveryEnabled) return;
-    const ready = await waitForCondition(
-      () => !!composer() && !!document.querySelector(SUBMIT_SELECTOR) && !stopButton(),
-      document.documentElement,
-      20_000
-    );
-    if (!ready || hasUserDraft()) return;
-    await sendNudge();
-  }
-
   function teardown() {
     clearTimer();
+    clearCountdownUiTimer();
     clearDiscovery();
     removeVisibilityWakeup();
     disconnectShellObservers();
@@ -449,6 +486,8 @@
     activeTurn = null;
     activeTurnKey = null;
     turnList = null;
+    recoveryPhase = null;
+    publishRecoveryStatus();
   }
 
   async function start() {
@@ -463,12 +502,10 @@
       if (!Object.keys(next).length) return;
       applySettings(next);
       if (!settings.stallRecoveryEnabled) teardown();
-      else scheduleDiscovery();
+      else { scheduleDiscovery(); publishRecoveryStatus(); }
     });
 
-    const resume = takeResumeMarker();
     if (settings.stallRecoveryEnabled) scheduleDiscovery();
-    if (resume) resumeAfterReload(resume);
   }
 
   globalThis.CGAntiCurseStallRecovery = {
@@ -480,6 +517,8 @@
         activeTurnKey,
         runningTool: runningTool(),
         longWaitBanner: hasLongWaitBanner(),
+        recoveryPhase,
+        countdownRemainingMs: recoveryRemainingMs(),
         lastActivityAt,
         attemptedTurnKey,
         attemptedTurnCount: attemptedTurns.size,

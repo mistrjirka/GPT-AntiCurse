@@ -54,9 +54,7 @@ For most people, the defaults are a good starting point.
 1. Open a long conversation on `chatgpt.com`.
 2. Click the AntiCurse toolbar icon or open it from Firefox Android's **Add-ons** menu.
 3. Leave **Performance guard** on.
-4. Choose how older history should load:
-   - **Recent N + button** keeps the latest window in ChatGPT and shows **Load previous** above it.
-   - **Auto window** loads another older page when you reach the top.
+4. **Auto window** is the default: it loads another older page when you reach the top. You can switch to **Recent N + button** if you prefer an explicit **Load previous** control.
 5. Set **Window size** if you want more or less recent context kept in ChatGPT's normal thread.
 6. Leave **Auto-recover stalled runs** on if you want AntiCurse to conservatively recover a run that remains backend-streaming but makes no visible progress for about 2 minutes (5 minutes for an active tool).
 7. Press **Save & reload** after changing the main settings.
@@ -95,9 +93,9 @@ Older-history loading remains available during the current page session without 
 
 ## Stalled-run recovery
 
-When **Auto-recover stalled runs** is enabled, AntiCurse watches only the currently streaming turn for meaningful progress. It does not poll continuously. After roughly 2 minutes without progress (5 minutes while a tool is visibly active), it checks ChatGPT's `stream_status` twice with a 10-second grace period. Recovery proceeds only while the tab is visible, the backend still reports exactly `IS_STREAMING`, the real Stop button is present, and the composer has no text or attachment.
+When **Auto-recover stalled runs** is enabled, AntiCurse watches only the currently streaming turn for meaningful progress. After roughly 2 minutes without progress (5 minutes while a tool is visibly active), it checks ChatGPT's `stream_status` twice with a 10-second grace period. Recovery proceeds only while the tab is visible, the backend still reports exactly `IS_STREAMING`, the real Stop button is present, and the composer has no text or attachment. The bottom-right status pill shows the remaining recovery countdown and the current recovery phase.
 
-A recovery clicks Stop, waits for the run to stop, sends a fixed `.` continuation nudge, and verifies streaming resumes. It attempts each turn at most once and never overwrites a draft. If the composer remains wedged after Stop, it can reload the page once using a short-lived session marker and resumes only if the composer is then empty and usable.
+A recovery clicks Stop, waits for the run to stop, inserts a fixed `.` continuation nudge, waits for ChatGPT to enable the Send control, and submits it. It attempts each turn at most once and never overwrites a draft. AntiCurse does **not** reload the page as a recovery fallback.
 
 ## Privacy
 

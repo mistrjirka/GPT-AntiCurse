@@ -27,8 +27,9 @@ for (const permission of ["webRequest", "webRequestBlocking", "webRequestFilterR
   assert((manifest.permissions || []).includes(permission), `Firefox Android response filtering still requires ${permission}`);
 }
 
-assert(popupSizing.includes("width:min(360px,100vw)"), "popup width must not overflow a narrow Android viewport");
-assert(popupSizing.includes("min-width:0"), "popup must not force a 360px minimum width on Android");
+assert(popupSizing.includes("body{width:360px!important;min-width:360px!important;max-width:360px!important;}"), "desktop Firefox popup must expose a nonzero intrinsic width");
+assert(!popupSizing.includes("min-width:0"), "popup sizing must never collapse to zero width");
+assert(popupSizing.includes("body{width:100vw!important;min-width:280px!important;max-width:100vw!important;}"), "Android popup should stay viewport-responsive with a nonzero width floor");
 assert(popupSizing.includes("pointer:coarse"), "mobile popup overrides should stay scoped to touch-style narrow viewports");
 assert(popupSizing.includes("min-height:44px"), "mobile popup controls should expose touch-sized targets");
 

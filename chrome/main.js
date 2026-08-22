@@ -18,7 +18,7 @@
   const SETTINGS_WAIT_MS = 2500;
   const HYDRATION_WAIT_MS = 8000;
   const VALID_MODES = new Set(["recent", "windowed-visible"]);
-  const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
+  const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "windowed-visible", maxDisplayMessages: 64 });
   const PAGINATION = globalThis.CGPaginationFirewall;
   const ENDPOINT = globalThis.CGConversationEndpoint;
 
@@ -37,6 +37,165 @@
 
   function errorText(error) {
     return String(error && error.message ? error.message : error || "Unknown error");
+  }
+
+
+  function paginatedConversationEnvelope(data) {
+    return !!data &&
+      typeof data === "object" &&
+      !Array.isArray(data) &&
+      Array.isArray(data.messages) &&
+      !!data.page_info &&
+      typeof data.page_info === "object" &&
+      !Array.isArray(data.page_info);
+  }
+
+  function paginatedCursor(data) {
+    if (!paginatedConversationEnvelope(data) || data.page_info.has_previous_page !== true) return null;
+    const cursor = typeof data.page_info.start_cursor === "string" ? data.page_info.start_cursor.trim() : "";
+    return cursor || null;
+  }
+
+  function messageRole(message) {
+    return message && message.author ? message.author.role : undefined;
+  }
+
+  function messageHidden(message) {
+    const metadata = message && message.metadata;
+    return !!(metadata && (
+      metadata.is_visually_hidden_from_conversation === true ||
+      metadata.is_user_system_message === true
+    ));
+  }
+
+  function messageToolTargeted(message) {
+    if (messageRole(message) !== "assistant") return false;
+    const recipient = String(message && message.recipient || "").trim().toLowerCase();
+    return !!recipient && recipient !== "all" && recipient !== "assistant";
+  }
+
+  function messageText(message) {
+    const content = message && message.content;
+    if (!content) return "";
+    if (typeof content === "string") return content;
+    if (typeof content.text === "string") return content.text;
+    if (!Array.isArray(content.parts)) return "";
+    const parts = [];
+    for (const part of content.parts) {
+      if (typeof part === "string") parts.push(part);
+      else if (part && typeof part === "object") {
+        if (typeof part.text === "string") parts.push(part.text);
+        else if (typeof part.content === "string") parts.push(part.content);
+        else if (part.asset_pointer || part.image_url || part.content_type === "image_asset_pointer") parts.push("[Image / attachment]");
+        else if (part.content_type) parts.push(`[${part.content_type}]`);
+      }
+    }
+    return parts.join("\n").trim();
+  }
+
+  function paginatedVisibleHistory(data) {
+    if (!paginatedConversationEnvelope(data)) return [];
+    const messages = [];
+    for (let index = 0; index < data.messages.length; index++) {
+      const message = data.messages[index];
+      const role = messageRole(message);
+      if ((role !== "user" && role !== "assistant") || messageHidden(message) || messageToolTargeted(message)) continue;
+      messages.push({
+        id: message && message.id ? message.id : `paginated-message-${index}`,
+        role,
+        text: messageText(message),
+        createTime: message && message.create_time ? message.create_time : null
+      });
+    }
+    return messages;
+  }
+
+  function paginatedGraph(data, conversationId) {
+    const mapping = Object.create(null);
+    const orderedIds = [];
+    for (const message of data.messages || []) {
+      const id = String(message && message.id || "").trim();
+      if (!id || mapping[id]) continue;
+      orderedIds.push(id);
+      mapping[id] = { id, message, parent: null, children: [] };
+    }
+    for (let index = 0; index < orderedIds.length; index++) {
+      const id = orderedIds[index];
+      mapping[id].parent = index > 0 ? orderedIds[index - 1] : null;
+      mapping[id].children = index + 1 < orderedIds.length ? [orderedIds[index + 1]] : [];
+    }
+    const requestedCurrent = String(data.current_node || "").trim();
+    const currentNode = requestedCurrent && mapping[requestedCurrent]
+      ? requestedCurrent
+      : orderedIds[orderedIds.length - 1] || null;
+    return {
+      ...data,
+      id: data.id || data.conversation_id || conversationId,
+      conversation_id: data.conversation_id || data.id || conversationId,
+      mapping,
+      current_node: currentNode
+    };
+  }
+
+  function activeMessagesFromGraph(data) {
+    const mapping = data && data.mapping;
+    let id = data && data.current_node;
+    if (!mapping || !id || !mapping[id]) return [];
+    const reversed = [];
+    const seen = new Set();
+    while (id && mapping[id] && !seen.has(id)) {
+      seen.add(id);
+      const node = mapping[id];
+      if (node.message) reversed.push(node.message);
+      id = node.parent || null;
+    }
+    reversed.reverse();
+    return reversed;
+  }
+
+  function transformPaginatedConversation(data, conversationId, mode, limit) {
+    const pageInfo = data.page_info || {};
+    const hadOlderPages = pageInfo.has_previous_page === true || !!paginatedCursor(data);
+    const graph = paginatedGraph(data, conversationId);
+    const trimmed = graph.current_node
+      ? CGTrim.trimConversation(graph, { mode, maxDisplayMessages: limit })
+      : { changed: false, data: graph, reason: "below-limit", stats: {} };
+    const keptMessages = activeMessagesFromGraph(trimmed.data);
+    const rawMessagesChanged = keptMessages.length !== data.messages.length || !!trimmed.changed;
+    const changed = hadOlderPages || rawMessagesChanged;
+    const transformedData = changed
+      ? {
+          ...data,
+          messages: keptMessages,
+          current_node: trimmed.data.current_node || data.current_node,
+          page_info: { ...pageInfo, has_previous_page: false, start_cursor: null }
+        }
+      : data;
+    const renderedBefore = paginatedVisibleHistory(data).length;
+    const renderedAfter = paginatedVisibleHistory({ ...data, messages: keptMessages }).length;
+    return {
+      changed,
+      data: transformedData,
+      reason: changed ? "trimmed" : "below-limit",
+      stats: {
+        ...(trimmed.stats || {}),
+        trimMode: mode,
+        mappingNodesBefore: Math.max(0, Number(trimmed.stats?.mappingNodesBefore) || data.messages.length),
+        mappingNodesAfter: Math.max(0, Number(trimmed.stats?.mappingNodesAfter) || keptMessages.length),
+        discardedNodes: Math.max(0, data.messages.length - keptMessages.length),
+        displayBefore: renderedBefore,
+        displayAfter: renderedAfter,
+        logicalDisplayAfter: Number.isFinite(Number(trimmed.stats?.logicalDisplayAfter))
+          ? Number(trimmed.stats.logicalDisplayAfter)
+          : renderedAfter,
+        currentNodePreserved: (trimmed.data.current_node || data.current_node) === data.current_node,
+        paginationFirewall: true,
+        paginationCursorSuppressed: hadOlderPages,
+        paginatedConversationEnvelope: true,
+        paginatedMessages: data.messages.length,
+        paginatedMessagesAfter: keptMessages.length
+      }
+    };
   }
 
   function responseMeta(response) {
@@ -58,7 +217,9 @@
     const mappingObject = mapping !== null && typeof mapping === "object" && !Array.isArray(mapping);
     const currentNode = record ? record.current_node : null;
     const keys = record ? Object.keys(record).slice(0, 24) : [];
-    const supported = !!(mappingObject && currentNode && mapping[currentNode]);
+    const mappingSupported = !!(mappingObject && currentNode && mapping[currentNode]);
+    const paginatedSupported = paginatedConversationEnvelope(record);
+    const supported = mappingSupported || paginatedSupported;
     return {
       shapeSupported: supported,
       shapeDataType: data === null ? "null" : isArray ? "array" : typeof data,
@@ -69,7 +230,9 @@
       shapeMappingNodeCount: mappingObject ? Object.keys(mapping).length : null,
       shapeHasCurrentNode: !!(record && Object.prototype.hasOwnProperty.call(record, "current_node")),
       shapeCurrentNodeType: currentNode === null ? "null" : typeof currentNode,
-      shapeCurrentNodePresent: supported
+      shapeCurrentNodePresent: mappingSupported,
+      shapePaginatedMessages: paginatedSupported,
+      shapeMessageCount: paginatedSupported ? record.messages.length : null
     };
   }
 
@@ -106,20 +269,24 @@
       data?.id || data?.conversation_id || conversationIdFromEndpoint(endpointUrl) || ""
     ).trim();
     if (!id) return null;
-    const messages = globalThis.CGTrim.extractVisibleHistory(data).map((message, index) => ({
+    const paginated = paginatedConversationEnvelope(data);
+    const messages = (paginated ? paginatedVisibleHistory(data) : globalThis.CGTrim.extractVisibleHistory(data)).map((message, index) => ({
       id: message.id || `message-${index}`,
       role: message.role,
       text: typeof message.text === "string" ? message.text : String(message.text || ""),
       createTime: message.createTime == null ? null : message.createTime
     }));
+    const cursor = paginated
+      ? paginatedCursor(data)
+      : (typeof data?.cursor === "string" && data.cursor.trim() ? data.cursor.trim() : null);
     return {
       schemaVersion: 1,
       id,
       title: typeof data?.title === "string" && data.title.trim() ? data.title.trim() : "ChatGPT conversation",
       sourceUrl: `${location.origin}/c/${encodeURIComponent(id)}`,
       updatedAt: new Date().toISOString(),
-      complete: !(typeof data?.cursor === "string" && data.cursor.trim()),
-      paginationCursor: typeof data?.cursor === "string" && data.cursor.trim() ? data.cursor.trim() : null,
+      complete: !cursor,
+      paginationCursor: cursor,
       messages
     };
   }
@@ -302,6 +469,17 @@
   function transformConversation(data, originalBytes, trace) {
     const started = performance.now();
     const cursorRequest = !!trace.paginationRequest;
+
+    if (paginatedConversationEnvelope(data)) {
+      const transformed = transformPaginatedConversation(
+        data,
+        trace.conversationId || conversationIdFromEndpoint(trace.endpointUrl || ""),
+        resolveMode(settings.mode),
+        normalizeMessageLimit(settings.maxDisplayMessages)
+      );
+      publishTransformStats(transformed, originalBytes, started, trace);
+      return transformed.changed ? transformed.data : data;
+    }
 
     if (cursorRequest && PAGINATION && typeof PAGINATION.apply === "function") {
       const blocked = PAGINATION.apply(data, { cursorRequest: true });

@@ -3,6 +3,7 @@
 const DOM_GATE = globalThis.CGAntiCurseDomReady;
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const STATS_EVENT = "__gpt_anticurse_stats_ready__";
+const STALL_STATUS_EVENT = "__gpt_anticurse_stall_status__";
 const STATUS_BADGE_ID = "cg-conversation-guard-status";
 const STATUS_BADGE_SELECTOR = `[id="${STATUS_BADGE_ID}"]`;
 const conversationScope = globalThis.CGConversationScope.create();
@@ -11,6 +12,7 @@ let badgeObserver;
 let hideTimer;
 let lastStats = null;
 let lastIssue = null;
+let stallStatus = null;
 let showGuardNotice = true;
 let performanceEnabled = true;
 let renderQueuedForDomReady = false;
@@ -142,6 +144,35 @@ function issueIsRecent(issue) {
   return Number.isFinite(at) && Date.now() - at < 10 * 60 * 1000;
 }
 
+function activeStallStatus() {
+  if (!stallStatus || stallStatus.active !== true) return null;
+  return belongsToCurrentConversation(stallStatus.conversationId) ? stallStatus : null;
+}
+
+function formatRecoveryCountdown(value) {
+  const seconds = Math.max(0, Math.ceil((Number(value) || 0) / 1000));
+  if (seconds >= 60) return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  return `${seconds}s`;
+}
+
+function recoveryStatusText(status) {
+  if (!status) return "";
+  if (status.phase === "paused-hidden") return "auto-continue paused · tab hidden";
+  if (status.phase === "paused-draft") return "auto-continue paused · draft present";
+  if (status.phase === "checking") return "auto-continue checking…";
+  if (status.phase === "grace") return "auto-continue confirming…";
+  if (status.phase === "recovering") return "auto-continue resuming…";
+  if (status.longWaitBanner) return "auto-continue now";
+  return `${status.tool ? "tool " : ""}auto-continue in ${formatRecoveryCountdown(status.remainingMs)}`;
+}
+
+function appendRecoveryStatus(element) {
+  const status = activeStallStatus();
+  if (!element || !status) return false;
+  element.append(span("cg-sep", "•"), span("cg-recovery", recoveryStatusText(status)));
+  return true;
+}
+
 function renderIssueIfNeeded() {
   if (!showGuardNotice || !lastIssue || !issueIsRecent(lastIssue) || !issueBelongsToCurrentConversation(lastIssue)) return false;
   if (!["history", "archive", "interceptor", "settings"].includes(lastIssue.scope)) return false;
@@ -150,6 +181,7 @@ function renderIssueIfNeeded() {
   el.classList.remove("cg-compact");
   el.textContent = "AntiCurse issue — open extension details";
   el.title = `${lastIssue.scope}/${lastIssue.code}\n${lastIssue.message}`;
+  appendRecoveryStatus(el);
   return true;
 }
 
@@ -179,7 +211,17 @@ function render(stats) {
     return;
   }
   if (renderIssueIfNeeded()) return;
-  if (!lastStats) return;
+  if (!lastStats) {
+    const status = activeStallStatus();
+    if (!status) { removeBadge(); return; }
+    const el = ensureBadge();
+    el.dataset.mode = "waiting";
+    el.classList.remove("cg-compact");
+    renderSimpleBadge(el, "watching response");
+    appendRecoveryStatus(el);
+    el.title = "Automatic stalled-run recovery countdown";
+    return;
+  }
 
   const el = ensureBadge();
   el.dataset.mode = lastStats.mode || "unknown";
@@ -206,6 +248,7 @@ function render(stats) {
     hideTimer = setTimeout(() => {
       if (el && el.dataset.mode === "trimmed" && showGuardNotice && !renderIssueIfNeeded()) {
         renderTrimmedBadge(el, metric, recent, true);
+        appendRecoveryStatus(el);
         el.classList.add("cg-compact");
       }
     }, 9000);
@@ -217,6 +260,7 @@ function render(stats) {
   } else {
     renderSimpleBadge(el, `not optimized${lastStats.reason ? ` · ${lastStats.reason}` : ""}`);
   }
+  appendRecoveryStatus(el);
 }
 
 function acceptStats(stats) {
@@ -268,6 +312,13 @@ browser.storage.onChanged.addListener((changes, area) => {
   if (issueChanged) lastIssue = changes.cgLastIssue.newValue || null;
   if (showGuardNotice) render(lastStats);
   else removeBadge(true);
+});
+
+window.addEventListener(STALL_STATUS_EVENT, (event) => {
+  const detail = event && event.detail;
+  if (detail && detail.active === true && !belongsToCurrentConversation(detail.conversationId)) return;
+  stallStatus = detail && detail.active === true ? { ...detail } : null;
+  render(lastStats);
 });
 
 browser.runtime.onMessage.addListener((message) => {
