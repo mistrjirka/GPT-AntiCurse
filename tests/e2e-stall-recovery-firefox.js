@@ -40,8 +40,13 @@ function fixtureHtml() {
     section.setAttribute('data-message-model-slug', 'gpt-5-6-thinking');
     const streaming = document.createElement('div');
     streaming.setAttribute('data-streaming-response-status', 'streaming');
-    streaming.textContent = 'assistant output ' + index;
-    if (tool) {
+    if (id !== 'pre-output-loading') {
+      const output = document.createElement('div');
+      output.setAttribute('data-message-author-role', 'assistant');
+      output.textContent = 'assistant output ' + index;
+      section.append(output);
+    }
+    if (tool || id === 'pre-output-loading') {
       const row = document.createElement('div');
       const icon = document.createElement('span');
       icon.setAttribute('data-testid', 'cot-v5-tool-icon-pile');
@@ -110,6 +115,14 @@ function fixtureHtml() {
     const span = document.createElement('span');
     span.textContent = ' progress-' + (++window.__state.bumps);
     active.streaming.append(span);
+    return true;
+  };
+  window.__revealAssistantOutput = () => {
+    if (!active || active.wrapper.querySelector('[data-message-author-role="assistant"]')) return false;
+    const output = document.createElement('div');
+    output.setAttribute('data-message-author-role', 'assistant');
+    output.textContent = 'first actual assistant output';
+    active.wrapper.querySelector('section').append(output);
     return true;
   };
 })();
@@ -251,6 +264,16 @@ async function openCase(driver, id) {
     await driver.sleep(330);
     assert.equal((await state(driver)).sends, 0, "Firefox active tool must use the longer timeout");
     assert.equal(statusCounts.get("tool-timeout") || 0, 0);
+    await waitFor(driver, "return window.__state.sends === 1", 4000);
+
+    await openCase(driver, "pre-output-loading");
+    await waitFor(driver, "return (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('response loading · recovery not armed')", 1500);
+    await driver.sleep(800);
+    current = await state(driver);
+    assert.equal(current.stopClicks, 0, "Firefox must not auto-stop while the response is still in pre-output loading/progress state");
+    assert.equal(current.sends, 0);
+    assert.equal(statusCounts.get("pre-output-loading") || 0, 0, "pre-output loading must not even query stream_status on the ordinary timeout path");
+    assert.equal(await driver.executeScript("return window.__revealAssistantOutput()"), true);
     await waitFor(driver, "return window.__state.sends === 1", 4000);
 
     await openCase(driver, "disabled-until-input");

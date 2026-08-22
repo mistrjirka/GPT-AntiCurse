@@ -15,7 +15,8 @@
 
   function keyFor(details) {
     if (!details || !Number.isInteger(details.tabId) || details.tabId < 0) return null;
-    const id = ENDPOINT.conversationId(details.url);
+    const id = ENDPOINT.conversationId(details.url) ||
+      (typeof ENDPOINT.messagesPageConversationId === "function" ? ENDPOINT.messagesPageConversationId(details.url) : null);
     return id ? `${details.tabId}:${id}` : null;
   }
 

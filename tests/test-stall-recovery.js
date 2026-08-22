@@ -43,10 +43,14 @@ assert(chromeSource.includes('discoveryObserver.observe(root, { childList: true,
 assert(chromeSource.includes("discoveryTimer = setTimeout(clearDiscovery, 10_000)"), "broad discovery must self-expire");
 assert(chromeSource.includes("__gpt_anticurse_stall_status__"), "watchdog must publish live recovery state");
 assert(chromeSource.includes("countdownRemainingMs"), "watchdog debug state must expose the live countdown");
+assert(chromeSource.includes("function preOutputLoading"), "pre-output streaming/loading must be a distinct non-armed state");
+assert(chromeSource.includes("if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }"), "ordinary stall timer must not arm before assistant output exists");
+assert(chromeSource.includes("assistantOutputPresent"), "debug state must expose whether actual assistant output has begun");
 for (const [browser, content] of [["chrome", chromeContent], ["firefox", firefoxContent]]) {
   assert(content.includes("__gpt_anticurse_stall_status__"), `${browser}: on-page status must listen for recovery countdowns`);
   assert(content.includes("auto-continue in"), `${browser}: bottom-right status must render the countdown`);
   assert(content.includes("auto-continue resuming"), `${browser}: status must show active recovery phase`);
+  assert(content.includes("response loading · recovery not armed"), `${browser}: pre-output loading must not display a retry countdown`);
 }
 
 for (const [browser, manifest, popup] of [["chrome", chromeManifest, chromePopup], ["firefox", firefoxManifest, firefoxPopup]]) {

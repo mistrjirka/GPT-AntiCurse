@@ -22,6 +22,10 @@ let result = accumulator.observe({
 assert.equal(result.accepted, true);
 assert.equal(result.complete, false);
 assert.equal(result.continueNativePagination, false, "initial page exposes its own cursor; no synthetic continuation is needed yet");
+assert(result.history, "initial newest page must immediately publish a partial local archive");
+assert.equal(result.history.complete, false);
+assert.equal(result.history.olderPagesPending, true);
+assert.deepEqual(result.history.messages.map((entry) => entry.id), ["u3", "a3"]);
 assert.equal(accumulator.debug().activeCount, 1);
 
 result = accumulator.observe({
@@ -35,6 +39,8 @@ result = accumulator.observe({
 assert.equal(result.accepted, true);
 assert.equal(result.complete, false);
 assert.equal(result.continueNativePagination, true, "an older page that advertises another cursor must allow the native client to fetch it once");
+assert(result.history, "each newly captured native page must refresh the partial archive");
+assert.deepEqual(result.history.messages.map((entry) => entry.id), ["u2", "a2", "u3", "a3"]);
 
 result = accumulator.observe({
   tabId: 19,

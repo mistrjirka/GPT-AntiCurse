@@ -155,6 +155,7 @@ function formatRecoveryCountdown(value) {
 
 function recoveryStatusText(status) {
   if (!status) return "";
+  if (status.phase === "loading") return "response loading · recovery not armed";
   if (status.phase === "paused-hidden") return "auto-continue paused · tab hidden";
   if (status.phase === "paused-draft") return "auto-continue paused · draft present";
   if (status.phase === "checking") return "auto-continue checking…";

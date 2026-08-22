@@ -517,9 +517,11 @@
 
   async function performHistoryRequest(token) {
     try {
-      const authoritative = await authoritativeHistory(token);
-      if (!scope.isCurrent(token)) return false;
-      if (authoritative) return applyHistory(authoritative, token);
+      if (!IS_FIREFOX) {
+        const authoritative = await authoritativeHistory(token);
+        if (!scope.isCurrent(token)) return false;
+        if (authoritative) return applyHistory(authoritative, token);
+      }
 
       const value = await ext.runtime.sendMessage({
         type: "cg-get-window-history",

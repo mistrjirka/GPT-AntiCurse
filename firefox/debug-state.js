@@ -111,6 +111,11 @@
         syntheticTurns: host ? host.querySelectorAll(".cg-history-turn").length : 0
       },
       historyController: historyControllerState(),
+      proRecoveryGuard: (() => {
+        const guard = globalThis.CGAntiCurseProRecoveryGuard;
+        try { return guard && typeof guard.debug === "function" ? { present: true, ...guard.debug() } : { present: !!guard }; }
+        catch (error) { return { present: !!guard, debugError: String(error && error.message ? error.message : error) }; }
+      })(),
       stallRecovery: (() => {
         const recovery = globalThis.CGAntiCurseStallRecovery;
         try { return recovery && typeof recovery.debug === "function" ? { present: true, ...recovery.debug() } : { present: !!recovery }; }

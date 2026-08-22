@@ -27,6 +27,7 @@
       "trim-pipeline.js",
       "pagination-firewall.js",
       "conversation-rate-limit-guard.js",
+      "paginated-history-accumulator.js",
       "background.js"
     ]
   },

@@ -466,30 +466,28 @@ replace_once(
     await openCase(driver, "disabled-until-input");'''
 )
 
-# Chromium file uses Playwright helpers; patch its tool-timeout block by anchor.
+# Chromium uses block-scoped Playwright cases rather than runCase().
 replace_once(
     "tests/e2e-stall-recovery-chromium.js",
-'''  await runCase(context, "tool-timeout", async (page) => {''',
-'''  await runCase(context, "pre-output-loading", async (page) => {
-    await page.waitForFunction(() => (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('response loading · recovery not armed'));
-    await page.waitForTimeout(800);
-    let current = await page.evaluate(() => ({ ...window.__state }));
-    assert.equal(current.stopClicks, 0, "Chromium must not auto-stop while the response is still in pre-output loading/progress state");
-    assert.equal(current.sends, 0);
-    assert.equal(statusCounts.get("pre-output-loading") || 0, 0, "pre-output loading must not query stream_status on the ordinary timeout path");
-    assert.equal(await page.evaluate(() => window.__revealAssistantOutput()), true);
-    await page.waitForFunction(() => window.__state.sends === 1);
-  });
+'''    {
+      await setPerformance(worker, true);
+      const page = await openCase(context, "tool-timeout");''',
+'''    {
+      const page = await openCase(context, "pre-output-loading");
+      await page.waitForFunction(() => (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('response loading · recovery not armed'));
+      await page.waitForTimeout(800);
+      let current = await state(page);
+      assert.equal(current.stopClicks, 0, "Chromium must not auto-stop while the response is still in pre-output loading/progress state");
+      assert.equal(current.sends, 0);
+      assert.equal(statusCounts.get("pre-output-loading") || 0, 0, "pre-output loading must not query stream_status on the ordinary timeout path");
+      assert.equal(await page.evaluate(() => window.__revealAssistantOutput()), true);
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000 });
+      await page.close();
+    }
 
-  await runCase(context, "tool-timeout", async (page) => {'''
+    {
+      await setPerformance(worker, true);
+      const page = await openCase(context, "tool-timeout");'''
 )
 
-# Workflow includes new accumulator unit test.
-replace_once(
-    ".github/workflows/release.yml",
-'''            tests/test-firefox-history-source-priority.js
-            tests/test-firefox-conversation-rate-limit-guard.js''',
-'''            tests/test-firefox-history-source-priority.js
-            tests/test-paginated-history-accumulator.js
-            tests/test-firefox-conversation-rate-limit-guard.js'''
-)
+# Workflow test list is managed directly; source patch ends here.

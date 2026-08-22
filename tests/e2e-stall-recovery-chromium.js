@@ -37,8 +37,13 @@ function fixtureHtml() {
     section.setAttribute('data-message-model-slug', 'gpt-5-6-thinking');
     const streaming = document.createElement('div');
     streaming.setAttribute('data-streaming-response-status', 'streaming');
-    streaming.textContent = 'assistant output ' + index;
-    if (tool) {
+    if (id !== 'pre-output-loading') {
+      const output = document.createElement('div');
+      output.setAttribute('data-message-author-role', 'assistant');
+      output.textContent = 'assistant output ' + index;
+      section.append(output);
+    }
+    if (tool || id === 'pre-output-loading') {
       const row = document.createElement('div');
       row.className = 'tool-row';
       const icon = document.createElement('span');
@@ -109,6 +114,14 @@ function fixtureHtml() {
     const span = document.createElement('span');
     span.textContent = ' progress-' + (++window.__state.bumps);
     active.streaming.append(span);
+    return true;
+  };
+  window.__revealAssistantOutput = () => {
+    if (!active || active.wrapper.querySelector('[data-message-author-role="assistant"]')) return false;
+    const output = document.createElement('div');
+    output.setAttribute('data-message-author-role', 'assistant');
+    output.textContent = 'first actual assistant output';
+    active.wrapper.querySelector('section').append(output);
     return true;
   };
 })();
@@ -249,6 +262,19 @@ async function state(page) {
       assert.equal(await page.evaluate(() => window.__bumpActivity()), true);
       await page.waitForTimeout(140);
       assert.equal((await state(page)).sends, 0, "meaningful active-turn mutation must restart the stall deadline");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000 });
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "pre-output-loading");
+      await page.waitForFunction(() => (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('response loading · recovery not armed'));
+      await page.waitForTimeout(800);
+      let current = await state(page);
+      assert.equal(current.stopClicks, 0, "Chromium must not auto-stop while the response is still in pre-output loading/progress state");
+      assert.equal(current.sends, 0);
+      assert.equal(statusCounts.get("pre-output-loading") || 0, 0, "pre-output loading must not query stream_status on the ordinary timeout path");
+      assert.equal(await page.evaluate(() => window.__revealAssistantOutput()), true);
       await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000 });
       await page.close();
     }

@@ -28,6 +28,9 @@ const LIMITED_MODES = new Set(["recent", "windowed-visible"]);
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const PAGINATION = globalThis.CGPaginationFirewall;
 const ENDPOINT = globalThis.CGConversationEndpoint;
+const PAGINATED_HISTORY = globalThis.CGPaginatedHistoryAccumulator
+  ? globalThis.CGPaginatedHistoryAccumulator.create({ maxPages: 100 })
+  : null;
 const STATS_KEY_PREFIX = "cg-tab-stats:";
 const HISTORY_KEY_PREFIX = "cg-tab-history:";
 const BACKGROUND_STARTED_AT = new Date().toISOString();
@@ -500,7 +503,7 @@ function buildHistoryArchive(parsed, transformed, mode, limit, conversationId) {
   };
 }
 
-function transformConversation(parsed, conversationId, cursorRequest = false) {
+function transformConversation(parsed, conversationId, cursorRequest = false, continueNativePagination = false) {
   const mode = resolveMode(settings.mode);
   const limit = normalizeMessageLimit(settings.maxDisplayMessages);
 
@@ -519,7 +522,9 @@ function transformConversation(parsed, conversationId, cursorRequest = false) {
           data: {
             ...parsed,
             messages: [],
-            page_info: { ...pageInfo, has_previous_page: false, start_cursor: null }
+            page_info: continueNativePagination
+              ? pageInfo
+              : { ...pageInfo, has_previous_page: false, start_cursor: null }
           },
           reason: "trimmed",
           stats: {
@@ -533,7 +538,8 @@ function transformConversation(parsed, conversationId, cursorRequest = false) {
             currentNodePreserved: true,
             paginationFirewall: true,
             paginationOlderPageBlocked: true,
-            paginationCursorSuppressed: true,
+            paginationCursorSuppressed: !continueNativePagination,
+            paginationCursorPreserved: continueNativePagination,
             paginationBlockedNodes: parsed.messages.length,
             paginatedConversationEnvelope: true,
             paginatedMessages: parsed.messages.length,
@@ -816,8 +822,51 @@ async function processResponse(filter, chunks, totalBytes, details, filterState 
     }
 
     const cursorRequest = !!(PAGINATION && typeof PAGINATION.isCursorRequest === "function" && PAGINATION.isCursorRequest(details.url));
-    const result = transformConversation(parsed, conversationId, cursorRequest);
-    publishHistory(details.tabId, result.history, details.timeStamp);
+    const isPaginated = paginatedConversationEnvelope(parsed);
+    let historyObservation = null;
+    let continueNativePagination = false;
+    let result;
+
+    if (isPaginated && PAGINATED_HISTORY) {
+      if (cursorRequest) {
+        const requestPage = ENDPOINT && typeof ENDPOINT.parseMessagesPage === "function"
+          ? ENDPOINT.parseMessagesPage(details.url)
+          : null;
+        historyObservation = PAGINATED_HISTORY.observe({
+          tabId: details.tabId,
+          conversationId,
+          cursorRequest: true,
+          requestCursor: requestPage && requestPage.before,
+          nextCursor: paginatedCursor(parsed),
+          messages: paginatedVisibleHistory(parsed),
+          pageSize: normalizeMessageLimit(settings.maxDisplayMessages),
+          nativeVisibleCount: 0
+        });
+        continueNativePagination = historyObservation.continueNativePagination === true;
+        result = transformConversation(parsed, conversationId, true, continueNativePagination);
+      } else {
+        result = transformConversation(parsed, conversationId, false, false);
+        historyObservation = PAGINATED_HISTORY.observe({
+          tabId: details.tabId,
+          conversationId,
+          cursorRequest: false,
+          requestCursor: null,
+          nextCursor: paginatedCursor(parsed),
+          messages: paginatedVisibleHistory(parsed),
+          pageSize: normalizeMessageLimit(settings.maxDisplayMessages),
+          nativeVisibleCount: Math.max(0, Number(result.transformed?.stats?.displayAfter) || 0)
+        });
+      }
+      if (historyObservation && historyObservation.history) result.history = historyObservation.history;
+    } else {
+      result = transformConversation(parsed, conversationId, cursorRequest, false);
+    }
+
+    // An incomplete native pagination chain is not "no history". Publish each
+    // accumulated partial snapshot, and never delete an existing archive merely
+    // because one intermediate response has not reached the oldest page yet.
+    if (result.history) publishHistory(details.tabId, result.history, details.timeStamp);
+    else if (!isPaginated && !cursorRequest) publishHistory(details.tabId, null, details.timeStamp);
     if (!result.transformed.changed) {
       writeOriginal(filter, chunks);
       publishPassthroughStats(details, result.transformed, totalBytes, started, conversationId);
@@ -958,7 +1007,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
       pendingExportBypasses: exportBypassTokens.size,
       pendingStandaloneExportBypasses: standaloneExportBypassRequests.size,
       exportBypassDisconnects,
-      invalidExportBypassMarkers
+      invalidExportBypassMarkers,
+      paginatedHistory: PAGINATED_HISTORY && typeof PAGINATED_HISTORY.debug === "function" ? PAGINATED_HISTORY.debug() : null,
+      rateLimitGuard: globalThis.CGAntiCurseConversationRateLimitGuard && typeof globalThis.CGAntiCurseConversationRateLimitGuard.debug === "function"
+        ? globalThis.CGAntiCurseConversationRateLimitGuard.debug()
+        : null
     });
   }
   if (message.type === "cg-create-export-bypass") {
@@ -1019,6 +1072,7 @@ browser.tabs.onRemoved.addListener((tabId) => {
   for (const [token, grant] of exportBypassTokens) if (grant && grant.tabId === tabId) exportBypassTokens.delete(token);
   for (const [requestId, grant] of standaloneExportBypassRequests) if (grant && grant.tabId === tabId) standaloneExportBypassRequests.delete(requestId);
   historyByTab.delete(tabId);
+  if (PAGINATED_HISTORY) PAGINATED_HISTORY.clear(tabId);
   sessionWriteQueues.delete(sessionKey(STATS_KEY_PREFIX, tabId));
   sessionWriteQueues.delete(sessionKey(HISTORY_KEY_PREFIX, tabId));
   if (browser.storage.session) {

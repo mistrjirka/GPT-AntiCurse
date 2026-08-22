@@ -63,6 +63,7 @@
   function recoveryRemainingMs() {
     if (!activeTurn || !stopButton()) return null;
     if (hasLongWaitBanner(activeTurn)) return 0;
+    if (preOutputLoading(activeTurn)) return null;
     return Math.max(0, thresholdMs() - (Date.now() - lastActivityAt));
   }
 
@@ -77,12 +78,13 @@
     }
 
     const longWaitBanner = hasLongWaitBanner(activeTurn);
+    const loading = preOutputLoading(activeTurn);
     const tool = runningTool(activeTurn);
     const draftBlocked = hasUserDraft();
     const hidden = document.visibilityState !== "visible";
     const remainingMs = recoveryRemainingMs();
     const phase = recoveryPhase ||
-      (hidden ? "paused-hidden" : draftBlocked ? "paused-draft" : longWaitBanner ? "checking" : "countdown");
+      (hidden ? "paused-hidden" : draftBlocked ? "paused-draft" : longWaitBanner ? "checking" : loading ? "loading" : "countdown");
 
     window.dispatchEvent(new CustomEvent(STALL_STATUS_EVENT, { detail: {
       active: true,
@@ -97,7 +99,7 @@
 
     // Recovery itself stays deadline/event-driven. This timer only refreshes the
     // visible countdown while a streaming turn exists.
-    if (!recoveryPhase && !longWaitBanner) countdownUiTimer = setTimeout(publishRecoveryStatus, 1000);
+    if (!recoveryPhase && !longWaitBanner && !loading) countdownUiTimer = setTimeout(publishRecoveryStatus, 1000);
   }
 
   function setRecoveryPhase(phase) {
@@ -157,6 +159,19 @@
     return false;
   }
 
+  function hasAssistantOutput(turn = activeTurn) {
+    if (!turn) return false;
+    for (const message of turn.querySelectorAll('[data-message-author-role="assistant"]')) {
+      if (String(message.textContent || "").trim()) return true;
+      if (message.querySelector("img, video, audio, pre, code, table")) return true;
+    }
+    return false;
+  }
+
+  function preOutputLoading(turn = activeTurn) {
+    return !!turn && !!turn.querySelector(STREAMING_SELECTOR) && !hasLongWaitBanner(turn) && !hasAssistantOutput(turn);
+  }
+
   function runningTool(turn = activeTurn) {
     if (!turn) return false;
     for (const shimmer of turn.querySelectorAll(".loading-shimmer-tertiary")) {
@@ -182,6 +197,7 @@
   function scheduleStallCheck(delayOverride) {
     clearTimer();
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) { publishRecoveryStatus(); return; }
+    if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
     const elapsed = Date.now() - lastActivityAt;
     const delay = delayOverride == null
       ? (hasLongWaitBanner(activeTurn) ? 0 : Math.max(0, thresholdMs() - elapsed))
@@ -433,6 +449,7 @@
   async function checkForStall() {
     stallTimer = null;
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) return;
+    if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
     if (document.visibilityState !== "visible") { installVisibilityWakeup(); return; }
 
     // OR semantics: the explicit long-wait banner is independently sufficient;
@@ -517,6 +534,8 @@
         activeTurnKey,
         runningTool: runningTool(),
         longWaitBanner: hasLongWaitBanner(),
+        assistantOutputPresent: hasAssistantOutput(),
+        preOutputLoading: preOutputLoading(),
         recoveryPhase,
         countdownRemainingMs: recoveryRemainingMs(),
         lastActivityAt,
