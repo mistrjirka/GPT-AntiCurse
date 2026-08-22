@@ -134,16 +134,12 @@ replace_once(
   sessionWriteQueues.delete(sessionKey(STATS_KEY_PREFIX, tabId));'''
 )
 
-# Partial captured history is excellent for the scrolling UI but must not be
-# mistaken for a complete authoritative export.
 replace_once(
     "firefox/history-source-priority.js",
     '    if (!history || history.ok === false || !Array.isArray(history.messages)) return null;',
     '    if (!history || history.ok === false || history.complete === false || !Array.isArray(history.messages)) return null;'
 )
 
-# Firefox automatic windowed history must never trigger an authenticated full
-# conversation fallback. Explicit export keeps that path.
 replace_once(
     "firefox/windowed.js",
 '''      const authoritative = await authoritativeHistory(token);
@@ -160,7 +156,6 @@ replace_once(
       const value = await ext.runtime.sendMessage({'''
 )
 
-# Shared 429 guard also covers the paginated /messages family.
 replace_once(
     "firefox/conversation-rate-limit-guard.js",
 '''    const id = ENDPOINT.conversationId(details.url);
@@ -170,7 +165,6 @@ replace_once(
     return id ? `${details.tabId}:${id}` : null;'''
 )
 
-# Expose the Pro decision directly in normal debug exports.
 replace_once(
     "firefox/debug-state.js",
 '''      stallRecovery: (() => {
@@ -192,9 +186,6 @@ replace_once(
       archiveBridge: bridgeState,'''
 )
 
-# Recovery: do not arm ordinary inactivity recovery until actual assistant output
-# exists. A pure streaming/progress row is normal loading; explicit long-wait UI
-# remains an immediate independent stall signal.
 for path in ["firefox/stall-recovery.js", "chrome/stall-recovery.js"]:
     replace_once(
         path,
@@ -206,7 +197,7 @@ for path in ["firefox/stall-recovery.js", "chrome/stall-recovery.js"]:
 '''  function recoveryRemainingMs() {
     if (!activeTurn || !stopButton()) return null;
     if (hasLongWaitBanner(activeTurn)) return 0;
-    if (preOutputLoading(activeTurn)) return null;
+    if (shellLoading() || preOutputLoading(activeTurn)) return null;
     return Math.max(0, thresholdMs() - (Date.now() - lastActivityAt));
   }'''
     )
@@ -221,7 +212,7 @@ for path in ["firefox/stall-recovery.js", "chrome/stall-recovery.js"]:
     const phase = recoveryPhase ||
       (hidden ? "paused-hidden" : draftBlocked ? "paused-draft" : longWaitBanner ? "checking" : "countdown");''',
 '''    const longWaitBanner = hasLongWaitBanner(activeTurn);
-    const loading = preOutputLoading(activeTurn);
+    const loading = shellLoading() || preOutputLoading(activeTurn);
     const tool = runningTool(activeTurn);
     const draftBlocked = hasUserDraft();
     const hidden = document.visibilityState !== "visible";
@@ -234,6 +225,21 @@ for path in ["firefox/stall-recovery.js", "chrome/stall-recovery.js"]:
         path,
 '''    if (!recoveryPhase && !longWaitBanner) countdownUiTimer = setTimeout(publishRecoveryStatus, 1000);''',
 '''    if (!recoveryPhase && !longWaitBanner && !loading) countdownUiTimer = setTimeout(publishRecoveryStatus, 1000);'''
+    )
+
+    replace_once(
+        path,
+'''  function hasUserDraft() { return !!draftText() || hasAttachmentDraft(); }
+  function composerContainsOnlyNudge() { return draftText() === "." && !hasAttachmentDraft(); }''',
+'''  function hasUserDraft() { return !!draftText() || hasAttachmentDraft(); }
+  function composerContainsOnlyNudge() { return draftText() === "." && !hasAttachmentDraft(); }
+
+  function shellLoading() {
+    const input = composer();
+    const form = (input && input.closest('form[data-type="unified-composer"]')) || document.querySelector('form[data-type="unified-composer"]');
+    if (form && (form.hasAttribute("inert") || form.inert === true)) return true;
+    return !!(activeTurn && !activeTurn.isConnected);
+  }'''
     )
 
     replace_once(
@@ -268,7 +274,7 @@ for path in ["firefox/stall-recovery.js", "chrome/stall-recovery.js"]:
 '''  function scheduleStallCheck(delayOverride) {
     clearTimer();
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) { publishRecoveryStatus(); return; }
-    if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
+    if (shellLoading() || preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
     const elapsed = Date.now() - lastActivityAt;'''
     )
 
@@ -281,8 +287,17 @@ for path in ["firefox/stall-recovery.js", "chrome/stall-recovery.js"]:
 '''  async function checkForStall() {
     stallTimer = null;
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) return;
-    if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
+    if (shellLoading() || preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
     if (document.visibilityState !== "visible") { installVisibilityWakeup(); return; }'''
+    )
+
+    replace_once(
+        path,
+'''      if (turnList && turnList.isConnected) return;
+      turnList = null;''',
+'''      if (turnList && turnList.isConnected) return;
+      if (activeTurn && !activeTurn.isConnected) observeActiveTurn(null);
+      turnList = null;'''
     )
 
     replace_once(
@@ -294,10 +309,10 @@ for path in ["firefox/stall-recovery.js", "chrome/stall-recovery.js"]:
         longWaitBanner: hasLongWaitBanner(),
         assistantOutputPresent: hasAssistantOutput(),
         preOutputLoading: preOutputLoading(),
+        shellLoading: shellLoading(),
         recoveryPhase,'''
     )
 
-# Shared badge: loading phase has no countdown.
 for path in ["firefox/content.js", "chrome/content.js"]:
     replace_once(
         path,
@@ -306,13 +321,13 @@ for path in ["firefox/content.js", "chrome/content.js"]:
   if (status.phase === "paused-hidden") return "auto-continue paused · tab hidden";'''
     )
 
-# Static/unit coverage.
 replace_once(
     "tests/test-stall-recovery.js",
 '''assert(chromeSource.includes("countdownRemainingMs"), "watchdog debug state must expose the live countdown");''',
 '''assert(chromeSource.includes("countdownRemainingMs"), "watchdog debug state must expose the live countdown");
 assert(chromeSource.includes("function preOutputLoading"), "pre-output streaming/loading must be a distinct non-armed state");
-assert(chromeSource.includes("if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }"), "ordinary stall timer must not arm before assistant output exists");
+assert(chromeSource.includes("function shellLoading"), "ChatGPT inert/shell-loading state must be a distinct non-armed state");
+assert(chromeSource.includes("shellLoading() || preOutputLoading(activeTurn)"), "ordinary stall timer must not arm while ChatGPT itself is still loading");
 assert(chromeSource.includes("assistantOutputPresent"), "debug state must expose whether actual assistant output has begun");'''
 )
 
@@ -320,10 +335,9 @@ replace_once(
     "tests/test-stall-recovery.js",
 '''  assert(content.includes("auto-continue resuming"), `${browser}: status must show active recovery phase`);''',
 '''  assert(content.includes("auto-continue resuming"), `${browser}: status must show active recovery phase`);
-  assert(content.includes("response loading · recovery not armed"), `${browser}: pre-output loading must not display a retry countdown`);'''
+  assert(content.includes("response loading · recovery not armed"), `${browser}: loading must not display a retry countdown`);'''
 )
 
-# Update accumulator unit expectations for partial snapshots.
 test_path = Path("tests/test-paginated-history-accumulator.js")
 test = test_path.read_text()
 test = test.replace(
@@ -348,9 +362,6 @@ assert.deepEqual(result.history.messages.map((entry) => entry.id), ["u2", "a2", 
 )
 test_path.write_text(test)
 
-# E2E fixtures may already contain the pre-output regression case from a preparatory commit.
-
-# Add new unit test to CI if not present.
 workflow = Path(".github/workflows/release.yml")
 workflow_text = workflow.read_text()
 needle = "            tests/test-firefox-conversation-rate-limit-guard.js\n"
