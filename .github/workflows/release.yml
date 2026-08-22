@@ -15,6 +15,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Apply pending pagination compatibility patch
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/pro-recovery-live-dom'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_HEAD_REF"
+          git checkout -B "$GITHUB_HEAD_REF" "origin/$GITHUB_HEAD_REF"
+          python scripts/apply-pagination-compat.py
+          git diff --check
+          if ! git diff --quiet; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add firefox chrome tests .github/workflows/release.yml
+            git commit -m "Preserve native pagination state and isolate older pages"
+            git push origin "HEAD:$GITHUB_HEAD_REF"
+          fi
       - name: Validate manifests
         run: |
           python -m json.tool firefox/manifest.json >/dev/null
