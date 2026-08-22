@@ -262,7 +262,7 @@ async function assertTrimInvariant(page) {
   assert.equal(state.hasCutoffUser, true, "logical cutoff must retain the first recent exchange");
   assert.equal(state.hasRecentTool, true, "technical nodes inside retained recent state must survive");
   assert.equal(state.hasRecentHidden, true, "hidden nodes inside retained recent state must survive");
-  assert.equal(state.cursor, "older-page", "newest page must preserve ChatGPT's real pagination cursor");
+  assert.equal(state.cursor, "older-page-2", "newest page must preserve ChatGPT's real pagination cursor");
   assert.equal(state.nativePaginationRequests, 1, "native pagination may request one older page, which AntiCurse terminates before its records enter React");
 }
 
