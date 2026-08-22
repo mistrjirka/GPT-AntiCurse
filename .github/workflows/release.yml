@@ -22,12 +22,45 @@ jobs:
           set -euo pipefail
           git fetch origin "$GITHUB_HEAD_REF"
           git checkout -B "$GITHUB_HEAD_REF" "origin/$GITHUB_HEAD_REF"
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/apply-live-smoke-regressions.py')
+          text = p.read_text()
+          start = text.index('# Chromium file uses Playwright helpers; patch its tool-timeout block by anchor.')
+          end = text.index('# Workflow includes new accumulator unit test.', start)
+          replacement = '''# Chromium uses block-scoped Playwright cases rather than runCase().
+          replace_once(
+              "tests/e2e-stall-recovery-chromium.js",
+          ''' + "'''" + '''    {
+                await setPerformance(worker, true);
+                const page = await openCase(context, "tool-timeout");''' + "'''" + ''',
+          ''' + "'''" + '''    {
+                const page = await openCase(context, "pre-output-loading");
+                await page.waitForFunction(() => (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('response loading · recovery not armed'));
+                await page.waitForTimeout(800);
+                let current = await state(page);
+                assert.equal(current.stopClicks, 0, "Chromium must not auto-stop while the response is still in pre-output loading/progress state");
+                assert.equal(current.sends, 0);
+                assert.equal(statusCounts.get("pre-output-loading") || 0, 0, "pre-output loading must not query stream_status on the ordinary timeout path");
+                assert.equal(await page.evaluate(() => window.__revealAssistantOutput()), true);
+                await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000 });
+                await page.close();
+              }
+
+              {
+                await setPerformance(worker, true);
+                const page = await openCase(context, "tool-timeout");''' + "'''" + '''
+          )
+
+          '''
+          p.write_text(text[:start] + replacement + text[end:])
+          PY
           python scripts/apply-live-smoke-regressions.py
           git diff --check
           if ! git diff --quiet; then
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add firefox chrome tests .github/workflows/release.yml
+            git add firefox chrome tests scripts .github/workflows/release.yml
             git commit -m "Fix native history capture and pre-output recovery arming"
             git push origin "HEAD:$GITHUB_HEAD_REF"
           fi
