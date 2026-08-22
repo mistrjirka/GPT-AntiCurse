@@ -44,6 +44,8 @@ assert(chromeSource.includes("discoveryTimer = setTimeout(clearDiscovery, 10_000
 assert(chromeSource.includes("__gpt_anticurse_stall_status__"), "watchdog must publish live recovery state");
 assert(chromeSource.includes("countdownRemainingMs"), "watchdog debug state must expose the live countdown");
 assert(chromeSource.includes("function preOutputLoading"), "pre-output streaming/loading must be a distinct non-armed state");
+assert(chromeSource.includes("function shellLoading"), "inert ChatGPT shell loading must be a distinct non-armed state");
+assert(chromeSource.includes("shellLoading() || preOutputLoading(activeTurn)"), "ordinary recovery must stay unarmed while ChatGPT itself is still loading");
 assert(chromeSource.includes("if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }"), "ordinary stall timer must not arm before assistant output exists");
 assert(chromeSource.includes("assistantOutputPresent"), "debug state must expose whether actual assistant output has begun");
 for (const [browser, content] of [["chrome", chromeContent], ["firefox", firefoxContent]]) {

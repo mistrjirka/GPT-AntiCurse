@@ -63,7 +63,7 @@
   function recoveryRemainingMs() {
     if (!activeTurn || !stopButton()) return null;
     if (hasLongWaitBanner(activeTurn)) return 0;
-    if (preOutputLoading(activeTurn)) return null;
+    if (shellLoading() || preOutputLoading(activeTurn)) return null;
     return Math.max(0, thresholdMs() - (Date.now() - lastActivityAt));
   }
 
@@ -78,7 +78,7 @@
     }
 
     const longWaitBanner = hasLongWaitBanner(activeTurn);
-    const loading = preOutputLoading(activeTurn);
+    const loading = shellLoading() || preOutputLoading(activeTurn);
     const tool = runningTool(activeTurn);
     const draftBlocked = hasUserDraft();
     const hidden = document.visibilityState !== "visible";
@@ -128,6 +128,13 @@
 
   function hasUserDraft() { return !!draftText() || hasAttachmentDraft(); }
   function composerContainsOnlyNudge() { return draftText() === "." && !hasAttachmentDraft(); }
+
+  function shellLoading() {
+    const input = composer();
+    const form = (input && input.closest('form[data-type="unified-composer"]')) || document.querySelector('form[data-type="unified-composer"]');
+    if (form && (form.hasAttribute("inert") || form.inert === true)) return true;
+    return !!(activeTurn && !activeTurn.isConnected);
+  }
 
   function nodeHasMeaningfulText(node) {
     if (!node) return false;
@@ -197,7 +204,7 @@
   function scheduleStallCheck(delayOverride) {
     clearTimer();
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) { publishRecoveryStatus(); return; }
-    if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
+    if (shellLoading() || preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
     const elapsed = Date.now() - lastActivityAt;
     const delay = delayOverride == null
       ? (hasLongWaitBanner(activeTurn) ? 0 : Math.max(0, thresholdMs() - elapsed))
@@ -270,6 +277,7 @@
     shellRefreshRaf = requestAnimationFrame(() => {
       shellRefreshRaf = 0;
       if (turnList && turnList.isConnected) return;
+      if (activeTurn && !activeTurn.isConnected) observeActiveTurn(null);
       turnList = null;
       scheduleDiscovery();
     });
@@ -449,7 +457,7 @@
   async function checkForStall() {
     stallTimer = null;
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) return;
-    if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
+    if (shellLoading() || preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
     if (document.visibilityState !== "visible") { installVisibilityWakeup(); return; }
 
     // OR semantics: the explicit long-wait banner is independently sufficient;
@@ -536,6 +544,7 @@
         longWaitBanner: hasLongWaitBanner(),
         assistantOutputPresent: hasAssistantOutput(),
         preOutputLoading: preOutputLoading(),
+        shellLoading: shellLoading(),
         recoveryPhase,
         countdownRemainingMs: recoveryRemainingMs(),
         lastActivityAt,
