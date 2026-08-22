@@ -15,6 +15,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Apply pending pagination E2E fixture patch
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/pro-recovery-live-dom'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "$GITHUB_HEAD_REF"
+          git checkout -B "$GITHUB_HEAD_REF" "origin/$GITHUB_HEAD_REF"
+          python scripts/apply-pagination-e2e-fix.py
+          git diff --check
+          if ! git diff --quiet; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add tests/e2e-chromium.js tests/e2e-firefox.js
+            git commit -m "Allow native pagination in browser E2E fixtures"
+            git push origin "HEAD:$GITHUB_HEAD_REF"
+          fi
       - name: Validate manifests
         run: |
           python -m json.tool firefox/manifest.json >/dev/null
