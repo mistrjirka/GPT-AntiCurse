@@ -26,6 +26,7 @@
       "trim-logical.js",
       "trim-pipeline.js",
       "pagination-firewall.js",
+      "conversation-rate-limit-guard.js",
       "background.js"
     ]
   },
