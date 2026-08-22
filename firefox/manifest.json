@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GPT AntiCurse",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "Makes very long ChatGPT conversations responsive and automatically recovers stalled runs.",
   "icons": {
     "16": "icons/icon16.png",
