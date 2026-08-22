@@ -8,7 +8,7 @@ const endpoint = require("../firefox/conversation-endpoint.js");
 
 const source = fs.readFileSync(path.join(__dirname, "../firefox/backend-request-profile.js"), "utf8");
 const storage = {};
-const listeners = { completed: null, error: null, installed: null };
+const listeners = { beforeHeaders: null, completed: null, error: null, installed: null };
 const filters = {};
 
 const browser = {
@@ -24,6 +24,13 @@ const browser = {
     }
   },
   webRequest: {
+    onBeforeSendHeaders: {
+      addListener: (listener, filter, extraInfoSpec) => {
+        listeners.beforeHeaders = listener;
+        filters.beforeHeaders = filter;
+        filters.beforeHeadersExtra = extraInfoSpec;
+      }
+    },
     onCompleted: {
       addListener: (listener, filter) => {
         listeners.completed = listener;
@@ -53,6 +60,8 @@ vm.runInNewContext(source, context, { filename: "backend-request-profile.js" });
 
 const profiler = context.CGAntiCurseBackendRequestProfiler;
 assert(profiler, "profiler should be exported for diagnostics/tests");
+assert.deepEqual(filters.beforeHeaders.urls, ["https://chatgpt.com/backend-api/*"]);
+assert.deepEqual(Array.from(filters.beforeHeadersExtra), ["requestHeaders"]);
 assert.deepEqual(filters.completed.urls, ["https://chatgpt.com/backend-api/*"]);
 assert.deepEqual(filters.error.urls, ["https://chatgpt.com/backend-api/*"]);
 
@@ -80,26 +89,35 @@ assert.equal(profiler.routeFromUrl(unknownTail), "/backend-api/accounts/:tail");
 assert(!profiler.routeFromUrl(unknownTail).includes("account-value"));
 
 listeners.completed({
+  requestId: "feature",
   url: featureConversation,
   method: "GET",
   statusCode: 200,
   type: "xmlhttprequest"
 });
+listeners.beforeHeaders({
+  requestId: "export",
+  url: singular,
+  requestHeaders: [{ name: "X-GPT-AntiCurse-Export", value: "private-token-must-not-be-stored" }]
+});
 listeners.completed({
+  requestId: "export",
+  url: singular,
+  method: "GET",
+  statusCode: 429,
+  type: "xmlhttprequest"
+});
+listeners.completed({
+  requestId: "plural",
   url: plural,
   method: "GET",
   statusCode: 200,
   type: "xmlhttprequest"
 });
-listeners.completed({
+listeners.error({
+  requestId: "feedback",
   url: feedback,
   method: "POST",
-  statusCode: 204,
-  type: "xmlhttprequest"
-});
-listeners.error({
-  url: "https://chatgpt.com/backend-api/f/conversation?cursor=do-not-store-this-value",
-  method: "GET",
   error: "NS_BINDING_ABORTED",
   type: "xmlhttprequest"
 });
@@ -108,19 +126,23 @@ listeners.error({
   await profiler.flush();
   const profile = storage.cgBackendRequestProfile;
   assert(profile, "profile should be persisted");
+  assert.equal(profile.profileVersion, 2);
   assert.equal(profile.total, 4);
   assert.equal(profile.completed, 3);
   assert.equal(profile.failed, 1);
-  assert.equal(profile.conversationTargets, 1);
-  assert.equal(profile.nonConversationTargets, 3);
+  assert.equal(profile.conversationTargets, 2);
+  assert.equal(profile.nonConversationTargets, 2);
+  assert.equal(profile.sources["anticurse-export"], 1);
+  assert.equal(profile.sources.unmarked, 3);
 
   const serialized = JSON.stringify(profile);
+  assert(serialized.includes("anticurse-export"));
   assert(serialized.includes("/backend-api/f/conversation"));
   assert(serialized.includes("/backend-api/conversations/:id"));
   assert(serialized.includes("/backend-api/implicit_message_feedback"));
+  assert(!serialized.includes("private-token-must-not-be-stored"));
   assert(!serialized.includes("super-secret-id"));
   assert(!serialized.includes("secret-cursor"));
-  assert(!serialized.includes("do-not-store-this-value"));
   assert(!serialized.includes("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
   assert(!serialized.includes("account-value-that-must-not-be-exported"));
 
