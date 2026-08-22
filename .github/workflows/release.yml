@@ -60,7 +60,7 @@ jobs:
           if ! git diff --quiet; then
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add firefox chrome tests scripts .github/workflows/release.yml
+            git add firefox chrome tests scripts
             git commit -m "Fix native history capture and pre-output recovery arming"
             git push origin "HEAD:$GITHUB_HEAD_REF"
           fi
@@ -137,6 +137,7 @@ jobs:
             tests/test-firefox-android.js
             tests/test-firefox-export-bypass.js
             tests/test-firefox-history-source-priority.js
+            tests/test-paginated-history-accumulator.js
             tests/test-firefox-conversation-rate-limit-guard.js
             tests/test-no-silent-catches.js
             tests/test-chrome-host-access.js
