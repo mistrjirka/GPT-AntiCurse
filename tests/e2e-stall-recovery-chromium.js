@@ -34,6 +34,7 @@ function fixtureHtml() {
     const section = document.createElement('section');
     section.setAttribute('data-testid', 'conversation-turn-' + index);
     section.setAttribute('data-turn-id', 'turn-' + index);
+    section.setAttribute('data-message-model-slug', 'gpt-5-6-thinking');
     const streaming = document.createElement('div');
     streaming.setAttribute('data-streaming-response-status', 'streaming');
     streaming.textContent = 'assistant output ' + index;
@@ -122,7 +123,6 @@ function isAntiCurseWorker(worker) {
 async function waitForWorker(context) {
   return context.serviceWorkers().find(isAntiCurseWorker) || context.waitForEvent("serviceworker", isAntiCurseWorker);
 }
-
 
 async function waitForStorageApi(worker) {
   const deadline = Date.now() + 10000;
@@ -219,9 +219,6 @@ async function state(page) {
       const s = await state(page);
       assert.equal(s.stopClicks, 1, "explicit long-wait banner must trigger auto-resume");
       assert.equal(s.sentText, ".");
-      // The fixture returns NOT_STREAMING for this conversation. A successful
-      // Stop -> dot -> Send therefore proves the banner path did not require
-      // backend confirmation; a later query may belong to the new recovered turn.
       await page.close();
     }
 

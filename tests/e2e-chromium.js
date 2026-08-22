@@ -140,8 +140,8 @@ const FIXTURE_HTML = String.raw`<!doctype html>
   fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10').then((response) => response.json()).then(async (raw) => {
     window.__receivedCursor = raw.page_info?.has_previous_page === true ? (raw.page_info.start_cursor ?? null) : null;
     window.__nativePaginationRequests = 0;
-    // Current ChatGPT follows before-pages only when page_info still advertises
-    // older history. AntiCurse must suppress that before page code sees it.
+    // Preserve truthful pagination metadata on the newest page. AntiCurse
+    // terminates the actual older-page response instead.
     while (raw.page_info?.has_previous_page === true && raw.page_info.start_cursor) {
       window.__nativePaginationRequests++;
       const cursor = raw.page_info.start_cursor;
@@ -262,8 +262,8 @@ async function assertTrimInvariant(page) {
   assert.equal(state.hasCutoffUser, true, "logical cutoff must retain the first recent exchange");
   assert.equal(state.hasRecentTool, true, "technical nodes inside retained recent state must survive");
   assert.equal(state.hasRecentHidden, true, "hidden nodes inside retained recent state must survive");
-  assert.equal(state.cursor, null, "pagination firewall must terminate OpenAI's cursor before page/React code receives the newest page");
-  assert.equal(state.nativePaginationRequests, 0, "ChatGPT must not request raw older cursor pages after the firewall");
+  assert.equal(state.cursor, "older-page-2", "newest page must preserve ChatGPT's real pagination cursor");
+  assert.equal(state.nativePaginationRequests, 1, "native pagination may request one older page, which AntiCurse terminates before its records enter React");
 }
 
 
@@ -620,7 +620,12 @@ function rawPaginatedConversationPages(full) {
     await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversations\/e2e\/messages(?:\?.*)?$/, async (route) => {
       const request = route.request();
       const auth = request.headers()["authorization"] || "";
-      assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected paginated export auth: ${auth}`);
+      // The real ChatGPT page now sees the truthful newest-page cursor and may
+      // make one native before-page request with no Authorization header. The
+      // isolated AntiCurse archive/export fetch remains authenticated.
+      if (auth) {
+        assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected paginated export auth: ${auth}`);
+      }
       const url = new URL(request.url());
       assert.equal(url.searchParams.get("include_has_versions"), "true");
       assert.equal(url.searchParams.get("num_turns"), "10");

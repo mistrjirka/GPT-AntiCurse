@@ -88,6 +88,7 @@ jobs:
             tests/test-firefox-android.js
             tests/test-firefox-export-bypass.js
             tests/test-firefox-history-source-priority.js
+            tests/test-firefox-conversation-rate-limit-guard.js
             tests/test-no-silent-catches.js
             tests/test-chrome-host-access.js
             tests/test-reliability.js
@@ -114,6 +115,13 @@ jobs:
           done
       - name: Build browser packages
         run: bash ./scripts/build.sh
+      - name: Upload PR candidate packages
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-anticurse-0.7.5-candidate
+          path: dist/*.zip
+          if-no-files-found: error
       - name: Install browser E2E runtimes
         run: |
           npm install --no-save --no-package-lock playwright@1.55.0 selenium-webdriver@4.46.0

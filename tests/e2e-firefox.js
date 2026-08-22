@@ -192,7 +192,9 @@ function createServer(tls, fullConversation) {
       return;
     }
     if (url.pathname === "/backend-api/conversations/e2e-firefox/messages") {
-      assert.equal(req.headers.authorization || "", "Bearer firefox-e2e-token");
+      // Native ChatGPT pagination is intentionally allowed one request and has
+      // no Authorization header. AntiCurse's isolated authoritative fetch does.
+      if (req.headers.authorization) assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
       assert.equal(url.searchParams.get("include_has_versions"), "true");
       assert.equal(url.searchParams.get("num_turns"), "10");
       assert.equal(url.searchParams.get("before"), "older-firefox-page");
@@ -266,8 +268,8 @@ async function waitForValue(driver, script, timeout = 12000) {
     assert.equal(state.hasCutoffUser, true, "logical cutoff must retain first recent Firefox exchange");
     assert.equal(state.hasRecentTool, true, "recent Firefox technical nodes must survive");
     assert.equal(state.hasRecentHidden, true, "recent Firefox hidden nodes must survive");
-    assert.equal(state.cursor, null, "Firefox pagination firewall must terminate the native cursor before page code sees it");
-    assert.equal(state.nativePaginationRequests, 0, "Firefox page code must not fetch raw older cursor pages");
+    assert.equal(state.cursor, "older-firefox-page", "Firefox newest page must preserve ChatGPT's real pagination cursor");
+    assert.equal(state.nativePaginationRequests, 1, "Firefox native pagination may request one older page, which AntiCurse terminates before its records enter React");
 
     const button = await driver.wait(until.elementLocated(By.css("#cg-window-history-host .cg-history-previous")), 10000);
     assert.equal(await button.isDisplayed(), false, "fresh installs should default to Auto window without a manual history button");

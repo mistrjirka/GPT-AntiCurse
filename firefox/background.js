@@ -105,8 +105,12 @@ const settingsReady = browser.storage.local.get({ ...DEFAULT_SETTINGS, cgTotals:
 });
 
 function conversationIdFromEndpoint(urlString) {
-  if (!ENDPOINT || typeof ENDPOINT.conversationId !== "function") return null;
-  return ENDPOINT.conversationId(urlString);
+  if (!ENDPOINT) return null;
+  const documentId = typeof ENDPOINT.conversationId === "function" ? ENDPOINT.conversationId(urlString) : null;
+  if (documentId) return documentId;
+  return typeof ENDPOINT.messagesPageConversationId === "function"
+    ? ENDPOINT.messagesPageConversationId(urlString)
+    : null;
 }
 
 function isConversationDocument(urlString) {
@@ -432,17 +436,16 @@ function transformPaginatedConversation(parsed, conversationId, mode, limit) {
     : { changed: false, data: graph, reason: "below-limit", stats: {} };
   const keptMessages = activeMessagesFromGraph(trimmed.data);
   const rawMessagesChanged = keptMessages.length !== parsed.messages.length || !!trimmed.changed;
-  const changed = hadOlderPages || rawMessagesChanged;
+  // Preserve ChatGPT's real pagination metadata on the newest page. Hiding the
+  // cursor made the native data cache see an internally inconsistent snapshot.
+  // The actual older-page response is terminated separately below, so old
+  // messages still never accumulate in the React-owned graph.
+  const changed = rawMessagesChanged;
   const data = changed
     ? {
         ...parsed,
         messages: keptMessages,
-        current_node: trimmed.data.current_node || parsed.current_node,
-        page_info: {
-          ...pageInfo,
-          has_previous_page: false,
-          start_cursor: null
-        }
+        current_node: trimmed.data.current_node || parsed.current_node
       }
     : parsed;
   const renderedBefore = paginatedVisibleHistory(parsed).length;
@@ -460,7 +463,8 @@ function transformPaginatedConversation(parsed, conversationId, mode, limit) {
       : renderedAfter,
     currentNodePreserved: (trimmed.data.current_node || parsed.current_node) === parsed.current_node,
     paginationFirewall: true,
-    paginationCursorSuppressed: hadOlderPages,
+    paginationCursorSuppressed: false,
+    paginationCursorPreserved: hadOlderPages,
     paginatedConversationEnvelope: true,
     paginatedMessages: parsed.messages.length,
     paginatedMessagesAfter: keptMessages.length
@@ -506,6 +510,39 @@ function transformConversation(parsed, conversationId, cursorRequest = false) {
   // and only terminate native older-page pagination; AntiCurse owns older history
   // through its isolated authenticated path.
   if (paginatedConversationEnvelope(parsed)) {
+    if (cursorRequest) {
+      const pageInfo = parsed.page_info || {};
+      return {
+        mode,
+        transformed: {
+          changed: true,
+          data: {
+            ...parsed,
+            messages: [],
+            page_info: { ...pageInfo, has_previous_page: false, start_cursor: null }
+          },
+          reason: "trimmed",
+          stats: {
+            trimMode: mode,
+            mappingNodesBefore: parsed.messages.length,
+            mappingNodesAfter: 0,
+            discardedNodes: parsed.messages.length,
+            displayBefore: paginatedVisibleHistory(parsed).length,
+            displayAfter: 0,
+            logicalDisplayAfter: 0,
+            currentNodePreserved: true,
+            paginationFirewall: true,
+            paginationOlderPageBlocked: true,
+            paginationCursorSuppressed: true,
+            paginationBlockedNodes: parsed.messages.length,
+            paginatedConversationEnvelope: true,
+            paginatedMessages: parsed.messages.length,
+            paginatedMessagesAfter: 0
+          }
+        },
+        history: null
+      };
+    }
     return transformPaginatedConversation(parsed, conversationId, mode, limit);
   }
 
@@ -687,6 +724,7 @@ function stripExportRequestMarker(details) {
 function confirmExportBypassResponse(details) {
   cleanupExportBypassTokens();
   const state = responseFilterStates.get(details && details.requestId);
+  if (state) state.statusCode = Number(details && details.statusCode) || 0;
   const standalone = standaloneExportBypassRequests.get(details && details.requestId);
   if (standalone) standaloneExportBypassRequests.delete(details.requestId);
   const headers = Array.isArray(details && details.responseHeaders) ? details.responseHeaders : [];
@@ -698,12 +736,40 @@ function confirmExportBypassResponse(details) {
   return { responseHeaders };
 }
 
-async function processResponse(filter, chunks, totalBytes, details, exportBypass = false) {
+async function processResponse(filter, chunks, totalBytes, details, filterState = null) {
   const started = performance.now();
   const endpointConversationId = conversationIdFromEndpoint(details.url);
+  const exportBypass = !!(filterState && filterState.exportBypass);
+  const responseStatus = Number(filterState && filterState.statusCode) || 0;
   try {
     if (exportBypass) {
       writeOriginal(filter, chunks);
+      return;
+    }
+    // A 429/error body is not a conversation schema. Preserve native HTTP
+    // semantics and never turn it into an unsupported-shape warning.
+    if (responseStatus && (responseStatus < 200 || responseStatus >= 300)) {
+      writeOriginal(filter, chunks);
+      publishStats(details.tabId, statsForRequest(details, {
+        mode: "passthrough",
+        transport: "firefox-stream-filter",
+        reason: "http-status",
+        responseStatus,
+        originalBytes: totalBytes,
+        processingMs: +(performance.now() - started).toFixed(2)
+      }, endpointConversationId), details.timeStamp);
+      return;
+    }
+    if (totalBytes <= 0) {
+      writeOriginal(filter, chunks);
+      publishStats(details.tabId, statsForRequest(details, {
+        mode: "passthrough",
+        transport: "firefox-stream-filter",
+        reason: "empty-body",
+        responseStatus,
+        originalBytes: 0,
+        processingMs: +(performance.now() - started).toFixed(2)
+      }, endpointConversationId), details.timeStamp);
       return;
     }
     const initialized = await settingsReady;
@@ -788,7 +854,7 @@ function interceptConversation(details) {
   const chunks = [];
   let totalBytes = 0;
   let finished = false;
-  const filterState = { exportBypass: false };
+  const filterState = { exportBypass: false, statusCode: 0 };
   responseFilterStates.set(details.requestId, filterState);
 
   filter.ondata = (event) => {
@@ -811,7 +877,7 @@ function interceptConversation(details) {
     if (finished) return;
     finished = true;
     responseFilterStates.delete(details.requestId);
-    processResponse(filter, chunks, totalBytes, details, filterState.exportBypass).catch((error) => {
+    processResponse(filter, chunks, totalBytes, details, filterState).catch((error) => {
       recordIssue("interceptor", "firefox-response-handler-failed", error);
       try {
         writeOriginal(filter, chunks);
