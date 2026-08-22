@@ -14,7 +14,9 @@
   function isCursorRequest(urlString) {
     try {
       const url = new URL(urlString, "https://chatgpt.com/");
-      return url.searchParams.has("cursor");
+      if (url.searchParams.has("cursor")) return true;
+      return /^\/backend-api\/conversations\/[^/]+\/messages\/?$/.test(url.pathname) &&
+        url.searchParams.has("before");
     } catch {
       return false;
     }

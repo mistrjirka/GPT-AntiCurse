@@ -162,13 +162,12 @@
       : { changed: false, data: graph, reason: "below-limit", stats: {} };
     const keptMessages = activeMessagesFromGraph(trimmed.data);
     const rawMessagesChanged = keptMessages.length !== data.messages.length || !!trimmed.changed;
-    const changed = hadOlderPages || rawMessagesChanged;
+    const changed = rawMessagesChanged;
     const transformedData = changed
       ? {
           ...data,
           messages: keptMessages,
-          current_node: trimmed.data.current_node || data.current_node,
-          page_info: { ...pageInfo, has_previous_page: false, start_cursor: null }
+          current_node: trimmed.data.current_node || data.current_node
         }
       : data;
     const renderedBefore = paginatedVisibleHistory(data).length;
@@ -190,7 +189,8 @@
           : renderedAfter,
         currentNodePreserved: (trimmed.data.current_node || data.current_node) === data.current_node,
         paginationFirewall: true,
-        paginationCursorSuppressed: hadOlderPages,
+        paginationCursorSuppressed: false,
+        paginationCursorPreserved: hadOlderPages,
         paginatedConversationEnvelope: true,
         paginatedMessages: data.messages.length,
         paginatedMessagesAfter: keptMessages.length
@@ -258,9 +258,17 @@
     return !!(ENDPOINT && typeof ENDPOINT.isConversationDocument === "function" && ENDPOINT.isConversationDocument(urlString, location.href));
   }
 
+  function isConversationMessagesPage(urlString) {
+    return !!(ENDPOINT && typeof ENDPOINT.isConversationMessagesPage === "function" && ENDPOINT.isConversationMessagesPage(urlString, location.href));
+  }
+
   function conversationIdFromEndpoint(urlString) {
-    if (!ENDPOINT || typeof ENDPOINT.conversationId !== "function") return null;
-    return ENDPOINT.conversationId(urlString, location.href);
+    if (!ENDPOINT) return null;
+    const documentId = typeof ENDPOINT.conversationId === "function" ? ENDPOINT.conversationId(urlString, location.href) : null;
+    if (documentId) return documentId;
+    return typeof ENDPOINT.messagesPageConversationId === "function"
+      ? ENDPOINT.messagesPageConversationId(urlString, location.href)
+      : null;
   }
 
   function transientArchiveFromConversation(data, endpointUrl) {
@@ -471,6 +479,36 @@
     const cursorRequest = !!trace.paginationRequest;
 
     if (paginatedConversationEnvelope(data)) {
+      if (cursorRequest) {
+        const transformed = {
+          changed: true,
+          data: {
+            ...data,
+            messages: [],
+            page_info: { ...(data.page_info || {}), has_previous_page: false, start_cursor: null }
+          },
+          reason: "trimmed",
+          stats: {
+            trimMode: resolveMode(settings.mode),
+            mappingNodesBefore: data.messages.length,
+            mappingNodesAfter: 0,
+            discardedNodes: data.messages.length,
+            displayBefore: paginatedVisibleHistory(data).length,
+            displayAfter: 0,
+            logicalDisplayAfter: 0,
+            currentNodePreserved: true,
+            paginationFirewall: true,
+            paginationOlderPageBlocked: true,
+            paginationCursorSuppressed: true,
+            paginationBlockedNodes: data.messages.length,
+            paginatedConversationEnvelope: true,
+            paginatedMessages: data.messages.length,
+            paginatedMessagesAfter: 0
+          }
+        };
+        publishTransformStats(transformed, originalBytes, started, trace);
+        return transformed.data;
+      }
       const transformed = transformPaginatedConversation(
         data,
         trace.conversationId || conversationIdFromEndpoint(trace.endpointUrl || ""),
@@ -566,7 +604,7 @@
   });
 
   async function interceptConversationResponse(response, readBody, bodyAdapter) {
-    if (!isConversationDocument(response.url)) return readBody();
+    if (!isConversationDocument(response.url) && !isConversationMessagesPage(response.url)) return readBody();
 
     const endpointUrl = response.url;
     const meta = {
