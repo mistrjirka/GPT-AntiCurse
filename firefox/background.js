@@ -275,6 +275,132 @@ function publishHistory(tabId, history, requestStartedAt) {
   return true;
 }
 
+function paginatedConversationEnvelope(data) {
+  return !!data &&
+    typeof data === "object" &&
+    !Array.isArray(data) &&
+    Array.isArray(data.messages) &&
+    !!data.page_info &&
+    typeof data.page_info === "object" &&
+    !Array.isArray(data.page_info);
+}
+
+function paginatedCursor(data) {
+  if (!paginatedConversationEnvelope(data)) return null;
+  const pageInfo = data.page_info || {};
+  if (pageInfo.has_previous_page !== true) return null;
+  const cursor = typeof pageInfo.start_cursor === "string" ? pageInfo.start_cursor.trim() : "";
+  return cursor || null;
+}
+
+function messageRole(message) {
+  return message && message.author ? message.author.role : undefined;
+}
+
+function messageHidden(message) {
+  const metadata = message && message.metadata;
+  return !!(metadata && (
+    metadata.is_visually_hidden_from_conversation === true ||
+    metadata.is_user_system_message === true
+  ));
+}
+
+function messageText(message) {
+  const content = message && message.content;
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (typeof content.text === "string") return content.text;
+  if (!Array.isArray(content.parts)) return "";
+  const parts = [];
+  for (const part of content.parts) {
+    if (typeof part === "string") parts.push(part);
+    else if (part && typeof part === "object") {
+      if (typeof part.text === "string") parts.push(part.text);
+      else if (typeof part.content === "string") parts.push(part.content);
+      else if (part.asset_pointer || part.image_url || part.content_type === "image_asset_pointer") parts.push("[Image / attachment]");
+      else if (part.content_type) parts.push(`[${part.content_type}]`);
+    }
+  }
+  return parts.join("\n").trim();
+}
+
+function paginatedVisibleHistory(data) {
+  if (!paginatedConversationEnvelope(data)) return [];
+  const messages = [];
+  for (let index = 0; index < data.messages.length; index++) {
+    const message = data.messages[index];
+    const role = messageRole(message);
+    if ((role !== "user" && role !== "assistant") || messageHidden(message)) continue;
+    messages.push({
+      id: message && message.id ? message.id : `paginated-message-${index}`,
+      role,
+      text: messageText(message),
+      createTime: message && message.create_time ? message.create_time : null
+    });
+  }
+  return messages;
+}
+
+function buildPaginatedHistoryArchive(parsed, mode, limit, conversationId) {
+  if (!LIMITED_MODES.has(mode) || !conversationId || !paginatedConversationEnvelope(parsed)) return null;
+  // When the server says older pages exist, do not pretend this newest page is a
+  // complete archive. The isolated authoritative-history path will fetch the full
+  // graph after the native page has been safely bounded.
+  if (parsed.page_info?.has_previous_page === true || paginatedCursor(parsed)) return null;
+  const messages = paginatedVisibleHistory(parsed);
+  return {
+    ok: true,
+    conversationId,
+    messages,
+    nativeVisibleCount: messages.length,
+    pageSize: limit,
+    maxRendered: Math.max(limit, Math.min(500, limit * 3)),
+    source: "firefox-network-filter-paginated"
+  };
+}
+
+function transformPaginatedConversation(parsed, conversationId, mode, limit) {
+  const pageInfo = parsed.page_info || {};
+  const hadOlderPages = pageInfo.has_previous_page === true || !!paginatedCursor(parsed);
+  const messages = paginatedVisibleHistory(parsed);
+  const nodeCount = Math.max(1, parsed.messages.length + 1); // ChatGPT adds one synthetic paginated root.
+  const data = hadOlderPages
+    ? {
+        ...parsed,
+        page_info: {
+          ...pageInfo,
+          has_previous_page: false,
+          start_cursor: null
+        }
+      }
+    : parsed;
+  const stats = {
+    trimMode: mode,
+    mappingNodesBefore: nodeCount,
+    activePathNodesBefore: nodeCount,
+    mappingNodesAfter: nodeCount,
+    discardedNodes: 0,
+    displayBefore: messages.length,
+    displayAfter: messages.length,
+    logicalDisplayAfter: messages.length,
+    currentNodePreserved: true,
+    paginationFirewall: true,
+    paginationCursorSuppressed: hadOlderPages,
+    paginatedConversationEnvelope: true,
+    paginatedMessages: parsed.messages.length
+  };
+  return {
+    mode,
+    transformed: {
+      changed: hadOlderPages,
+      data,
+      reason: hadOlderPages ? "trimmed" : "below-limit",
+      stats
+    },
+    history: buildPaginatedHistoryArchive(parsed, mode, limit, conversationId)
+  };
+}
+
 function buildHistoryArchive(parsed, transformed, mode, limit, conversationId) {
   if (!LIMITED_MODES.has(mode) || !conversationId) return null;
   if (typeof parsed?.cursor === "string" && parsed.cursor.trim()) return null;
@@ -297,6 +423,15 @@ function buildHistoryArchive(parsed, transformed, mode, limit, conversationId) {
 function transformConversation(parsed, conversationId, cursorRequest = false) {
   const mode = resolveMode(settings.mode);
   const limit = normalizeMessageLimit(settings.maxDisplayMessages);
+
+  // ChatGPT's current plural endpoint returns a raw paginated envelope
+  // { messages, page_info, current_node, ... }. The page converts that envelope
+  // to a mapping only *after* Response.json() resolves. Preserve that API shape
+  // and only terminate native older-page pagination; AntiCurse owns older history
+  // through its isolated authenticated path.
+  if (paginatedConversationEnvelope(parsed)) {
+    return transformPaginatedConversation(parsed, conversationId, mode, limit);
+  }
 
   if (cursorRequest && PAGINATION && typeof PAGINATION.apply === "function") {
     const blocked = PAGINATION.apply(parsed, { cursorRequest: true });
