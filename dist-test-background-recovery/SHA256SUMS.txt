@@ -1,0 +1,2 @@
+f20108ef6766b3a6263af4546ceecff4b3dfbb2a885f368e89afa555e2a94d31  gpt-anticurse-chrome-v0.7.3-background-stale-test.zip
+5df3362e08fee43f36d4ecd05d67c223cee1e32e2d23ccdec0d850e76a7e23cf  gpt-anticurse-firefox-v0.7.3-background-stale-test.zip
