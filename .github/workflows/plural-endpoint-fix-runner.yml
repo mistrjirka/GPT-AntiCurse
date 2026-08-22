@@ -1,0 +1,312 @@
+name: Apply and validate plural conversation endpoint fix
+
+on:
+  push:
+    branches: [fix/plural-conversation-endpoint]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: fix/plural-conversation-endpoint
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply endpoint compatibility fix and regressions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count=1):
+              p = Path(path)
+              s = p.read_text()
+              actual = s.count(old)
+              if actual != count:
+                  raise SystemExit(f"{path}: expected {count} occurrences, found {actual}: {old!r}")
+              p.write_text(s.replace(old, new))
+
+          # Chromium MAIN-world recognition: exact one-segment conversation document,
+          # accepting both the historical singular and current plural family.
+          replace(
+              'chrome/main.js',
+              '      return url.origin === location.origin && /^\\/backend-api\\/conversation\\/[^/]+\\/?$/.test(url.pathname);',
+              '      return url.origin === location.origin && /^\\/backend-api\\/conversations?\\/[^/]+\\/?$/.test(url.pathname);'
+          )
+          replace(
+              'chrome/main.js',
+              '      const match = url.pathname.match(/^\\/backend-api\\/conversation\\/([^/]+)\\/?$/);',
+              '      const match = url.pathname.match(/^\\/backend-api\\/conversations?\\/([^/]+)\\/?$/);'
+          )
+
+          # Firefox parser and all three WebRequest surfaces.
+          replace(
+              'firefox/background.js',
+              '    const match = url.pathname.match(/^\\/backend-api\\/conversation\\/([^/]+)\\/?$/);',
+              '    const match = url.pathname.match(/^\\/backend-api\\/conversations?\\/([^/]+)\\/?$/);'
+          )
+          replace(
+              'firefox/background.js',
+              '{ urls: ["https://chatgpt.com/backend-api/conversation/*"] },',
+              '{ urls: ["https://chatgpt.com/backend-api/conversation/*", "https://chatgpt.com/backend-api/conversations/*"] },',
+              3
+          )
+
+          # Export preserves the proven singular endpoint. Only a missing/retired
+          # singular document route (or an unsupported document shape) falls back
+          # to the exact plural request shape observed on the live site.
+          old_fetch = r'''  async function fetchConversationPage(token, accessToken, cursor) {
+            const base = `${location.origin}/backend-api/conversation/${encodeURIComponent(token.id)}`;
+            const endpointUrl = cursor ? `${base}?cursor=${encodeURIComponent(cursor)}` : base;
+            const bypass = await firefoxBypassHeader(token);
+            if (!bypass.ok) return { ...bypass, endpointUrl };
+            if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl };
+
+            let response;
+            try {
+              response = await fetch(endpointUrl, {
+                method: "GET",
+                credentials: "same-origin",
+                cache: "no-store",
+                headers: {
+                  accept: "application/json",
+                  authorization: `Bearer ${accessToken}`,
+                  ...bypass.headers
+                }
+              });
+            } catch (error) {
+              return { ok: false, reason: "network-failed", error: String(error && error.message ? error.message : error), endpointUrl };
+            }
+            if (!response.ok) return { ok: false, reason: "http-status", status: response.status, endpointUrl };
+            if (IS_FIREFOX && response.headers.get("X-GPT-AntiCurse-Export-Bypassed") !== "1") {
+              return { ok: false, reason: "export-bypass-unconfirmed", endpointUrl };
+            }
+            try {
+              const data = await response.json();
+              if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl };
+              if (!data || typeof data !== "object" || !data.mapping || typeof data.mapping !== "object" || Array.isArray(data.mapping)) {
+                return { ok: false, reason: "unsupported-conversation-shape", endpointUrl };
+              }
+              return { ok: true, data, endpointUrl };
+            } catch (error) {
+              return { ok: false, reason: "json-parse-failed", error: String(error && error.message ? error.message : error), endpointUrl };
+            }
+          }
+'''
+          new_fetch = r'''  function exportEndpointUrl(token, cursor, endpointFamily) {
+            const base = `${location.origin}/backend-api/${endpointFamily}/${encodeURIComponent(token.id)}`;
+            const params = new URLSearchParams();
+            if (endpointFamily === "conversations") {
+              params.set("include_has_versions", "true");
+              params.set("num_turns", "10");
+            }
+            if (cursor) params.set("cursor", cursor);
+            const query = params.toString();
+            return query ? `${base}?${query}` : base;
+          }
+
+          async function fetchConversationPageFromFamily(token, accessToken, cursor, endpointFamily) {
+            const endpointUrl = exportEndpointUrl(token, cursor, endpointFamily);
+            const bypass = await firefoxBypassHeader(token);
+            if (!bypass.ok) return { ...bypass, endpointUrl, endpointFamily };
+            if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl, endpointFamily };
+
+            let response;
+            try {
+              response = await fetch(endpointUrl, {
+                method: "GET",
+                credentials: "same-origin",
+                cache: "no-store",
+                headers: {
+                  accept: "application/json",
+                  authorization: `Bearer ${accessToken}`,
+                  ...bypass.headers
+                }
+              });
+            } catch (error) {
+              return { ok: false, reason: "network-failed", error: String(error && error.message ? error.message : error), endpointUrl, endpointFamily };
+            }
+            if (!response.ok) return { ok: false, reason: "http-status", status: response.status, endpointUrl, endpointFamily };
+            if (IS_FIREFOX && response.headers.get("X-GPT-AntiCurse-Export-Bypassed") !== "1") {
+              return { ok: false, reason: "export-bypass-unconfirmed", endpointUrl, endpointFamily };
+            }
+            try {
+              const data = await response.json();
+              if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl, endpointFamily };
+              if (!data || typeof data !== "object" || !data.mapping || typeof data.mapping !== "object" || Array.isArray(data.mapping)) {
+                return { ok: false, reason: "unsupported-conversation-shape", endpointUrl, endpointFamily };
+              }
+              return { ok: true, data, endpointUrl, endpointFamily };
+            } catch (error) {
+              return { ok: false, reason: "json-parse-failed", error: String(error && error.message ? error.message : error), endpointUrl, endpointFamily };
+            }
+          }
+
+          function canFallbackToPlural(page, endpointFamily) {
+            if (endpointFamily !== "conversation" || !page) return false;
+            if (page.reason === "unsupported-conversation-shape") return true;
+            if (page.reason !== "http-status") return false;
+            return [404, 405, 410].includes(Number(page.status));
+          }
+
+          async function fetchConversationPage(token, accessToken, cursor, endpointFamily = null) {
+            const families = endpointFamily ? [endpointFamily] : ["conversation", "conversations"];
+            let lastFailure = null;
+            for (const family of families) {
+              const page = await fetchConversationPageFromFamily(token, accessToken, cursor, family);
+              if (page.ok) return page;
+              lastFailure = page;
+              if (endpointFamily || !canFallbackToPlural(page, family)) return page;
+            }
+            return lastFailure || { ok: false, reason: "conversation-endpoint-unavailable" };
+          }
+'''
+          replace('chrome/archive-capture.js', old_fetch, new_fetch)
+          replace('chrome/archive-capture.js', '    let endpointUrl = null;\n\n    while (pageCount < EXPORT_MAX_PAGES) {\n      const page = await fetchConversationPage(token, auth.accessToken, cursor);\n      if (!page.ok) return { ...page, pageCount };\n      endpointUrl = page.endpointUrl;', '    let endpointUrl = null;\n    let endpointFamily = null;\n\n    while (pageCount < EXPORT_MAX_PAGES) {\n      const page = await fetchConversationPage(token, auth.accessToken, cursor, endpointFamily);\n      if (!page.ok) return { ...page, pageCount };\n      endpointUrl = page.endpointUrl;\n      endpointFamily = page.endpointFamily || endpointFamily;')
+          replace('chrome/archive-capture.js', '      endpointUrl,\n      pageCount,\n      authSource:', '      endpointUrl,\n      endpointFamily,\n      pageCount,\n      authSource:')
+          replace('chrome/archive-capture.js', '      sourcePages: source.pageCount,\n      sourceAuth: source.authSource || null', '      sourcePages: source.pageCount,\n      sourceAuth: source.authSource || null,\n      sourceEndpointFamily: source.endpointFamily || null')
+          replace('chrome/archive-capture.js', '      sourcePages: source.ok ? source.pageCount : Number(source.pageCount) || 0,\n      sourceAuth: source.ok ? source.authSource : null,', '      sourcePages: source.ok ? source.pageCount : Number(source.pageCount) || 0,\n      sourceAuth: source.ok ? source.authSource : null,\n      sourceEndpointFamily: source.ok ? source.endpointFamily || null : null,')
+          Path('firefox/archive-capture.js').write_text(Path('chrome/archive-capture.js').read_text())
+
+          # Exact live-shaped plural request in both deterministic browser E2Es.
+          replace('tests/e2e-chromium.js', "fetch('/backend-api/conversation/e2e').then((response) => response.json())", "fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10').then((response) => response.json())")
+          replace('tests/e2e-chromium.js', "fetch('/backend-api/conversation/e2e?cursor=' + encodeURIComponent(data.cursor)).then((response) => response.json())", "fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10&cursor=' + encodeURIComponent(data.cursor)).then((response) => response.json())")
+          replace('tests/e2e-chromium.js', r'    await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversation\/e2e(?:\?.*)?$/, async (route) => {', r'    await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversations?\/e2e(?:\?.*)?$/, async (route) => {')
+          replace('tests/e2e-chromium.js', '      const url = new URL(request.url());\n      // The fixture page load models ChatGPT\'s ordinary request. Export requests\n      // are distinguished by a Bearer token from session/bootstrap auth.\n      if (!auth) {', '      const url = new URL(request.url());\n      const pluralEndpoint = url.pathname === "/backend-api/conversations/e2e";\n      // The fixture page load models the current live plural request. Export\n      // remains singular-first and is distinguished by its Bearer token.\n      if (!auth) {\n        assert.equal(pluralEndpoint, true, "native conversation load must exercise the plural endpoint family");\n        assert.equal(url.searchParams.get("include_has_versions"), "true");\n        assert.equal(url.searchParams.get("num_turns"), "10");')
+          replace('tests/e2e-chromium.js', '      assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected export auth: ${auth}`);\n      const cursor = url.searchParams.get("cursor");', '      assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected export auth: ${auth}`);\n      const cursor = url.searchParams.get("cursor");\n      if (pluralEndpoint) {\n        assert.equal(url.searchParams.get("include_has_versions"), "true");\n        assert.equal(url.searchParams.get("num_turns"), "10");\n        if (cursor) assert.equal(cursor, "older-page-2", "plural export fallback must follow the private cursor");\n        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(cursor ? pages.second : pages.first) });\n        return;\n      }')
+          replace('tests/e2e-chromium.js', '        if (exportStarts === 4) {\n          await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary export fixture failure" }) });\n          return;\n        }', '        if (exportStarts === 4) {\n          await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary export fixture failure" }) });\n          return;\n        }\n        if (exportStarts === 5) {\n          await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "singular endpoint retired" }) });\n          return;\n        }')
+          replace('tests/e2e-chromium.js', '  assert.equal(fallback.baseArchive.messages.some((message) => /user-0/.test(message.text || "")), false, "partial fallback must not pretend cursor-omitted history was captured");\n  await assertUnderLimitAgentCompaction(page);', '  assert.equal(fallback.baseArchive.messages.some((message) => /user-0/.test(message.text || "")), false, "partial fallback must not pretend cursor-omitted history was captured");\n\n  const pluralFallback = await buildExportArchiveFromPage(worker);\n  assert.equal(pluralFallback && pluralFallback.ok, true, `plural export fallback failed: ${JSON.stringify(pluralFallback)}`);\n  assert.equal(pluralFallback.authoritative, true);\n  assert.equal(pluralFallback.sourceEndpointFamily, "conversations");\n  assert.equal(pluralFallback.sourcePages, 2);\n  assert(pluralFallback.baseArchive.messages.some((message) => /user-0/.test(message.text || "")), "plural fallback must retain all cursor pages");\n  await assertUnderLimitAgentCompaction(page);')
+          replace('tests/e2e-chromium.js', '  const historyHealth = await contentDebug(worker);\n  assert.equal(historyHealth?.state?.archiveBridge?.paginationCursorPreserved, true, "initial OpenAI cursor must remain private in the isolated bridge");', '  const historyHealth = await contentDebug(worker);\n  assert.equal(historyHealth?.state?.windowed?.nativeTrimConfirmed, true, "plural initial response must confirm native trimming before history is requested");\n  assert.equal(historyHealth?.state?.windowed?.historyPresent, true, "plural initial response must make private window history available");\n  assert.equal(historyHealth?.state?.windowed?.historyConversationId, "e2e");\n  assert.equal(historyHealth?.state?.archiveBridge?.paginationCursorPreserved, true, "initial OpenAI cursor must remain private in the isolated bridge");')
+
+          replace('tests/e2e-firefox.js', "fetch('/backend-api/conversation/e2e-firefox').then(r=>r.json())", "fetch('/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10').then(r=>r.json())")
+          replace('tests/e2e-firefox.js', "fetch('/backend-api/conversation/e2e-firefox?cursor='+encodeURIComponent(data.cursor)).then(r=>r.json())", "fetch('/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10&cursor='+encodeURIComponent(data.cursor)).then(r=>r.json())")
+          replace('tests/e2e-firefox.js', '    if (url.pathname === "/backend-api/conversation/e2e-firefox") {\n      const auth = req.headers.authorization || "";\n      const cursor = url.searchParams.get("cursor");\n      if (auth) assert.equal(auth, "Bearer firefox-e2e-token");', '    if (url.pathname === "/backend-api/conversation/e2e-firefox" || url.pathname === "/backend-api/conversations/e2e-firefox") {\n      const auth = req.headers.authorization || "";\n      const cursor = url.searchParams.get("cursor");\n      if (auth) assert.equal(auth, "Bearer firefox-e2e-token");\n      else {\n        assert.equal(url.pathname, "/backend-api/conversations/e2e-firefox", "native Firefox load must exercise plural interception");\n        assert.equal(url.searchParams.get("include_has_versions"), "true");\n        assert.equal(url.searchParams.get("num_turns"), "10");\n      }')
+
+          # Pagination firewall remains endpoint-agnostic; prove plural cursor URLs.
+          replace('tests/test-pagination-firewall.js', 'assert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversation/x?cursor=abc"), true);\nassert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversation/x?foo=cursor"), false);', 'assert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversation/x?cursor=abc"), true);\nassert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversations/x?include_has_versions=true&num_turns=10&cursor=abc"), true);\nassert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversation/x?foo=cursor"), false);\nassert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversations/x?foo=cursor"), false);')
+
+          # Firefox listener registration and bypass behavior must cover plural.
+          replace('tests/test-firefox-export-bypass.js', 'function eventSlot(name) {\n  return { addListener(listener) { listeners[name] = listener; } };\n}', 'function eventSlot(name) {\n  return {\n    addListener(listener, filter) {\n      listeners[name] = listener;\n      if (filter) listeners[`${name}Filter`] = filter;\n    }\n  };\n}')
+          replace('tests/test-firefox-export-bypass.js', 'function startRequest(requestId, tabId, conversationId, query = "") {\n  listeners.beforeRequest({\n    requestId,\n    tabId,\n    method: "GET",\n    url: `https://chatgpt.com/backend-api/conversation/${conversationId}${query}`,', 'function startRequest(requestId, tabId, conversationId, query = "", endpointFamily = "conversation") {\n  listeners.beforeRequest({\n    requestId,\n    tabId,\n    method: "GET",\n    url: `https://chatgpt.com/backend-api/${endpointFamily}/${conversationId}${query}`,')
+          replace('tests/test-firefox-export-bypass.js', 'vm.runInNewContext(source, context, { filename: "firefox/background.js" });\n\nasync function issueToken', 'vm.runInNewContext(source, context, { filename: "firefox/background.js" });\n\nfor (const name of ["beforeRequest", "beforeSendHeaders", "headersReceived"]) {\n  const urls = listeners[`${name}Filter`]?.urls || [];\n  assert(urls.includes("https://chatgpt.com/backend-api/conversation/*"), `${name} must retain singular coverage`);\n  assert(urls.includes("https://chatgpt.com/backend-api/conversations/*"), `${name} must cover plural conversations`);\n}\nlisteners.beforeRequest({\n  requestId: "unrelated-plural",\n  tabId: 7,\n  method: "GET",\n  url: "https://chatgpt.com/backend-api/conversations/conv-a/stream_status",\n  timeStamp: Date.now()\n});\nassert.equal(filters.has("unrelated-plural"), false, "nested plural routes must fail open instead of being treated as conversation documents");\n\nasync function issueToken')
+          replace('tests/test-firefox-export-bypass.js', '  filters.get("wrong-tab").error = "test cleanup";\n  filters.get("wrong-tab").onerror();\n\n  console.log("Firefox one-shot export bypass tests: PASS");', '  filters.get("wrong-tab").error = "test cleanup";\n  filters.get("wrong-tab").onerror();\n\n  const pluralGrant = await issueToken(10, "conv-plural");\n  const pluralFilter = startRequest("plural-valid", 10, "conv-plural", "?include_has_versions=true&num_turns=10", "conversations");\n  const pluralRequestHeaders = listeners.beforeSendHeaders({\n    requestId: "plural-valid",\n    tabId: 10,\n    url: "https://chatgpt.com/backend-api/conversations/conv-plural?include_has_versions=true&num_turns=10",\n    requestHeaders: [{ name: "X-GPT-AntiCurse-Export", value: pluralGrant.token }]\n  });\n  assert(!pluralRequestHeaders.requestHeaders.some((header) => /gpt-anticurse-export/i.test(header.name)), "plural export marker must never reach OpenAI");\n  const pluralResponseHeaders = listeners.headersReceived({ requestId: "plural-valid", responseHeaders: [] });\n  assert(pluralResponseHeaders.responseHeaders.some((header) => /Export-Bypassed/i.test(header.name)), "plural export bypass must be confirmed");\n  pluralFilter.ondata({ data: new Uint8Array([6]).buffer });\n  assert.equal(pluralFilter.disconnected, 1);\n\n  console.log("Firefox one-shot export bypass tests: PASS");')
+
+          # Static regression anchors complement the behavioral browser tests.
+          Path('tests/test-conversation-endpoints.js').write_text(r'''"use strict";
+          const assert = require("assert");
+          const fs = require("fs");
+          const chromeMain = fs.readFileSync("chrome/main.js", "utf8");
+          const firefoxBackground = fs.readFileSync("firefox/background.js", "utf8");
+          const archiveCapture = fs.readFileSync("chrome/archive-capture.js", "utf8");
+          const chromeE2E = fs.readFileSync("tests/e2e-chromium.js", "utf8");
+          const firefoxE2E = fs.readFileSync("tests/e2e-firefox.js", "utf8");
+          const singularE2E = fs.readFileSync("tests/e2e-hydration-chromium.js", "utf8");
+
+          assert(chromeMain.includes("/backend-api\\/conversations?\\/"));
+          assert(firefoxBackground.includes("/backend-api\\/conversations?\\/"));
+          assert.equal((firefoxBackground.match(/https:\/\/chatgpt\.com\/backend-api\/conversations\/\*/g) || []).length, 3);
+          assert(chromeE2E.includes("/backend-api/conversations/e2e?include_has_versions=true&num_turns=10"));
+          assert(firefoxE2E.includes("/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10"));
+          assert(singularE2E.includes("/backend-api/conversation/hydration-e2e"), "a real singular-path browser regression must remain");
+          assert(archiveCapture.includes('["conversation", "conversations"]'), "Export must keep singular-first plural fallback");
+          assert(archiveCapture.includes('params.set("include_has_versions", "true")'));
+          assert(archiveCapture.includes('params.set("num_turns", "10")'));
+          assert(archiveCapture.includes('[404, 405, 410]'));
+          console.log("conversation endpoint regression tests: PASS");
+          '''.replace(/^          /gm, ''))
+
+          # Keep reviewer documentation accurate.
+          replace('REVIEWING.md', '`firefox/background.js` intercepts only `GET https://chatgpt.com/backend-api/conversation/<id>`', '`firefox/background.js` intercepts only exact conversation documents under `GET https://chatgpt.com/backend-api/conversation/<id>` or `/backend-api/conversations/<id>`')
+          replace('REVIEWING.md', 'Conversation interception checks the exact `/backend-api/conversation/<id>` path.', 'Conversation interception accepts only the exact `/backend-api/conversation/<id>` and `/backend-api/conversations/<id>` document paths.')
+
+          # Add the new unit gate to normal PR/release validation.
+          replace('.github/workflows/release.yml', '            tests/test-pagination-firewall.js\n            tests/test-stall-recovery.js', '            tests/test-pagination-firewall.js\n            tests/test-conversation-endpoints.js\n            tests/test-stall-recovery.js')
+          PY
+
+      - name: Validate manifests and JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool firefox/manifest.json >/dev/null
+          python -m json.tool chrome/manifest.json >/dev/null
+          for file in firefox/*.js chrome/*.js tests/*.js; do node --check "$file"; done
+
+      - name: Verify shared code parity and static policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in diagnostics.js trim.js trim-logical.js trim-pipeline.js pagination-firewall.js session-auth.js stall-recovery.js archive.js conversation-scope.js archive-export.js archive-export.css archive-capture.js export-extract.js dom-ready.js history-markdown.js history-virtualized.js history-virtualized.css history-fidelity.js history-fidelity.css history-hydration-safe.js history-overlay.js windowed.js debug-state.js content.css popup.html popup.css popup-sizing.css popup-context.js backup-popup.js; do
+            cmp "firefox/$file" "chrome/$file"
+          done
+          if grep -REn --include='*.js' '(^|[^[:alnum:]_])(eval|Function)[[:space:]]*\(' firefox chrome; then exit 1; fi
+
+      - name: Run full unit and code-quality suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            tests/test-trim.js
+            tests/test-trim-logical.js
+            tests/test-archive.js
+            tests/test-archive-export.js
+            tests/test-export-extract.js
+            tests/test-diagnostics.js
+            tests/test-counter-ordering.js
+            tests/test-stats-scope.js
+            tests/test-history-inline.js
+            tests/test-history-virtualized.js
+            tests/test-history-fidelity.js
+            tests/test-history-request-loop.js
+            tests/test-packaging.js
+            tests/test-firefox-android.js
+            tests/test-firefox-export-bypass.js
+            tests/test-no-silent-catches.js
+            tests/test-chrome-host-access.js
+            tests/test-reliability.js
+            tests/test-pagination-firewall.js
+            tests/test-conversation-endpoints.js
+            tests/test-stall-recovery.js
+          )
+          for test in "${tests[@]}"; do echo "==> $test"; node "$test"; done
+
+      - name: Build browser packages
+        run: bash ./scripts/build.sh
+
+      - name: Install browser E2E runtimes
+        run: |
+          npm install --no-save --no-package-lock playwright@1.55.0 selenium-webdriver@4.46.0
+          npx playwright install --with-deps --no-shell chromium
+          curl -L --fail --retry 3 -o /tmp/firefox.tar.xz 'https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US'
+          mkdir -p /tmp/anticurse-firefox
+          tar -xf /tmp/firefox.tar.xz -C /tmp/anticurse-firefox --strip-components=1
+          echo "FIREFOX_BIN=/tmp/anticurse-firefox/firefox" >> "$GITHUB_ENV"
+          echo '127.0.0.1 chatgpt.com' | sudo tee -a /etc/hosts >/dev/null
+
+      - name: Run complete deterministic Chromium and Firefox E2E suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/e2e-chromium.js
+          node tests/e2e-stall-recovery-chromium.js
+          node tests/e2e-hydration-chromium.js
+          node tests/e2e-fidelity-chromium.js
+          node tests/e2e-firefox.js
+          node tests/e2e-stall-recovery-firefox.js
+          node tests/e2e-fidelity-firefox.js
+
+      - name: Commit validated fix and remove temporary runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/plural-endpoint-fix-runner.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add chrome/main.js firefox/background.js chrome/archive-capture.js firefox/archive-capture.js tests/e2e-chromium.js tests/e2e-firefox.js tests/test-pagination-firewall.js tests/test-firefox-export-bypass.js tests/test-conversation-endpoints.js REVIEWING.md .github/workflows/release.yml
+          git commit -m 'Support current plural conversation endpoint'
+          git push origin HEAD:fix/plural-conversation-endpoint
