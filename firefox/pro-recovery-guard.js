@@ -10,12 +10,14 @@
   const COMPOSER_SELECTOR = '#prompt-textarea[contenteditable="true"]';
   const BLOCK_EVENT = '__gpt_anticurse_pro_recovery_blocked__';
   const CONFIRMED_NON_PRO_LABELS = new Set(["instant", "thinking"]);
+  const ALLOWED_NUDGE_WINDOW_MS = 20_000;
   let blockedClicks = 0;
   let blockedUnknownClicks = 0;
   let lastBlockedTurnKey = null;
   let lastBlockedModelSlug = null;
   let lastBlockedDecision = null;
   let lastBlockedDetectionSource = null;
+  let allowedRecoveryNudge = null;
 
   function normalize(value) {
     return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -121,6 +123,23 @@
     return !!composer && String(composer.textContent || "").trim() === ".";
   }
 
+  function clearExpiredAllowedNudge() {
+    if (!allowedRecoveryNudge) return null;
+    if (Date.now() - allowedRecoveryNudge.at <= ALLOWED_NUDGE_WINDOW_MS) return allowedRecoveryNudge;
+    allowedRecoveryNudge = null;
+    return null;
+  }
+
+  function rememberAllowedStop(state) {
+    allowedRecoveryNudge = {
+      at: Date.now(),
+      turnKey: state.turnKey || null,
+      modelSlug: state.modelSlug || null,
+      decision: state.decision,
+      detectionSource: state.detectionSource
+    };
+  }
+
   function block(event, state, phase) {
     blockedClicks++;
     if (state.decision === "unknown") blockedUnknownClicks++;
@@ -128,6 +147,7 @@
     lastBlockedModelSlug = state.modelSlug || lastBlockedModelSlug;
     lastBlockedDecision = state.decision || lastBlockedDecision;
     lastBlockedDetectionSource = state.detectionSource || lastBlockedDetectionSource;
+    allowedRecoveryNudge = null;
     event.preventDefault();
     event.stopImmediatePropagation();
     window.dispatchEvent(new CustomEvent(BLOCK_EVENT, { detail: {
@@ -142,13 +162,17 @@
   }
 
   document.addEventListener("click", (event) => {
-    // Human clicks must always keep their native behavior. AntiCurse recovery uses
-    // HTMLElement.click(), which dispatches an untrusted click.
-    if (event.isTrusted) return;
     const target = event.target;
     if (!(target instanceof Element)) return;
     const button = target.closest(SUBMIT_SELECTOR);
     if (!button) return;
+
+    // Human clicks must always keep their native behavior. They also cancel any
+    // one-shot authorization left by an in-progress automatic recovery.
+    if (event.isTrusted) {
+      allowedRecoveryNudge = null;
+      return;
+    }
 
     const state = activeRecoveryState();
     const stop = button.getAttribute("data-testid") === "stop-button";
@@ -156,17 +180,32 @@
     // Fail closed. Automatic recovery is permitted only when the active model is
     // positively identified as non-Pro. ChatGPT has removed data-message-model-slug
     // from some live DOMs, so "unknown" must not silently mean "safe".
-    if (stop && !state.autoRecoveryAllowed) {
-      block(event, state, "stop");
+    if (stop) {
+      if (!state.autoRecoveryAllowed) {
+        block(event, state, "stop");
+        return;
+      }
+      // Stop removes ChatGPT's streaming marker before AntiCurse sends its fixed
+      // nudge. Carry this positively identified non-Pro decision across that one
+      // transition only; do not reinterpret the now-missing turn as safe.
+      rememberAllowedStop(state);
       return;
     }
 
-    // Defense in depth: block AntiCurse's fixed nudge when the model is Pro or
-    // unknown, and after any Stop that this guard already rejected.
-    if (!stop && composerContainsOnlyNudge() && (!state.autoRecoveryAllowed ||
-        (lastBlockedTurnKey && (!state.turnKey || state.turnKey === lastBlockedTurnKey)))) {
-      block(event, state, "send-nudge");
+    if (!composerContainsOnlyNudge()) return;
+
+    const allowedNudge = clearExpiredAllowedNudge();
+    if (state.autoRecoveryAllowed) {
+      allowedRecoveryNudge = null;
+      return;
     }
+    if (allowedNudge) {
+      // One-shot authorization: consume it before the Send handler runs so it
+      // cannot be reused by a later turn or another synthetic click.
+      allowedRecoveryNudge = null;
+      return;
+    }
+    block(event, state, "send-nudge");
   }, true);
 
   globalThis.CGAntiCurseProRecoveryGuard = {
@@ -179,6 +218,7 @@
     },
     debug() {
       const state = activeRecoveryState();
+      const allowedNudge = clearExpiredAllowedNudge();
       return {
         activeProRun: state.pro,
         activeModelSlug: state.modelSlug,
@@ -193,7 +233,14 @@
         lastBlockedTurnKey,
         lastBlockedModelSlug,
         lastBlockedDecision,
-        lastBlockedDetectionSource
+        lastBlockedDetectionSource,
+        allowedRecoveryNudge: allowedNudge ? {
+          turnKey: allowedNudge.turnKey,
+          modelSlug: allowedNudge.modelSlug,
+          decision: allowedNudge.decision,
+          detectionSource: allowedNudge.detectionSource,
+          remainingMs: Math.max(0, ALLOWED_NUDGE_WINDOW_MS - (Date.now() - allowedNudge.at))
+        } : null
       };
     }
   };
