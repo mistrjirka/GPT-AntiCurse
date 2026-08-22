@@ -37,6 +37,7 @@ function fixtureHtml() {
     const section = document.createElement('section');
     section.setAttribute('data-testid', 'conversation-turn-' + index);
     section.setAttribute('data-turn-id', 'turn-' + index);
+    section.setAttribute('data-message-model-slug', 'gpt-5-6-thinking');
     const streaming = document.createElement('div');
     streaming.setAttribute('data-streaming-response-status', 'streaming');
     streaming.textContent = 'assistant output ' + index;
@@ -222,9 +223,6 @@ async function openCase(driver, id) {
     current = await state(driver);
     assert.equal(current.stopClicks, 1, "Firefox explicit long-wait banner must trigger auto-resume");
     assert.equal(current.sentText, ".");
-    // The fixture returns NOT_STREAMING for this conversation. Successful
-    // recovery proves the banner path did not require backend confirmation;
-    // any later query may belong to the newly recovered streaming turn.
 
     await openCase(driver, "draft-protection");
     await driver.sleep(700);
