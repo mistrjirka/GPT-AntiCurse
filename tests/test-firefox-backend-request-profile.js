@@ -44,6 +44,8 @@ const context = {
   URL,
   Date,
   console,
+  setTimeout,
+  clearTimeout,
   CGConversationEndpoint: endpoint
 };
 context.globalThis = context;
