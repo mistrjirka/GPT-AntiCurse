@@ -3,19 +3,21 @@
  *
  * Records only coarse backend route metadata, request methods, status codes,
  * query parameter NAMES, and whether AntiCurse would treat the request as a
- * conversation document. It never reads request/response bodies, headers,
- * query values, or conversation text.
+ * conversation document. It never reads request/response bodies, header values,
+ * query values, conversation IDs, or conversation text.
  */
 "use strict";
 
 (() => {
   const STORAGE_KEY = "cgBackendRequestProfile";
-  const PROFILE_VERSION = 1;
+  const PROFILE_VERSION = 2;
   const MAX_RECENT = 80;
-  const MAX_GROUPS = 120;
+  const MAX_GROUPS = 160;
   const FLUSH_DELAY_MS = 250;
+  const EXPORT_HEADER_NAME = "x-gpt-anticurse-export";
   const ENDPOINT = globalThis.CGConversationEndpoint;
   const extensionVersion = browser.runtime.getManifest().version;
+  const requestSources = new Map();
   let writeQueue = Promise.resolve();
   let pendingEvents = [];
   let flushTimer = null;
@@ -70,6 +72,13 @@
     return !!ENDPOINT.conversationId(urlString);
   }
 
+  function sourceForRequest(details, route) {
+    const explicit = details && details.requestId ? requestSources.get(details.requestId) : null;
+    if (explicit) return explicit;
+    if (route && route.startsWith("/backend-api/conversation/:id/:tail")) return "chatgpt-or-anticurse-status";
+    return "unmarked";
+  }
+
   function classify(details, outcome) {
     const route = routeFromUrl(details && details.url);
     if (!route) return null;
@@ -84,6 +93,7 @@
       route,
       queryKeys: queryKeysFromUrl(details.url),
       conversationTarget: isConversationTarget(details.url),
+      source: sourceForRequest(details, route),
       outcome,
       statusCode,
       error,
@@ -96,7 +106,7 @@
     return {
       profileVersion: PROFILE_VERSION,
       extensionVersion,
-      privacy: "metadata-only; no bodies, headers, query values, conversation IDs, or conversation text",
+      privacy: "metadata-only; no bodies, header values, query values, conversation IDs, or conversation text",
       startedAt: now,
       updatedAt: now,
       total: 0,
@@ -104,6 +114,7 @@
       failed: 0,
       conversationTargets: 0,
       nonConversationTargets: 0,
+      sources: {},
       groups: {},
       recent: []
     };
@@ -116,6 +127,7 @@
     return {
       ...emptyProfile(),
       ...value,
+      sources: value.sources && typeof value.sources === "object" && !Array.isArray(value.sources) ? value.sources : {},
       groups: value.groups && typeof value.groups === "object" && !Array.isArray(value.groups) ? value.groups : {},
       recent: Array.isArray(value.recent) ? value.recent.slice(-MAX_RECENT) : []
     };
@@ -133,7 +145,7 @@
 
   function groupKey(event) {
     const query = event.queryKeys.length ? `?${event.queryKeys.join(",")}` : "";
-    return `${event.method} ${event.route}${query} ${event.conversationTarget ? "TARGET" : "PASS"}`;
+    return `${event.source} ${event.method} ${event.route}${query} ${event.conversationTarget ? "TARGET" : "PASS"}`;
   }
 
   function trimGroups(groups) {
@@ -149,6 +161,7 @@
     else profile.completed = Math.max(0, Number(profile.completed) || 0) + 1;
     if (event.conversationTarget) profile.conversationTargets = Math.max(0, Number(profile.conversationTargets) || 0) + 1;
     else profile.nonConversationTargets = Math.max(0, Number(profile.nonConversationTargets) || 0) + 1;
+    profile.sources[event.source] = Math.max(0, Number(profile.sources[event.source]) || 0) + 1;
 
     const key = groupKey(event);
     const previous = profile.groups[key] && typeof profile.groups[key] === "object" ? profile.groups[key] : {};
@@ -156,6 +169,7 @@
     const status = statusKey(event);
     statuses[status] = Math.max(0, Number(statuses[status]) || 0) + 1;
     profile.groups[key] = {
+      source: event.source,
       method: event.method,
       route: event.route,
       queryKeys: event.queryKeys,
@@ -204,11 +218,23 @@
 
   function record(details, outcome) {
     const event = classify(details, outcome);
+    if (details && details.requestId) requestSources.delete(details.requestId);
     if (!event) return Promise.resolve(false);
     pendingEvents.push(event);
     scheduleFlush();
     return Promise.resolve(true);
   }
+
+  browser.webRequest.onBeforeSendHeaders.addListener(
+    (details) => {
+      const headers = Array.isArray(details && details.requestHeaders) ? details.requestHeaders : [];
+      const marked = headers.some((header) => String(header && header.name || "").toLowerCase() === EXPORT_HEADER_NAME);
+      if (marked && details.requestId) requestSources.set(details.requestId, "anticurse-export");
+      return {};
+    },
+    { urls: ["https://chatgpt.com/backend-api/*"] },
+    ["requestHeaders"]
+  );
 
   browser.webRequest.onCompleted.addListener(
     (details) => { record(details, "completed"); },
@@ -226,6 +252,7 @@
       flushTimer = null;
     }
     pendingEvents = [];
+    requestSources.clear();
     writeQueue = writeQueue.then(async () => {
       const profile = await profileReady;
       Object.assign(profile, emptyProfile());
