@@ -2,22 +2,24 @@
  * Temporary Firefox live-site request profiler.
  *
  * Records only coarse backend route metadata, request methods, status codes,
- * query parameter NAMES, and whether AntiCurse would treat the request as a
- * conversation document. It never reads request/response bodies, header values,
- * query values, conversation IDs, or conversation text.
+ * query parameter NAMES, tab-local numeric IDs, normalized Retry-After delays,
+ * and whether AntiCurse would treat the request as a conversation document.
+ * It never reads request/response bodies, arbitrary header values, query values,
+ * conversation IDs, or conversation text.
  */
 "use strict";
 
 (() => {
   const STORAGE_KEY = "cgBackendRequestProfile";
-  const PROFILE_VERSION = 2;
-  const MAX_RECENT = 80;
-  const MAX_GROUPS = 160;
+  const PROFILE_VERSION = 3;
+  const MAX_RECENT = 100;
+  const MAX_GROUPS = 200;
   const FLUSH_DELAY_MS = 250;
   const EXPORT_HEADER_NAME = "x-gpt-anticurse-export";
   const ENDPOINT = globalThis.CGConversationEndpoint;
   const extensionVersion = browser.runtime.getManifest().version;
   const requestSources = new Map();
+  const responseMeta = new Map();
   let writeQueue = Promise.resolve();
   let pendingEvents = [];
   let flushTimer = null;
@@ -72,6 +74,15 @@
     return !!ENDPOINT.conversationId(urlString);
   }
 
+  function normalizedRetryAfter(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return null;
+    if (/^\d{1,5}$/.test(raw)) return Math.max(0, Math.min(3600, Number(raw)));
+    const timestamp = Date.parse(raw);
+    if (!Number.isFinite(timestamp)) return null;
+    return Math.max(0, Math.min(3600, Math.ceil((timestamp - Date.now()) / 1000)));
+  }
+
   function sourceForRequest(details, route) {
     const explicit = details && details.requestId ? requestSources.get(details.requestId) : null;
     if (explicit) return explicit;
@@ -87,8 +98,10 @@
     const error = outcome === "error" && details && details.error
       ? String(details.error).slice(0, 120)
       : null;
+    const meta = details && details.requestId ? responseMeta.get(details.requestId) : null;
     return {
       at: isoNow(),
+      tabId: Number.isInteger(details && details.tabId) ? details.tabId : -1,
       method,
       route,
       queryKeys: queryKeysFromUrl(details.url),
@@ -96,6 +109,7 @@
       source: sourceForRequest(details, route),
       outcome,
       statusCode,
+      retryAfterSeconds: meta && Number.isFinite(meta.retryAfterSeconds) ? meta.retryAfterSeconds : null,
       error,
       requestType: details && details.type ? String(details.type).slice(0, 40) : null
     };
@@ -106,7 +120,7 @@
     return {
       profileVersion: PROFILE_VERSION,
       extensionVersion,
-      privacy: "metadata-only; no bodies, header values, query values, conversation IDs, or conversation text",
+      privacy: "metadata-only; no bodies, arbitrary header values, query values, conversation IDs, or conversation text",
       startedAt: now,
       updatedAt: now,
       total: 0,
@@ -115,6 +129,7 @@
       conversationTargets: 0,
       nonConversationTargets: 0,
       sources: {},
+      tabs: {},
       groups: {},
       recent: []
     };
@@ -128,6 +143,7 @@
       ...emptyProfile(),
       ...value,
       sources: value.sources && typeof value.sources === "object" && !Array.isArray(value.sources) ? value.sources : {},
+      tabs: value.tabs && typeof value.tabs === "object" && !Array.isArray(value.tabs) ? value.tabs : {},
       groups: value.groups && typeof value.groups === "object" && !Array.isArray(value.groups) ? value.groups : {},
       recent: Array.isArray(value.recent) ? value.recent.slice(-MAX_RECENT) : []
     };
@@ -145,7 +161,7 @@
 
   function groupKey(event) {
     const query = event.queryKeys.length ? `?${event.queryKeys.join(",")}` : "";
-    return `${event.source} ${event.method} ${event.route}${query} ${event.conversationTarget ? "TARGET" : "PASS"}`;
+    return `tab:${event.tabId} ${event.source} ${event.method} ${event.route}${query} ${event.conversationTarget ? "TARGET" : "PASS"}`;
   }
 
   function trimGroups(groups) {
@@ -163,12 +179,25 @@
     else profile.nonConversationTargets = Math.max(0, Number(profile.nonConversationTargets) || 0) + 1;
     profile.sources[event.source] = Math.max(0, Number(profile.sources[event.source]) || 0) + 1;
 
+    const tabKey = String(event.tabId);
+    const tab = profile.tabs[tabKey] && typeof profile.tabs[tabKey] === "object" ? profile.tabs[tabKey] : {};
+    profile.tabs[tabKey] = {
+      total: Math.max(0, Number(tab.total) || 0) + 1,
+      conversationTargets: Math.max(0, Number(tab.conversationTargets) || 0) + (event.conversationTarget ? 1 : 0),
+      rateLimited: Math.max(0, Number(tab.rateLimited) || 0) + (event.statusCode === 429 ? 1 : 0),
+      firstAt: tab.firstAt || event.at,
+      lastAt: event.at
+    };
+
     const key = groupKey(event);
     const previous = profile.groups[key] && typeof profile.groups[key] === "object" ? profile.groups[key] : {};
     const statuses = previous.statuses && typeof previous.statuses === "object" ? { ...previous.statuses } : {};
     const status = statusKey(event);
     statuses[status] = Math.max(0, Number(statuses[status]) || 0) + 1;
+    const retryAfterValues = Array.isArray(previous.retryAfterSeconds) ? previous.retryAfterSeconds.slice(-7) : [];
+    if (Number.isFinite(event.retryAfterSeconds) && !retryAfterValues.includes(event.retryAfterSeconds)) retryAfterValues.push(event.retryAfterSeconds);
     profile.groups[key] = {
+      tabId: event.tabId,
       source: event.source,
       method: event.method,
       route: event.route,
@@ -177,6 +206,7 @@
       requestType: event.requestType,
       count: Math.max(0, Number(previous.count) || 0) + 1,
       statuses,
+      retryAfterSeconds: retryAfterValues,
       firstAt: previous.firstAt || event.at,
       lastAt: event.at
     };
@@ -218,7 +248,10 @@
 
   function record(details, outcome) {
     const event = classify(details, outcome);
-    if (details && details.requestId) requestSources.delete(details.requestId);
+    if (details && details.requestId) {
+      requestSources.delete(details.requestId);
+      responseMeta.delete(details.requestId);
+    }
     if (!event) return Promise.resolve(false);
     pendingEvents.push(event);
     scheduleFlush();
@@ -234,6 +267,19 @@
     },
     { urls: ["https://chatgpt.com/backend-api/*"] },
     ["requestHeaders"]
+  );
+
+  browser.webRequest.onHeadersReceived.addListener(
+    (details) => {
+      if (!details || !details.requestId || details.statusCode !== 429) return {};
+      const headers = Array.isArray(details.responseHeaders) ? details.responseHeaders : [];
+      const retry = headers.find((header) => String(header && header.name || "").toLowerCase() === "retry-after");
+      const retryAfterSeconds = normalizedRetryAfter(retry && retry.value);
+      if (retryAfterSeconds != null) responseMeta.set(details.requestId, { retryAfterSeconds });
+      return {};
+    },
+    { urls: ["https://chatgpt.com/backend-api/*"] },
+    ["responseHeaders"]
   );
 
   browser.webRequest.onCompleted.addListener(
@@ -253,6 +299,7 @@
     }
     pendingEvents = [];
     requestSources.clear();
+    responseMeta.clear();
     writeQueue = writeQueue.then(async () => {
       const profile = await profileReady;
       Object.assign(profile, emptyProfile());
@@ -268,6 +315,7 @@
     routeFromUrl,
     queryKeysFromUrl,
     isConversationTarget,
+    normalizedRetryAfter,
     classify,
     record,
     flush
