@@ -12,7 +12,7 @@
   "permissions": ["storage", "webRequest", "webRequestBlocking", "webRequestFilterResponse"],
   "host_permissions": ["https://chatgpt.com/*"],
   "background": {
-    "scripts": ["diagnostics.js", "trim.js", "trim-logical.js", "trim-pipeline.js", "pagination-firewall.js", "background.js"]
+    "scripts": ["conversation-endpoint.js", "diagnostics.js", "trim.js", "trim-logical.js", "trim-pipeline.js", "pagination-firewall.js", "background.js"]
   },
   "content_scripts": [
     {

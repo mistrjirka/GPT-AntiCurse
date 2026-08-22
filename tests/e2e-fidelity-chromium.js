@@ -150,6 +150,17 @@ async function worker(context) {
   return context.serviceWorkers()[0] || context.waitForEvent("serviceworker");
 }
 
+
+async function waitForStorageApi(worker) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const ready = await worker.evaluate(() => !!(globalThis.chrome && chrome.storage && chrome.storage.local)).catch(() => false);
+    if (ready) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Chromium extension storage API did not become ready");
+}
+
 (async () => {
   const extensionPath = path.resolve(__dirname, "..", "chrome");
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "anticurse-fidelity-e2e-"));
@@ -164,6 +175,7 @@ async function worker(context) {
     await context.route("https://chatgpt.com/backend-api/conversation/fidelity-e2e", route => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(conversation()) }));
 
     const serviceWorker = await worker(context);
+    await waitForStorageApi(serviceWorker);
     await serviceWorker.evaluate(async () => {
       await chrome.storage.local.set({ enabled: true, mode: "recent", maxDisplayMessages: 4, showGuardNotice: false });
     });

@@ -20,6 +20,7 @@
   const VALID_MODES = new Set(["recent", "windowed-visible"]);
   const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
   const PAGINATION = globalThis.CGPaginationFirewall;
+  const ENDPOINT = globalThis.CGConversationEndpoint;
 
   let settings = { ...DEFAULT_SETTINGS };
   let settingsSettled = false;
@@ -91,24 +92,12 @@
   }
 
   function isConversationDocument(urlString) {
-    try {
-      const url = new URL(urlString, location.href);
-      return url.origin === location.origin && /^\/backend-api\/conversation\/[^/]+\/?$/.test(url.pathname);
-    } catch (error) {
-      void error;
-      return false;
-    }
+    return !!(ENDPOINT && typeof ENDPOINT.isConversationDocument === "function" && ENDPOINT.isConversationDocument(urlString, location.href));
   }
 
   function conversationIdFromEndpoint(urlString) {
-    try {
-      const url = new URL(urlString, location.href);
-      const match = url.pathname.match(/^\/backend-api\/conversation\/([^/]+)\/?$/);
-      return match ? decodeURIComponent(match[1]) : null;
-    } catch (error) {
-      void error;
-      return null;
-    }
+    if (!ENDPOINT || typeof ENDPOINT.conversationId !== "function") return null;
+    return ENDPOINT.conversationId(urlString, location.href);
   }
 
   function transientArchiveFromConversation(data, endpointUrl) {

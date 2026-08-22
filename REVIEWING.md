@@ -6,7 +6,7 @@ GPT AntiCurse is intentionally distributed as plain, human-readable source. Ther
 
 ### Firefox
 
-1. `firefox/background.js` intercepts only `GET https://chatgpt.com/backend-api/conversation/<id>` using `browser.webRequest.filterResponseData()`.
+1. `firefox/background.js` intercepts only exact conversation documents under `GET https://chatgpt.com/backend-api/conversation/<id>` or `/backend-api/conversations/<id>` using `browser.webRequest.filterResponseData()`.
 2. `firefox/trim.js` performs the pure conversation-graph transformation.
 3. The reduced JSON is returned to ChatGPT. Parse/schema failures are fail-open and the original response is written back.
 4. For limited-history modes, the background script also extracts a local archive containing only visible user/assistant text.
@@ -41,10 +41,11 @@ Files marked `*/` are kept byte-for-byte identical between Firefox and Chromium 
 ## Security and privacy properties
 
 - Host access is restricted to `https://chatgpt.com/*`.
-- Conversation interception checks the exact `/backend-api/conversation/<id>` path.
+- Conversation interception accepts only the exact `/backend-api/conversation/<id>` and `/backend-api/conversations/<id>` document paths.
 - No analytics or telemetry.
 - No user conversation is sent to the developer or another service.
 - No remote extension code.
+
 - No `eval()` or `Function()` dynamic code execution; release CI rejects either pattern.
 - Older-history archives live only in browser/tab memory and contain only visible user/assistant text plus IDs/timestamps needed for ordering.
 - The extension never modifies the server-side conversation.
@@ -77,3 +78,15 @@ bash ./scripts/build.sh
 ```
 
 The build script only ZIPs the browser directories; the JavaScript inside the published ZIP is the same source stored in the repository.
+
+## Genuine live-site compatibility smoke
+
+The deterministic browser E2Es intentionally use local fixtures. Before a release that changes ChatGPT interception, also run a real-site smoke with no DNS override and no request routing:
+
+```bash
+npm install --no-save --no-package-lock playwright@1.55.0
+npx playwright install --with-deps --no-shell chromium
+CHATGPT_SMOKE_URL='https://chatgpt.com/c/<conversation-id>' node tests/live-chatgpt-smoke.js
+```
+
+For an unauthenticated browser where anonymous chat creation is available, `CHATGPT_SMOKE_CREATE_ANON=1 node tests/live-chatgpt-smoke.js` creates one tiny throwaway chat and reloads it. The smoke fails if the real detail endpoint is not observed, if AntiCurse does not emit matching interception stats, or if the live response shape is rejected. A Cloudflare/bot challenge is a failed/blocked release gate, not a fixture pass.

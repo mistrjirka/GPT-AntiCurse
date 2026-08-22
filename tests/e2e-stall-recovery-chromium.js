@@ -113,7 +113,19 @@ async function waitForWorker(context) {
   return context.serviceWorkers().find(isAntiCurseWorker) || context.waitForEvent("serviceworker", isAntiCurseWorker);
 }
 
+
+async function waitForStorageApi(worker) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const ready = await worker.evaluate(() => !!(globalThis.chrome && chrome.storage && chrome.storage.local)).catch(() => false);
+    if (ready) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Chromium extension storage API did not become ready");
+}
+
 async function configure(worker, enabled = true) {
+  await waitForStorageApi(worker);
   await worker.evaluate(async ({ enabled }) => {
     await chrome.storage.local.set({
       enabled: false,
@@ -127,6 +139,7 @@ async function configure(worker, enabled = true) {
 }
 
 async function setPerformance(worker, enabled) {
+  await waitForStorageApi(worker);
   await worker.evaluate(async ({ enabled }) => chrome.storage.local.set({ enabled }), { enabled });
 }
 

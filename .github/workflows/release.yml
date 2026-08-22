@@ -32,6 +32,7 @@ jobs:
           cmp firefox/trim.js chrome/trim.js
           cmp firefox/trim-logical.js chrome/trim-logical.js
           cmp firefox/trim-pipeline.js chrome/trim-pipeline.js
+          cmp firefox/conversation-endpoint.js chrome/conversation-endpoint.js
           cmp firefox/pagination-firewall.js chrome/pagination-firewall.js
           cmp firefox/session-auth.js chrome/session-auth.js
           cmp firefox/stall-recovery.js chrome/stall-recovery.js
@@ -89,6 +90,7 @@ jobs:
             tests/test-chrome-host-access.js
             tests/test-reliability.js
             tests/test-pagination-firewall.js
+            tests/test-conversation-endpoints.js
             tests/test-stall-recovery.js
           )
           for test in "${tests[@]}"; do

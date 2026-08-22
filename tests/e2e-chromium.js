@@ -122,7 +122,7 @@ const FIXTURE_HTML = String.raw`<!doctype html>
     return result.reverse();
   }
 
-  fetch('/backend-api/conversation/e2e').then((response) => response.json()).then(async (data) => {
+  fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10').then((response) => response.json()).then(async (data) => {
     window.__receivedCursor = data.cursor ?? null;
     window.__nativePaginationRequests = 0;
     // If the cursor leaks through AntiCurse, model ChatGPT immediately fetching
@@ -130,7 +130,7 @@ const FIXTURE_HTML = String.raw`<!doctype html>
     // behavior exposes cursor=null, so this loop never executes.
     while (data.cursor) {
       window.__nativePaginationRequests++;
-      const older = await fetch('/backend-api/conversation/e2e?cursor=' + encodeURIComponent(data.cursor)).then((response) => response.json());
+      const older = await fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10&cursor=' + encodeURIComponent(data.cursor)).then((response) => response.json());
       Object.assign(data.mapping, older.mapping || {});
       data.cursor = older.cursor ?? null;
     }
@@ -174,7 +174,19 @@ async function waitForServiceWorker(context) {
   return context.waitForEvent("serviceworker", isAntiCurseWorker);
 }
 
+
+async function waitForStorageApi(worker) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const ready = await worker.evaluate(() => !!(globalThis.chrome && chrome.storage && chrome.storage.local)).catch(() => false);
+    if (ready) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Chromium extension storage API did not become ready");
+}
+
 async function configure(worker, mode) {
+  await waitForStorageApi(worker);
   await worker.evaluate(async ({ mode }) => {
     await chrome.storage.local.set({
       enabled: true,
@@ -351,6 +363,13 @@ async function recentPagingTest(context, worker) {
   assert.equal(bootstrapExport.sourcePages, 2);
   assert(bootstrapExport.baseArchive.messages.some((message) => message.id === "hidden-0"), "bootstrap-auth export must remain complete across cursor pages");
 
+  const pluralExport = await buildExportArchiveFromPage(worker);
+  assert.equal(pluralExport && pluralExport.ok, true, `plural export fallback failed: ${JSON.stringify(pluralExport)}`);
+  assert.equal(pluralExport.authoritative, true);
+  assert.equal(pluralExport.sourceEndpointFamily, "conversations", "retired singular export route must fall back to plural");
+  assert.equal(pluralExport.sourcePages, 2, "plural export fallback must keep walking cursor pages");
+  assert(pluralExport.baseArchive.messages.some((message) => message.id === "hidden-0"), "plural export fallback must remain complete");
+
   const fallback = await buildExportArchiveFromPage(worker);
   assert.equal(fallback && fallback.ok, true, `temporary authoritative-fetch failure must still produce a fallback export: ${JSON.stringify(fallback)}`);
   assert.equal(fallback.authoritative, false, "fallback export must never claim authoritative completeness");
@@ -372,6 +391,9 @@ async function recentPagingTest(context, worker) {
   const marker = page.locator("#cg-window-history-host .cg-history-marker");
   assert((await marker.textContent()).includes("72 older turns available"), "private cursor fetch must retain history React did not receive");
   const historyHealth = await contentDebug(worker);
+  assert.equal(historyHealth?.state?.historyController?.nativeTrimConfirmed, true, "plural initial response must confirm native trimming before history is requested");
+  assert.equal(historyHealth?.state?.historyController?.historyPresent, true, "plural initial response must make private window history available");
+  assert.equal(historyHealth?.state?.historyController?.historyConversationId, "e2e");
   assert.equal(historyHealth?.state?.archiveBridge?.paginationCursorPreserved, true, "initial OpenAI cursor must remain private in the isolated bridge");
   assert.equal(historyHealth?.state?.archiveBridge?.fullVisibleArchive, true, "Load previous must rebuild complete lightweight history privately");
 
@@ -511,13 +533,15 @@ function paginatedConversationPages(full) {
       }
       await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "auth fixture unavailable" }) });
     });
-    await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversation\/e2e(?:\?.*)?$/, async (route) => {
+    await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversations?\/e2e(?:\?.*)?$/, async (route) => {
       const request = route.request();
       const auth = request.headers()["authorization"] || "";
       const url = new URL(request.url());
-      // The fixture page load models ChatGPT's ordinary request. Export requests
-      // are distinguished by a Bearer token from session/bootstrap auth.
+      const plural = url.pathname === "/backend-api/conversations/e2e";
       if (!auth) {
+        assert.equal(plural, true, "ChatGPT fixture must use the current plural conversation document endpoint");
+        assert.equal(url.searchParams.get("include_has_versions"), "true");
+        assert.equal(url.searchParams.get("num_turns"), "10");
         const nativeCursor = url.searchParams.get("cursor");
         if (!nativeCursor) {
           await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.first) });
@@ -527,19 +551,29 @@ function paginatedConversationPages(full) {
         await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.second) });
         return;
       }
+
       assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected export auth: ${auth}`);
       const cursor = url.searchParams.get("cursor");
       if (!cursor) {
-        exportStarts++;
-        if (exportStarts === 4) {
+        if (!plural) exportStarts++;
+        // Fourth authoritative operation: retire singular and prove a complete
+        // plural fallback. Fifth: a real server failure must remain partial.
+        if (!plural && exportStarts === 4) {
+          await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "singular retired" }) });
+          return;
+        }
+        if (!plural && exportStarts === 5) {
           await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary export fixture failure" }) });
           return;
         }
-        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.first) });
-        return;
       }
-      assert.equal(cursor, "older-page-2", "export must follow the cursor returned by the first page");
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.second) });
+
+      if (plural) {
+        assert.equal(url.searchParams.get("include_has_versions"), "true");
+        assert.equal(url.searchParams.get("num_turns"), "10");
+      }
+      if (cursor) assert.equal(cursor, "older-page-2", "export must follow the cursor returned by the first page");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(cursor ? pages.second : pages.first) });
     });
 
     const worker = await waitForServiceWorker(context);

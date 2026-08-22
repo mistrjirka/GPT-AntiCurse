@@ -75,6 +75,17 @@ async function waitForServiceWorker(context) {
   return context.waitForEvent("serviceworker");
 }
 
+
+async function waitForStorageApi(worker) {
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const ready = await worker.evaluate(() => !!(globalThis.chrome && chrome.storage && chrome.storage.local)).catch(() => false);
+    if (ready) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Chromium extension storage API did not become ready");
+}
+
 (async () => {
   const extensionPath = path.resolve(__dirname, "..", "chrome");
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "anticurse-hydration-"));
@@ -101,6 +112,7 @@ async function waitForServiceWorker(context) {
     });
 
     const worker = await waitForServiceWorker(context);
+    await waitForStorageApi(worker);
     await worker.evaluate(async () => {
       await chrome.storage.local.set({
         enabled: true,
