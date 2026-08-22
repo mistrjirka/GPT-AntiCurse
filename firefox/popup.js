@@ -10,6 +10,7 @@ const modeSelect = document.getElementById("mode");
 const modeHelp = document.getElementById("modeHelp");
 const limitInput = document.getElementById("limit");
 const noticeInput = document.getElementById("showNotice");
+const stallRecoveryInput = document.getElementById("stallRecovery");
 const feedback = document.getElementById("feedback");
 const lastIssueElement = document.getElementById("lastIssue");
 const primaryMetric = document.getElementById("primaryMetric");
@@ -64,7 +65,8 @@ async function saveSettings() {
       enabled: enabledInput.checked,
       mode: normalizeMode(modeSelect.value),
       maxDisplayMessages: messageLimit(),
-      showGuardNotice: noticeInput.checked
+      showGuardNotice: noticeInput.checked,
+      stallRecoveryEnabled: stallRecoveryInput.checked
     });
   } catch (error) {
     await recordSettingIssue("popup-save-failed", error);
@@ -163,11 +165,12 @@ function renderStats(stats) {
   setDetailVisibility("bytesSavedLabel", "bytesSaved", false);
 }
 async function initialize() {
-  const saved = await browser.storage.local.get({ enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true, cgTotals: EMPTY_TOTALS, cgLastIssue: null });
+  const saved = await browser.storage.local.get({ enabled: true, mode: "recent", maxDisplayMessages: 64, showGuardNotice: true, stallRecoveryEnabled: true, cgTotals: EMPTY_TOTALS, cgLastIssue: null });
   enabledInput.checked = saved.enabled;
   modeSelect.value = normalizeMode(saved.mode);
   limitInput.value = saved.maxDisplayMessages;
   noticeInput.checked = saved.showGuardNotice !== false;
+  stallRecoveryInput.checked = saved.stallRecoveryEnabled !== false;
   renderTotals(saved.cgTotals);
   renderIssue(saved.cgLastIssue);
   updateControls();
@@ -189,6 +192,7 @@ document.getElementById("reload").addEventListener("click", () => runAction("Sav
 document.getElementById("resetTotals").addEventListener("click", () => runAction("Counter reset failed", async () => renderTotals(await browser.runtime.sendMessage({ type: "cg-reset-totals" }))));
 enabledInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
 noticeInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
+stallRecoveryInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
 modeSelect.addEventListener("change", () => { updateControls(); runAction("Saving settings failed", saveSettings); });
 limitInput.addEventListener("change", () => runAction("Saving settings failed", saveSettings));
 browser.storage.onChanged.addListener((changes, area) => {

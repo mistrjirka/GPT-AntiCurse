@@ -20,6 +20,7 @@
       <label class="row"><span class="label"><b>History mode</b><small id="modeHelp">Keep the latest window and load older turns with a button.</small></span><select id="mode" aria-describedby="modeHelp"><option value="recent">Recent N + button</option><option value="windowed-visible">Auto window</option></select></label>
       <label class="row"><span class="label"><b>Window size</b><small>Recent conversation units kept natively by ChatGPT</small></span><input id="limit" type="number" min="4" max="500" step="2"></label>
       <label class="row"><span class="label"><b>On-page status</b></span><input id="showNotice" type="checkbox"></label>
+      <label class="row"><span class="label"><b>Auto-recover stalled runs</b><small>After ~2 min without progress (~5 min for an active tool), Stop and send a continuation nudge.</small></span><input id="stallRecovery" type="checkbox"></label>
       <div class="row"><span class="label"><b>Conversation export</b><small>Captured only when you export; no continuous conversation backup runs in the page.</small></span><span>On demand</span></div>
     </section>
     <div class="buttons" style="grid-template-columns:1fr"><button id="reload" class="primary">Save &amp; reload</button></div>

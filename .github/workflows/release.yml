@@ -32,6 +32,9 @@ jobs:
           cmp firefox/trim.js chrome/trim.js
           cmp firefox/trim-logical.js chrome/trim-logical.js
           cmp firefox/trim-pipeline.js chrome/trim-pipeline.js
+          cmp firefox/pagination-firewall.js chrome/pagination-firewall.js
+          cmp firefox/session-auth.js chrome/session-auth.js
+          cmp firefox/stall-recovery.js chrome/stall-recovery.js
           cmp firefox/archive.js chrome/archive.js
           cmp firefox/conversation-scope.js chrome/conversation-scope.js
           cmp firefox/archive-export.js chrome/archive-export.js
@@ -85,6 +88,8 @@ jobs:
             tests/test-no-silent-catches.js
             tests/test-chrome-host-access.js
             tests/test-reliability.js
+            tests/test-pagination-firewall.js
+            tests/test-stall-recovery.js
           )
           for test in "${tests[@]}"; do
             echo "==> $test"
@@ -115,16 +120,20 @@ jobs:
           echo '127.0.0.1 chatgpt.com' | sudo tee -a /etc/hosts >/dev/null
       - name: Run Chromium extension E2E
         run: node tests/e2e-chromium.js
+      - name: Run Chromium stall-recovery E2E
+        run: node tests/e2e-stall-recovery-chromium.js
       - name: Run Chromium hydration-boundary E2E
         run: node tests/e2e-hydration-chromium.js
       - name: Run Chromium native-fidelity E2E
         run: node tests/e2e-fidelity-chromium.js
       - name: Run Firefox extension E2E
         run: node tests/e2e-firefox.js
+      - name: Run Firefox stall-recovery E2E
+        run: node tests/e2e-stall-recovery-firefox.js
       - name: Run Firefox native-fidelity E2E
         run: node tests/e2e-fidelity-firefox.js
       - name: Create GitHub Release if missing
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

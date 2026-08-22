@@ -63,6 +63,24 @@ function conversation(exchanges = 50, assistantFragments = 4) {
   return { id: "e2e-firefox", conversation_id: "e2e-firefox", title: "Firefox E2E", mapping, current_node: parent, root: "root" };
 }
 
+function paginatedConversationPages(full) {
+  const entries = Object.entries(full.mapping);
+  // Keep the newest 40 exchanges in the initial page so the normal Recent 64
+  // trimming path is still exercised; the oldest 10 live behind the cursor.
+  const split = Math.min(entries.length, 101);
+  return {
+    first: {
+      id: full.id, conversation_id: full.conversation_id, title: full.title,
+      mapping: Object.fromEntries(entries.slice(split)), current_node: full.current_node,
+      root: full.root, cursor: "older-firefox-page"
+    },
+    second: {
+      id: full.id, conversation_id: full.conversation_id, title: full.title,
+      mapping: Object.fromEntries(entries.slice(0, split)), cursor: null
+    }
+  };
+}
+
 const FIXTURE_HTML = String.raw`<!doctype html>
 <html>
 <head>
@@ -72,6 +90,7 @@ html,body{margin:0;height:100%;font-family:system-ui,sans-serif}[data-scroll-roo
 </style>
 </head>
 <body>
+<script type="application/json" id="client-bootstrap">{"authStatus":"logged_in","session":{"accessToken":"firefox-bootstrap-token"}}</script>
 <div data-scroll-root><div role="presentation" class="contents"><div id="thread"></div></div></div>
 <script>
 (() => {
@@ -82,7 +101,14 @@ html,body{margin:0;height:100%;font-family:system-ui,sans-serif}[data-scroll-roo
   function hidden(node){ const m=node&&node.message&&node.message.metadata; return !!(m&&(m.is_visually_hidden_from_conversation===true||m.is_user_system_message===true)); }
   function role(node){ return node&&node.message&&node.message.author&&node.message.author.role; }
   function chain(data){ const r=[],s=new Set(); let id=data.current_node; while(id&&data.mapping[id]&&!s.has(id)){s.add(id);r.push(id);id=data.mapping[id].parent||null;} return r.reverse(); }
-  fetch('/backend-api/conversation/e2e-firefox').then(r=>r.json()).then(data=>{
+  fetch('/backend-api/conversation/e2e-firefox').then(r=>r.json()).then(async data=>{
+    window.__receivedCursor=data.cursor??null;
+    window.__nativePaginationRequests=0;
+    while(data.cursor){
+      window.__nativePaginationRequests++;
+      const older=await fetch('/backend-api/conversation/e2e-firefox?cursor='+encodeURIComponent(data.cursor)).then(r=>r.json());
+      Object.assign(data.mapping,older.mapping||{}); data.cursor=older.cursor??null;
+    }
     window.__receivedConversation=data;
     window.__receivedMappingNodes=Object.keys(data.mapping).length;
     let visible=0;
@@ -114,15 +140,27 @@ function createCertificate(dir) {
 }
 
 function createServer(tls, fullConversation) {
+  const pages = paginatedConversationPages(fullConversation);
   return https.createServer(tls, (req, res) => {
-    if (req.url === "/c/e2e-firefox") {
+    const url = new URL(req.url, "https://chatgpt.com:8443");
+    if (url.pathname === "/c/e2e-firefox") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(FIXTURE_HTML);
       return;
     }
-    if (req.url === "/backend-api/conversation/e2e-firefox") {
+    if (url.pathname === "/api/auth/session") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(fullConversation));
+      res.end(JSON.stringify({ accessToken: "firefox-e2e-token" }));
+      return;
+    }
+    if (url.pathname === "/backend-api/conversation/e2e-firefox") {
+      const auth = req.headers.authorization || "";
+      const cursor = url.searchParams.get("cursor");
+      if (auth) assert.equal(auth, "Bearer firefox-e2e-token");
+      if (cursor) assert.equal(cursor, "older-firefox-page");
+      const body = cursor ? pages.second : pages.first;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
       return;
     }
     res.writeHead(404, { "content-type": "text/plain" });
@@ -178,7 +216,9 @@ async function waitForValue(driver, script, timeout = 12000) {
       hasOldUser: !!window.__receivedConversation.mapping['user-17'],
       hasCutoffUser: !!window.__receivedConversation.mapping['user-18'],
       hasRecentTool: !!window.__receivedConversation.mapping['tool-18'],
-      hasRecentHidden: !!window.__receivedConversation.mapping['hidden-18']
+      hasRecentHidden: !!window.__receivedConversation.mapping['hidden-18'],
+      cursor: window.__receivedCursor,
+      nativePaginationRequests: window.__nativePaginationRequests
     }`);
     console.log("Firefox trim state", JSON.stringify({ addonId, ...state }));
 
@@ -189,6 +229,8 @@ async function waitForValue(driver, script, timeout = 12000) {
     assert.equal(state.hasCutoffUser, true, "logical cutoff must retain first recent Firefox exchange");
     assert.equal(state.hasRecentTool, true, "recent Firefox technical nodes must survive");
     assert.equal(state.hasRecentHidden, true, "recent Firefox hidden nodes must survive");
+    assert.equal(state.cursor, null, "Firefox pagination firewall must terminate the native cursor before page code sees it");
+    assert.equal(state.nativePaginationRequests, 0, "Firefox page code must not fetch raw older cursor pages");
 
     const button = await driver.wait(until.elementLocated(By.css("#cg-window-history-host .cg-history-previous")), 10000);
     await driver.wait(until.elementIsVisible(button), 10000);

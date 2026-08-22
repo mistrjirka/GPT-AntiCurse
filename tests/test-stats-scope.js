@@ -63,7 +63,9 @@ class FakeElement {
 function baseContext({ showGuardNotice = false } = {}) {
   const windowListeners = new Map();
   const dispatched = [];
+  const posted = [];
   const observers = new Set();
+  let queryAllCount = 0;
 
   function notifyMutation(target, addedNodes) {
     for (const observer of observers) {
@@ -96,6 +98,7 @@ function baseContext({ showGuardNotice = false } = {}) {
     documentElement,
     createElement(tagName) { return new FakeElement(tagName, notifyMutation); },
     querySelectorAll(selector) {
+      queryAllCount++;
       if (selector !== `[id="${STATUS_ID}"]`) return [];
       const result = [];
       const visit = (element) => {
@@ -126,7 +129,7 @@ function baseContext({ showGuardNotice = false } = {}) {
     document,
     window: {
       addEventListener(type, listener) { windowListeners.set(type, listener); },
-      postMessage() {},
+      postMessage(message) { posted.push(message); },
       dispatchEvent(event) { dispatched.push(event); }
     },
     CGAntiCurseDiagnostics: {
@@ -135,6 +138,8 @@ function baseContext({ showGuardNotice = false } = {}) {
     },
     __windowListeners: windowListeners,
     __dispatched: dispatched,
+    __posted: posted,
+    __queryAllCount() { return queryAllCount; },
     __showGuardNotice: showGuardNotice
   };
   context.globalThis = context;
@@ -144,10 +149,11 @@ function baseContext({ showGuardNotice = false } = {}) {
 async function testChromiumRejectsStaleStats() {
   const context = baseContext();
   let runtimeListener = null;
+  let storageListener = null;
   context.chrome = {
     storage: {
       local: { get() { return Promise.resolve({ showGuardNotice: false, cgLastIssue: null }); } },
-      onChanged: { addListener() {} }
+      onChanged: { addListener(listener) { storageListener = listener; } }
     },
     runtime: {
       sendMessage() { return Promise.resolve({}); },
@@ -161,6 +167,18 @@ async function testChromiumRejectsStaleStats() {
 
   const onMessage = context.__windowListeners.get("message");
   assert(onMessage, "Chromium content bridge should listen for MAIN-world messages");
+  assert(storageListener, "Chromium content script should observe settings/diagnostic storage changes");
+
+  const postsBeforeCounterWrite = context.__posted.length;
+  const queriesBeforeCounterWrite = context.__queryAllCount();
+  storageListener({ cgTotals: { newValue: { responsesTrimmed: 99 } } }, "local");
+  await tick();
+  assert.equal(context.__posted.length, postsBeforeCounterWrite, "counter persistence must not wake the MAIN-world settings bridge");
+  assert.equal(context.__queryAllCount(), queriesBeforeCounterWrite, "counter persistence must not rerender/remove the on-page status badge");
+
+  storageListener({ mode: { newValue: "windowed-visible" } }, "local");
+  await tick();
+  assert.equal(context.__posted.length, postsBeforeCounterWrite + 1, "actual settings changes must still reach the MAIN-world interceptor");
 
   onMessage({
     source: context.window,
@@ -181,15 +199,27 @@ async function testChromiumRejectsStaleStats() {
   runtimeListener({ type: "cg-get-stats" }, {}, (value) => { reply = value; });
   assert.equal(reply.conversationId, "b");
   assert.equal(context.__dispatched.at(-1).detail.conversationId, "b");
+
+  const dispatchedBeforeBlockedPage = context.__dispatched.length;
+  onMessage({
+    source: context.window,
+    origin: context.location.origin,
+    data: { channel: "__gpt_anticurse_v1__", type: "stats", stats: { mode: "trimmed", conversationId: "b", paginationOlderPageBlocked: true } }
+  });
+  runtimeListener({ type: "cg-get-stats" }, {}, (value) => { reply = value; });
+  assert.equal(reply.conversationId, "b", "late blocked cursor-page stats must not replace current Chromium status");
+  assert.equal(reply.paginationOlderPageBlocked, undefined);
+  assert.equal(context.__dispatched.length, dispatchedBeforeBlockedPage, "blocked cursor pages must not retrigger Chromium history state");
 }
 
 async function testFirefoxRejectsStaleStats() {
   const context = baseContext();
   let pushedStatsListener = null;
+  let storageListener = null;
   context.browser = {
     storage: {
       local: { get() { return Promise.resolve({ showGuardNotice: false, cgLastIssue: null }); } },
-      onChanged: { addListener() {} }
+      onChanged: { addListener(listener) { storageListener = listener; } }
     },
     runtime: {
       sendMessage(message) {
@@ -206,13 +236,21 @@ async function testFirefoxRejectsStaleStats() {
   await tick();
 
   assert(pushedStatsListener, "Firefox content script should register its pushed-stats listener");
+  assert(storageListener, "Firefox content script should observe notice/diagnostic storage changes");
   assert.equal(context.__dispatched.length, 0, "an empty initial stats response must not publish a watchdog event");
+
+  const queriesBeforeCounterWrite = context.__queryAllCount();
+  storageListener({ cgTotals: { newValue: { responsesTrimmed: 99 } } }, "local");
+  await tick();
+  assert.equal(context.__queryAllCount(), queriesBeforeCounterWrite, "Firefox counter persistence must not rerender/remove the page badge");
   pushedStatsListener({ type: "cg-stats", stats: { mode: "trimmed", conversationId: "a" } });
   assert.equal(context.__dispatched.length, 0, "late chat A stats must be ignored on chat B");
 
   pushedStatsListener({ type: "cg-stats", stats: { mode: "trimmed", conversationId: "b" } });
   assert.equal(context.__dispatched.length, 1);
   assert.equal(context.__dispatched[0].detail.conversationId, "b");
+  pushedStatsListener({ type: "cg-stats", stats: { mode: "trimmed", conversationId: "b", paginationOlderPageBlocked: true } });
+  assert.equal(context.__dispatched.length, 1, "blocked cursor-page stats must not replace/retrigger Firefox current-page state");
 }
 
 async function testStatusBadgeIsDomSingleton() {

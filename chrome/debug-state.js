@@ -57,6 +57,7 @@
       mode: "recent",
       maxDisplayMessages: 64,
       showGuardNotice: true,
+      stallRecoveryEnabled: true,
       archiveExportLevel: "progress",
       cgLastIssue: null
     });
@@ -85,7 +86,8 @@
         mode: saved.mode === "windowed-visible" ? "windowed-visible" : "recent",
         maxDisplayMessages: Number(saved.maxDisplayMessages) || 64,
         showGuardNotice: saved.showGuardNotice !== false,
-          archiveMode: "on-demand",
+        stallRecoveryEnabled: saved.stallRecoveryEnabled !== false,
+        archiveMode: "on-demand",
         archiveExportLevel: saved.archiveExportLevel || "progress"
       },
       native: {
@@ -109,6 +111,11 @@
         syntheticTurns: host ? host.querySelectorAll(".cg-history-turn").length : 0
       },
       historyController: historyControllerState(),
+      stallRecovery: (() => {
+        const recovery = globalThis.CGAntiCurseStallRecovery;
+        try { return recovery && typeof recovery.debug === "function" ? { present: true, ...recovery.debug() } : { present: !!recovery }; }
+        catch (error) { return { present: !!recovery, debugError: String(error && error.message ? error.message : error) }; }
+      })(),
       archiveBridge: bridgeState,
       backendHistory: await backendHistory(id, Number(saved.maxDisplayMessages) || 64),
       lastIssue: saved.cgLastIssue || null

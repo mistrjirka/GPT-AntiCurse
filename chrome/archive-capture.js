@@ -22,10 +22,12 @@
   const EXPORT_MAX_PAGES = 100;
   const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
   const EXPORT_EXTRACT = globalThis.CGExportExtract;
+  const SESSION_AUTH = globalThis.CGAntiCurseSessionAuth;
   const scope = globalThis.CGConversationScope.create();
   const IS_FIREFOX = !!(ext.runtime.getManifest().browser_specific_settings?.gecko);
 
   let latestNetworkArchive = null;
+  let latestFullVisibleArchive = null;
   let confirmedConversationId = null;
 
   function recordIssue(code, error, extra) {
@@ -38,6 +40,7 @@
     if (!scope.sync()) return false;
     const id = scope.currentId();
     if (!latestNetworkArchive || latestNetworkArchive.id !== id) latestNetworkArchive = null;
+    if (!latestFullVisibleArchive || latestFullVisibleArchive.id !== id) latestFullVisibleArchive = null;
     confirmedConversationId = null;
     return true;
   }
@@ -70,6 +73,9 @@
       if (!requestedId || !latestNetworkArchive || latestNetworkArchive.id !== requestedId) return null;
       return latestNetworkArchive;
     },
+    buildFullVisibleArchive(id) {
+      return buildFullVisibleArchive(id);
+    },
     debug() {
       syncScope();
       const id = scope.currentId();
@@ -78,6 +84,9 @@
         conversationId: id,
         transientArchive: !!current,
         transientMessages: current && Array.isArray(current.messages) ? current.messages.length : 0,
+        paginationCursorPreserved: !!(current && current.paginationCursor),
+        fullVisibleArchive: !!(latestFullVisibleArchive && latestFullVisibleArchive.id === id),
+        fullVisibleMessages: latestFullVisibleArchive && latestFullVisibleArchive.id === id ? latestFullVisibleArchive.messages.length : 0,
         archiveMode: "on-demand",
         persistentBackup: false,
         conversationConfirmed: !!id && confirmedConversationId === id,
@@ -158,56 +167,6 @@
     return archiveFromHistory(history, token.id);
   }
 
-  function bootstrapAccessToken() {
-    const node = document.getElementById("client-bootstrap");
-    const text = node && typeof node.textContent === "string" ? node.textContent.trim() : "";
-    if (!text) return null;
-    try {
-      const bootstrap = JSON.parse(text);
-      const accessToken = typeof bootstrap?.session?.accessToken === "string"
-        ? bootstrap.session.accessToken.trim()
-        : "";
-      return accessToken || null;
-    } catch (error) {
-      void error;
-      return null;
-    }
-  }
-
-  async function fetchSessionAccessToken(token) {
-    if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed" };
-    let response;
-    try {
-      response = await fetch(`${location.origin}/api/auth/session`, {
-        method: "GET",
-        credentials: "same-origin",
-        cache: "no-store",
-        headers: { accept: "application/json" }
-      });
-    } catch (error) {
-      return { ok: false, reason: "auth-session-network-failed", error: String(error && error.message ? error.message : error) };
-    }
-    if (!response.ok) return { ok: false, reason: "auth-session-http-status", status: response.status };
-    try {
-      const session = await response.json();
-      if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed" };
-      const accessToken = typeof session?.accessToken === "string" ? session.accessToken.trim() : "";
-      if (!accessToken) return { ok: false, reason: "auth-session-token-missing" };
-      return { ok: true, accessToken, authSource: "auth-session" };
-    } catch (error) {
-      return { ok: false, reason: "auth-session-json-parse-failed", error: String(error && error.message ? error.message : error) };
-    }
-  }
-
-  async function resolveAccessToken(token) {
-    const session = await fetchSessionAccessToken(token);
-    if (session.ok) return session;
-    if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed" };
-    const accessToken = bootstrapAccessToken();
-    if (accessToken) return { ok: true, accessToken, authSource: "client-bootstrap", authFallbackReason: session.reason };
-    return session;
-  }
-
   async function firefoxBypassHeader(token) {
     if (!IS_FIREFOX) return { ok: true, headers: {} };
     let grant;
@@ -262,7 +221,10 @@
 
   async function fetchAuthoritativeConversation(token) {
     if (!scope.isCurrent(token) || !token.id) return { ok: false, reason: "conversation-changed" };
-    const auth = await resolveAccessToken(token);
+    if (!SESSION_AUTH || typeof SESSION_AUTH.resolveAccessToken !== "function") {
+      return { ok: false, reason: "session-auth-unavailable" };
+    }
+    const auth = await SESSION_AUTH.resolveAccessToken({ isCurrent: () => scope.isCurrent(token) });
     if (!auth.ok) return auth;
 
     const mapping = Object.create(null);
@@ -319,6 +281,47 @@
         current_node: currentNode,
         root
       }
+    };
+  }
+
+  function visibleHistoryArchive(rawArchive) {
+    if (!rawArchive || !Array.isArray(rawArchive.messages)) return null;
+    const messages = rawArchive.messages.filter((message) => {
+      if (!message || message.hidden === true) return false;
+      if (message.role !== "user" && message.role !== "assistant") return false;
+      if (message.role !== "assistant") return true;
+      const recipient = String(message.recipient || "").trim().toLowerCase();
+      return !recipient || recipient === "all" || recipient === "assistant";
+    }).map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      createTime: message.createTime == null ? null : message.createTime
+    }));
+    return { ...rawArchive, complete: true, messages };
+  }
+
+  async function buildFullVisibleArchive(requestedId) {
+    syncScope();
+    const token = scope.snapshot();
+    if (!token.id || (requestedId && requestedId !== token.id)) return { ok: false, reason: "conversation-changed" };
+    if (latestFullVisibleArchive && latestFullVisibleArchive.id === token.id) {
+      return { ok: true, archive: latestFullVisibleArchive, cached: true };
+    }
+    const source = await fetchAuthoritativeConversation(token);
+    if (!source.ok || !scope.isCurrent(token)) return source.ok ? { ok: false, reason: "conversation-changed" } : source;
+    const rawArchive = EXPORT_EXTRACT && typeof EXPORT_EXTRACT.createArchive === "function"
+      ? EXPORT_EXTRACT.createArchive(source.data, { id: token.id, title: source.data?.title, sourceUrl: location.href })
+      : null;
+    const archive = visibleHistoryArchive(rawArchive);
+    if (!archive) return { ok: false, reason: "history-extract-failed" };
+    latestFullVisibleArchive = archive;
+    return {
+      ok: true,
+      archive,
+      cached: false,
+      sourcePages: source.pageCount,
+      sourceAuth: source.authSource || null
     };
   }
 

@@ -26,9 +26,10 @@ function makeOverlay(state) {
   };
 }
 
-function makeHarness({ packageTarget = "chromium", runtimeBrowser = "chromium", historyReply = null, historyResponder = null } = {}) {
+function makeHarness({ packageTarget = "chromium", runtimeBrowser = "chromium", historyReply = null, historyResponder = null, transientArchive = null } = {}) {
   let storageListener = null;
   let runtimeListener = null;
+  const windowListeners = new Map();
   let sendCount = 0;
   const issues = [];
   const overlayState = { lastHistory: null, setHistoryCount: 0, destroyCount: 0 };
@@ -74,16 +75,28 @@ function makeHarness({ packageTarget = "chromium", runtimeBrowser = "chromium", 
     Node: { ELEMENT_NODE: 1 },
     document: {
       body: null,
-      documentElement: {},
+      documentElement: {
+        isConnected: true,
+        scrollTop: 0,
+        scrollHeight: 1000,
+        clientHeight: 600,
+        hasAttribute() { return false; },
+        contains() { return false; }
+      },
       scrollingElement: null,
       querySelector() { return null; }
     },
     window: {
-      addEventListener() {},
+      addEventListener(type, listener) { windowListeners.set(type, listener); },
+      removeEventListener() {},
       dispatchEvent() {}
     },
     CGArchive: { conversationIdFromUrl },
     CGHistoryOverlay: { create() { return makeOverlay(overlayState); } },
+    CGAntiCurseArchiveBridge: transientArchive ? {
+      get(id) { return transientArchive.id === id ? transientArchive : null; },
+      debug() { return { transientArchive: true }; }
+    } : null,
     CGAntiCurseDiagnostics: {
       record(scope, code, error, extra) {
         issues.push({ scope, code, message: String(error && error.message ? error.message : error), extra });
@@ -108,6 +121,11 @@ function makeHarness({ packageTarget = "chromium", runtimeBrowser = "chromium", 
     fireRuntime(message) {
       assert(runtimeListener, "runtime listener should be installed");
       return runtimeListener(message, {}, () => {});
+    },
+    fireWindow(type, detail = undefined) {
+      const listener = windowListeners.get(type);
+      assert(listener, `window listener ${type} should be installed`);
+      listener({ type, detail });
     },
     navigate(id) {
       context.location.pathname = `/c/${id}`;
@@ -135,20 +153,41 @@ async function settle() {
     assert.equal(scope.snapshot().id, "b");
   }
 
-  const chromium = makeHarness();
+  const chromiumArchive = {
+    id: "test-conversation",
+    messages: [
+      { id: "u0", role: "user", text: "older" },
+      { id: "a0", role: "assistant", text: "answer" }
+    ]
+  };
+  const chromium = makeHarness({ transientArchive: chromiumArchive });
   await settle();
-  assert.equal(chromium.sendCount, 1, "initial Chrome history fallback should make one background request");
+  assert.equal(chromium.sendCount, 0, "Chrome must not request/render older history before native trimming is confirmed");
+  assert.equal(chromium.overlayState.setHistoryCount, 0);
+
+  chromium.fireWindow("__gpt_anticurse_archive_ready__");
+  await settle();
+  assert.equal(chromium.overlayState.setHistoryCount, 0, "archive availability alone must not activate synthetic history");
+
+  chromium.fireWindow("__gpt_anticurse_stats_ready__", { mode: "passthrough", conversationId: "test-conversation" });
+  await settle();
+  assert.equal(chromium.overlayState.setHistoryCount, 0, "fail-open/passthrough native graphs must not get duplicate synthetic history");
+
+  chromium.fireWindow("__gpt_anticurse_stats_ready__", { mode: "trimmed", conversationId: "test-conversation" });
+  await settle();
+  assert.equal(chromium.overlayState.setHistoryCount, 1, "confirmed trimming must activate the transient older-history snapshot");
+  assert.equal(chromium.sendCount, 0, "confirmed Chromium history should use the transient bridge without a background round trip");
 
   for (let index = 0; index < 1000; index++) {
     chromium.fireStorage({ cgLastIssue: { newValue: { code: "runtime-request-failed", index } } });
   }
   await settle();
-  assert.equal(chromium.sendCount, 1, "diagnostic storage writes must never retrigger history lookup");
+  assert.equal(chromium.sendCount, 0, "diagnostic storage writes must never retrigger history lookup");
 
   chromium.fireStorage({ maxDisplayMessages: { newValue: 32 } });
   chromium.fireStorage({ mode: { newValue: "windowed-visible" } });
   await settle();
-  assert.equal(chromium.sendCount, 2, "overlapping history setting changes should collapse to one retry");
+  assert.equal(chromium.sendCount, 0, "history setting changes should reuse the confirmed transient Chrome archive");
 
   const firefox = makeHarness({
     packageTarget: "firefox",
@@ -164,7 +203,10 @@ async function settle() {
     }
   });
   await settle();
-  assert.equal(firefox.sendCount, 1, "Firefox package must continue using the Firefox background-history path");
+  assert.equal(firefox.sendCount, 0, "Firefox must not expose older history before the current response is confirmed firewalled/trimmed");
+  firefox.fireWindow("__gpt_anticurse_stats_ready__", { mode: "trimmed", conversationId: "test-conversation" });
+  await settle();
+  assert.equal(firefox.sendCount, 1, "confirmed Firefox trimming may use its background history fallback when no authoritative isolated bridge is available");
   assert.deepEqual(
     { packageTarget: firefox.context.CGAntiCurseHistoryDebug.debug().packageTarget, runtimeBrowser: firefox.context.CGAntiCurseHistoryDebug.debug().runtimeBrowser },
     { packageTarget: "firefox", runtimeBrowser: "firefox" },
@@ -190,7 +232,10 @@ async function settle() {
   const mixedState = firefoxInChrome.context.CGAntiCurseHistoryDebug.debug();
   assert.equal(mixedState.packageTarget, "firefox");
   assert.equal(mixedState.runtimeBrowser, "chromium");
-  assert.equal(firefoxInChrome.sendCount, 1, "mixed package/runtime startup must not fan out background requests");
+  assert.equal(firefoxInChrome.sendCount, 0, "mixed package/runtime startup must remain gated before trim confirmation");
+  firefoxInChrome.fireWindow("__gpt_anticurse_stats_ready__", { mode: "trimmed", conversationId: "test-conversation" });
+  await settle();
+  assert.equal(firefoxInChrome.sendCount, 1, "mixed package/runtime trimming confirmation may make one background request");
   for (let index = 0; index < 1000; index++) {
     firefoxInChrome.fireStorage({ cgIssueHistory: { newValue: [{ index }] } });
   }
@@ -204,13 +249,19 @@ async function settle() {
     }
   });
   await settle();
+  assert.equal(pending.length, 0, "Chrome background history must stay gated before trim confirmation");
+  routed.fireWindow("__gpt_anticurse_stats_ready__", { mode: "trimmed", conversationId: "test-conversation" });
+  await settle();
   assert.equal(pending.length, 1);
   assert.equal(pending[0].message.conversationId, "test-conversation");
 
   routed.navigate("second-conversation");
   routed.fireStorage({ maxDisplayMessages: { newValue: 48 } });
   await settle();
-  assert.equal(pending.length, 2, "navigation should create a new scoped request");
+  assert.equal(pending.length, 1, "navigation alone must not activate history before the new graph is confirmed trimmed");
+  routed.fireWindow("__gpt_anticurse_stats_ready__", { mode: "trimmed", conversationId: "second-conversation" });
+  await settle();
+  assert.equal(pending.length, 2, "trim confirmation for the new conversation should create a new scoped request");
   assert.equal(pending[1].message.conversationId, "second-conversation");
 
   pending[1].resolve({

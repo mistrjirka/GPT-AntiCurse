@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "GPT AntiCurse",
-  "version": "0.6.9",
-  "description": "Makes very long ChatGPT conversations responsive by shrinking invisible conversation state before page JavaScript processes it.",
+  "version": "0.7.0",
+  "description": "Makes very long ChatGPT conversations responsive and automatically recovers stalled runs.",
   "minimum_chrome_version": "111",
   "icons": {
     "16": "icons/icon16.png",
@@ -15,13 +15,13 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["trim.js", "trim-logical.js", "trim-pipeline.js", "main.js"],
+      "js": ["trim.js", "trim-logical.js", "trim-pipeline.js", "pagination-firewall.js", "main.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
       "matches": ["https://chatgpt.com/*"],
-      "js": ["dom-ready.js", "diagnostics.js", "conversation-scope.js", "content.js", "history-markdown.js", "history-virtualized.js", "history-fidelity.js", "history-hydration-safe.js", "history-overlay.js", "export-extract.js", "archive-capture.js", "windowed.js", "debug-state.js"],
+      "js": ["dom-ready.js", "diagnostics.js", "conversation-scope.js", "content.js", "history-markdown.js", "history-virtualized.js", "history-fidelity.js", "history-hydration-safe.js", "history-overlay.js", "export-extract.js", "session-auth.js", "archive-capture.js", "stall-recovery.js", "windowed.js", "debug-state.js"],
       "css": ["content.css", "history-virtualized.css", "history-fidelity.css"],
       "run_at": "document_start",
       "world": "ISOLATED"

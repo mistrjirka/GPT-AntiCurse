@@ -58,7 +58,8 @@ For most people, the defaults are a good starting point.
    - **Recent N + button** keeps the latest window in ChatGPT and shows **Load previous** above it.
    - **Auto window** loads another older page when you reach the top.
 5. Set **Window size** if you want more or less recent context kept in ChatGPT's normal thread.
-6. Press **Save & reload** after changing the main settings.
+6. Leave **Auto-recover stalled runs** on if you want AntiCurse to conservatively recover a run that remains backend-streaming but makes no visible progress for about 2 minutes (5 minutes for an active tool).
+7. Press **Save & reload** after changing the main settings.
 
 ### What the main number means
 
@@ -72,7 +73,7 @@ For pathological completed agent runs with many tool calls, AntiCurse can also k
 
 ## Older history stays available
 
-AntiCurse does not put every older turn back into ChatGPT's active conversation state when you scroll upward. It renders older visible history in its own bounded history area and keeps only a small number of those archived pages mounted at once.
+AntiCurse does not put every older turn back into ChatGPT's active conversation state when you scroll upward. On cursor-paginated conversations it terminates the cursor exposed to ChatGPT, reconstructs older visible history through an isolated authenticated path, and renders that history in its own bounded area. Only a small number of archived pages stay mounted at once.
 
 ![Rendered ChatGPT conversation showing Load previous and the AntiCurse status pill](docs/screenshots/history-overlay.svg)
 
@@ -90,7 +91,13 @@ The export menu has three useful levels:
 
 ![Rendered export options showing Final answers only, Readable conversation, and Full technical log](docs/screenshots/export-options.svg)
 
-Older-history loading remains available during the current page session without storing a persistent conversation backup.
+Older-history loading remains available during the current page session without storing a persistent conversation backup. The private lightweight history may use the same authenticated cursor endpoint as Export, but raw older graph pages are not fed back into ChatGPT's React state.
+
+## Stalled-run recovery
+
+When **Auto-recover stalled runs** is enabled, AntiCurse watches only the currently streaming turn for meaningful progress. It does not poll continuously. After roughly 2 minutes without progress (5 minutes while a tool is visibly active), it checks ChatGPT's `stream_status` twice with a 10-second grace period. Recovery proceeds only while the tab is visible, the backend still reports exactly `IS_STREAMING`, the real Stop button is present, and the composer has no text or attachment.
+
+A recovery clicks Stop, waits for the run to stop, sends a fixed `.` continuation nudge, and verifies streaming resumes. It attempts each turn at most once and never overwrites a draft. If the composer remains wedged after Stop, it can reload the page once using a short-lived session marker and resumes only if the composer is then empty and usable.
 
 ## Privacy
 
@@ -98,8 +105,8 @@ AntiCurse runs locally in the browser.
 
 - No telemetry or analytics.
 - No remote extension code.
-- AntiCurse does not upload your conversation to its own server. An explicit export may make one session request plus multiple same-origin cursor-page requests to ChatGPT itself so a virtualized long conversation can be reconstructed reliably. The access token is used only in memory for that export.
-- Conversation text is not continuously persisted in extension storage; export snapshots are assembled in memory only when requested.
+- AntiCurse does not upload your conversation to its own server. Older-history reconstruction, explicit Export, and a suspected-stall status check may make same-origin authenticated requests to ChatGPT itself. Access tokens are used only in memory.
+- Conversation text is not persistently stored by AntiCurse. Lightweight older-history snapshots and export graphs exist only in page memory; export graphs are assembled on demand and discarded after use.
 - A Markdown file is created only when you choose to download one.
 - Debug reports contain health information and diagnostics, not conversation text.
 
@@ -141,6 +148,6 @@ Build both packages:
 bash ./scripts/build.sh
 ```
 
-Run the same unit/code-quality tests used by CI by following `.github/workflows/release.yml`. Release CI also runs real Chromium and Firefox extension E2E tests, including paging, Auto window, hydration-boundary behavior, and native-fidelity rendering.
+Run the same unit/code-quality tests used by CI by following `.github/workflows/release.yml`. Release CI also runs real Chromium and Firefox extension E2E tests, including cursor pagination, Auto window, conservative stall recovery, hydration-boundary behavior, and native-fidelity rendering.
 
 </details>

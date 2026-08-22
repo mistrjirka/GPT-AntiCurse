@@ -66,14 +66,21 @@ function installBadgeObserver() {
   badgeObserver.observe(document.body, { childList: true });
 }
 
-function removeBadge() {
+function stopBadgeObserver() {
+  if (badgeObserver) badgeObserver.disconnect();
+  badgeObserver = null;
+}
+
+function removeBadge(stopObserver = false) {
   clearTimeout(hideTimer);
   for (const element of statusBadges()) element.remove();
   badge = null;
+  if (stopObserver) stopBadgeObserver();
 }
 
 function ensureBadge() {
   installBadgeObserver();
+  if (badge && document.documentElement.contains(badge)) return badge;
   reconcileBadges();
   if (badge) return badge;
   badge = document.createElement("div");
@@ -166,7 +173,7 @@ function render(stats) {
   }
   installBadgeObserver();
   if (!currentSettings.showGuardNotice) {
-    removeBadge();
+    removeBadge(true);
     return;
   }
   if (renderIssueIfNeeded()) return;
@@ -209,6 +216,12 @@ function render(stats) {
   }
 }
 
+
+function syncPerformanceClass() {
+  if (currentSettings.enabled === true) document.documentElement.classList.add("cg-anticurse-performance");
+  else document.documentElement.classList.remove("cg-anticurse-performance");
+}
+
 function postSettings() {
   if (!settingsReady) return false;
   window.postMessage({ channel: CHANNEL, type: "settings", settings: currentSettings }, location.origin);
@@ -243,10 +256,11 @@ function clearRecoveredMainIssue(stats) {
 
 chrome.storage.local.get({ ...DEFAULT_SETTINGS, cgLastIssue: null }).then((saved) => {
   currentSettings = { ...DEFAULT_SETTINGS, ...saved };
+  syncPerformanceClass();
   lastIssue = saved.cgLastIssue || null;
   settingsReady = true;
   postSettings();
-  if (!currentSettings.showGuardNotice) removeBadge();
+  if (!currentSettings.showGuardNotice) removeBadge(true);
 }).catch((error) => {
   settingsReady = true;
   postSettings();
@@ -255,14 +269,18 @@ chrome.storage.local.get({ ...DEFAULT_SETTINGS, cgLastIssue: null }).then((saved
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
+  let settingsChanged = false;
   for (const key of Object.keys(DEFAULT_SETTINGS)) {
-    if (changes[key]) currentSettings[key] = changes[key].newValue;
+    if (!changes[key]) continue;
+    currentSettings[key] = changes[key].newValue;
+    settingsChanged = true;
   }
-  if (changes.cgLastIssue) lastIssue = changes.cgLastIssue.newValue || null;
-  if (!settingsReady) return;
-  postSettings();
+  const issueChanged = !!changes.cgLastIssue;
+  if (issueChanged) lastIssue = changes.cgLastIssue.newValue || null;
+  if (!settingsReady || (!settingsChanged && !issueChanged)) return;
+  if (settingsChanged) { syncPerformanceClass(); postSettings(); }
   if (currentSettings.showGuardNotice) render(lastStats);
-  else removeBadge();
+  else removeBadge(true);
 });
 
 window.addEventListener("message", (event) => {
@@ -284,6 +302,10 @@ window.addEventListener("message", (event) => {
 
   if (msg.type !== "stats") return;
   const stats = msg.stats || null;
+  // A native older cursor request may already have been queued before the newest
+  // page's cursor was suppressed. Its empty firewalled reply must not replace
+  // the real current-page status/history hint when it completes later.
+  if (stats && stats.paginationOlderPageBlocked) return;
   recordTrimmedTotals(stats);
   if (!statsBelongToCurrentConversation(stats)) return;
 
@@ -293,7 +315,10 @@ window.addEventListener("message", (event) => {
   window.dispatchEvent(new CustomEvent(STATS_EVENT, { detail: {
     mode: lastStats && lastStats.mode,
     reason: lastStats && lastStats.reason,
-    conversationId: lastStats && lastStats.conversationId
+    conversationId: lastStats && lastStats.conversationId,
+    displayAfter: lastStats && Number.isFinite(Number(lastStats.displayAfter)) ? Number(lastStats.displayAfter) : null,
+    paginationFirewall: !!(lastStats && lastStats.paginationFirewall),
+    paginationCursorSuppressed: !!(lastStats && lastStats.paginationCursorSuppressed)
   } }));
 });
 

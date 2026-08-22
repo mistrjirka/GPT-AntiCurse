@@ -20,12 +20,16 @@
   let settings = { ...DEFAULT_SETTINGS };
   let history = null;
   let historyConversationId = null;
+  let nativeTrimConfirmed = false;
+  let nativeVisibleCountHint = null;
   let historyKey = "none";
   let nativeScroller = null;
   let nativeEventTarget = null;
   let rootStateObserver = null;
-  let shellObserver = null;
+  let shellObservers = [];
+  let shellObserverBroad = false;
   let shellRefreshRaf = 0;
+  let topWheelRaf = 0;
   let historyWatchdog = 0;
   let lastNativeTop = 0;
   let lastFromTop = null;
@@ -33,6 +37,8 @@
   let suppressAutoUntil = 0;
   let initialPositionSettled = false;
   let userInteracted = false;
+  let initialInteractionWatchAttached = false;
+  let autoWheelWatchAttached = false;
   let historyRequest = null;
   let historyFailureStreak = 0;
   let historyRetryAt = 0;
@@ -77,6 +83,7 @@
       mode: normalizeMode(saved && saved.mode),
       maxDisplayMessages: normalizeLimit(saved && saved.maxDisplayMessages)
     };
+    syncAutoWheelWatch();
   }
 
   function rawVisibleWindowCount(messages, requestedLimit) {
@@ -99,7 +106,7 @@
   }
 
   function historyFromArchive(archive) {
-    if (!archive || !archive.id || !Array.isArray(archive.messages)) return null;
+    if (!archive || archive.complete === false || !archive.id || !Array.isArray(archive.messages)) return null;
     const pageSize = normalizeLimit(settings.maxDisplayMessages);
     const messages = archive.messages.map((message) => ({
       id: message.id,
@@ -119,10 +126,19 @@
   }
 
   function transientHistory(token) {
-    if (IS_FIREFOX || !token || !token.id) return null;
+    if (!token || !token.id) return null;
     const bridge = globalThis.CGAntiCurseArchiveBridge;
     if (!bridge || typeof bridge.get !== "function") return null;
     return historyFromArchive(bridge.get(token.id));
+  }
+
+  async function authoritativeHistory(token) {
+    if (!token || !token.id) return null;
+    const bridge = globalThis.CGAntiCurseArchiveBridge;
+    if (!bridge || typeof bridge.buildFullVisibleArchive !== "function") return null;
+    const result = await bridge.buildFullVisibleArchive(token.id);
+    if (!scope.isCurrent(token) || !result || result.ok !== true) return null;
+    return historyFromArchive(result.archive);
   }
 
   function firstNativeTurn() {
@@ -165,16 +181,47 @@
     if (!initialPositionSettled && event && event.isTrusted) userInteracted = true;
   }
 
+  function attachInitialInteractionWatch() {
+    if (initialInteractionWatchAttached) return;
+    window.addEventListener("wheel", markUserInteraction, { passive: true, capture: true });
+    window.addEventListener("pointerdown", markUserInteraction, { passive: true, capture: true });
+    window.addEventListener("touchstart", markUserInteraction, { passive: true, capture: true });
+    window.addEventListener("keydown", markUserInteraction, { capture: true });
+    initialInteractionWatchAttached = true;
+  }
+
+  function detachInitialInteractionWatch() {
+    if (!initialInteractionWatchAttached) return;
+    window.removeEventListener("wheel", markUserInteraction, true);
+    window.removeEventListener("pointerdown", markUserInteraction, true);
+    window.removeEventListener("touchstart", markUserInteraction, true);
+    window.removeEventListener("keydown", markUserInteraction, true);
+    initialInteractionWatchAttached = false;
+  }
+
+  function finishInitialPosition() {
+    initialPositionSettled = true;
+    detachInitialInteractionWatch();
+  }
+
   function settleInitialPosition() {
-    if (initialPositionSettled || userInteracted || !nativeScroller) return;
+    if (initialPositionSettled || !nativeScroller) return;
+    if (userInteracted) {
+      finishInitialPosition();
+      return;
+    }
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (initialPositionSettled || userInteracted || !nativeScroller || !nativeScroller.isConnected) return;
+      if (initialPositionSettled || !nativeScroller || !nativeScroller.isConnected) return;
+      if (userInteracted) {
+        finishInitialPosition();
+        return;
+      }
       if (nativeScroller.hasAttribute("data-scroll-from-end")) {
         nativeScroller.scrollTop = Math.max(0, nativeScroller.scrollHeight - nativeScroller.clientHeight);
         lastNativeTop = nativeTop();
         autoArmed = lastNativeTop > 64 || nativeScroller.hasAttribute("data-scroll-from-top");
       }
-      initialPositionSettled = true;
+      finishInitialPosition();
     }));
   }
 
@@ -187,9 +234,14 @@
     lastFromTop = null;
   }
 
+  function disconnectShellObservers() {
+    for (const observer of shellObservers) observer.disconnect();
+    shellObservers = [];
+    shellObserverBroad = false;
+  }
+
   function stopShellObserver() {
-    if (shellObserver) shellObserver.disconnect();
-    shellObserver = null;
+    disconnectShellObservers();
     if (shellRefreshRaf) cancelAnimationFrame(shellRefreshRaf);
     shellRefreshRaf = 0;
   }
@@ -197,12 +249,16 @@
   function clearHistoryState() {
     if (historyWatchdog) clearTimeout(historyWatchdog);
     historyWatchdog = 0;
+    if (topWheelRaf) cancelAnimationFrame(topWheelRaf);
+    topWheelRaf = 0;
     detachNativeWatch();
     stopShellObserver();
     reader.destroy();
     history = null;
     historyConversationId = null;
     historyKey = "none";
+    nativeTrimConfirmed = false;
+    nativeVisibleCountHint = null;
     historyRequest = null;
     lastNativeTop = 0;
     lastFromTop = null;
@@ -210,6 +266,7 @@
     suppressAutoUntil = 0;
     initialPositionSettled = false;
     userInteracted = false;
+    if (settings.enabled) attachInitialInteractionWatch();
     resetHistoryBackoff();
   }
 
@@ -293,23 +350,43 @@
     shellRefreshRaf = requestAnimationFrame(() => {
       shellRefreshRaf = 0;
       attachNativeWatch();
+      installShellObserver();
     });
   }
 
+  function onShellMutation() {
+    if (syncConversationScope()) {
+      requestHistory();
+      return;
+    }
+    scheduleShellRefresh();
+  }
+
   function installShellObserver() {
-    if (shellObserver || !document.body) return;
-    const root = document.querySelector("#main") || document.body;
-    shellObserver = new MutationObserver(() => {
-      if (syncConversationScope()) {
-        requestHistory();
-        return;
-      }
-      const thread = document.querySelector("#thread");
-      const host = document.querySelector("#cg-window-history-host");
-      const misplaced = !!thread && (!host || host.parentElement !== thread.parentElement || host.nextSibling !== thread);
-      if (!nativeScroller || !nativeScroller.isConnected || misplaced) scheduleShellRefresh();
-    });
-    shellObserver.observe(root, { childList: true, subtree: true });
+    if (!document.body) return;
+    disconnectShellObservers();
+
+    const thread = document.querySelector("#thread");
+    const main = document.querySelector("#main") || document.body;
+    if (!thread || !thread.parentElement) {
+      // Broad observation is only a temporary discovery fallback. As soon as the
+      // thread appears, scheduleShellRefresh() replaces it with direct-child
+      // observers on the structural ancestor chain.
+      const observer = new MutationObserver(onShellMutation);
+      observer.observe(main, { childList: true, subtree: true });
+      shellObservers.push(observer);
+      shellObserverBroad = true;
+      return;
+    }
+
+    let node = thread.parentElement;
+    while (node && node !== document.documentElement) {
+      const observer = new MutationObserver(onShellMutation);
+      observer.observe(node, { childList: true });
+      shellObservers.push(observer);
+      if (node === main || node === document.body) break;
+      node = node.parentElement;
+    }
   }
 
   function onNativeScroll() {
@@ -331,17 +408,37 @@
     return path.includes(nativeScroller) || (event.target instanceof Node && nativeScroller.contains(event.target));
   }
 
+  function syncAutoWheelWatch() {
+    const shouldAttach = settings.enabled && settings.mode === "windowed-visible";
+    if (shouldAttach && !autoWheelWatchAttached) {
+      window.addEventListener("wheel", onGlobalWheel, { passive: true, capture: true });
+      autoWheelWatchAttached = true;
+    } else if (!shouldAttach && autoWheelWatchAttached) {
+      window.removeEventListener("wheel", onGlobalWheel, true);
+      autoWheelWatchAttached = false;
+    }
+  }
+
   function onGlobalWheel(event) {
+    markUserInteraction(event);
+    if (!settings.enabled || settings.mode !== "windowed-visible" || !history) return;
     if (syncConversationScope()) {
       requestHistory();
       return;
     }
-    if (!settings.enabled || !historyMatchesCurrentConversation() || settings.mode !== "windowed-visible") return;
+    if (!historyMatchesCurrentConversation()) return;
     if (!nativeScroller || !nativeScroller.isConnected) attachNativeWatch();
     if (!nativeScroller || !eventBelongsToConversation(event)) return;
-    if (event.deltaY < 0 && isAtTop() && reader.hasMoreOlderTurns()) {
-      autoArmed = true;
-      if (canAutoLoad() && loadPreviousPage(true).ok && event.cancelable) event.preventDefault();
+    if (event.deltaY >= 0 || !isAtTop() || !reader.hasMoreOlderTurns()) return;
+
+    autoArmed = true;
+    if (!canAutoLoad() || topWheelRaf) return;
+    // At the upper boundary an upward wheel has no remaining native scroll to
+    // perform. Load synchronously so the existing preserve-scroll rAF keeps the
+    // same timing/anchor behavior as before; the passive listener never cancels
+    // the browser event. Guard until that frame to avoid duplicate page loads.
+    if (loadPreviousPage(true).ok) {
+      topWheelRaf = requestAnimationFrame(() => { topWheelRaf = 0; });
     }
   }
 
@@ -384,7 +481,9 @@
       return false;
     }
 
-    const nextHistory = value;
+    const nextHistory = Number.isFinite(nativeVisibleCountHint)
+      ? { ...value, nativeVisibleCount: Math.max(0, Math.min(value.messages.length, nativeVisibleCountHint)) }
+      : value;
     const nextKey = snapshotKey({ ...nextHistory, conversationId: replyId });
     reader.setMode(settings.mode);
     resetHistoryBackoff();
@@ -418,6 +517,10 @@
 
   async function performHistoryRequest(token) {
     try {
+      const authoritative = await authoritativeHistory(token);
+      if (!scope.isCurrent(token)) return false;
+      if (authoritative) return applyHistory(authoritative, token);
+
       const value = await ext.runtime.sendMessage({
         type: "cg-get-window-history",
         conversationId: token.id,
@@ -446,6 +549,7 @@
     syncConversationScope();
     const token = scope.snapshot();
     if (!token.id) return Promise.resolve(false);
+    if (!nativeTrimConfirmed) return Promise.resolve(false);
 
     const transient = transientHistory(token);
     if (transient) return Promise.resolve(applyHistory(transient, token));
@@ -487,28 +591,45 @@
         historyConversationId,
         historyPresent: !!history,
         historySource: history && history.source ? history.source : null,
+        nativeTrimConfirmed,
+        nativeVisibleCountHint,
         requestInFlight: !!historyRequest,
+        shellObserverCount: shellObservers.length,
+        shellObserverBroad,
+        topWheelPending: !!topWheelRaf,
+        autoWheelWatchAttached,
+        initialInteractionWatchAttached,
         failureStreak: historyFailureStreak,
         retryInMs: historyRetryAt > performance.now() ? Math.ceil(historyRetryAt - performance.now()) : 0
       };
     }
   };
 
-  window.addEventListener("wheel", onGlobalWheel, { passive: false, capture: true });
-  window.addEventListener("wheel", markUserInteraction, { passive: true, capture: true });
-  window.addEventListener("pointerdown", markUserInteraction, { passive: true, capture: true });
-  window.addEventListener("touchstart", markUserInteraction, { passive: true, capture: true });
-  window.addEventListener("keydown", markUserInteraction, { capture: true });
+  attachInitialInteractionWatch();
   window.addEventListener(NETWORK_ARCHIVE_EVENT, () => {
-    if (IS_FIREFOX) return;
+    if (!nativeTrimConfirmed) return;
     requestHistory().then((ok) => {
       if (!ok && performance.now() >= historyRetryAt) {
-        recordIssue("transient-archive-unavailable", "The MAIN-world archive event fired, but the isolated archive was unavailable.");
+        recordIssue("transient-archive-unavailable", "The MAIN-world archive event fired after trimming, but the isolated archive was unavailable.");
       }
     });
   });
   window.addEventListener(STATS_EVENT, (event) => {
-    if (event && event.detail && event.detail.mode === "trimmed") scheduleHistoryWatchdog("trimmed-stats");
+    const detail = event && event.detail;
+    if (!detail) return;
+    const currentId = scope.currentId();
+    if (detail.conversationId && currentId && detail.conversationId !== currentId) return;
+    if (detail.mode === "trimmed") {
+      nativeTrimConfirmed = true;
+      nativeVisibleCountHint = Number.isFinite(Number(detail.displayAfter)) ? Math.max(0, Number(detail.displayAfter)) : null;
+      requestHistory();
+      scheduleHistoryWatchdog("trimmed-stats");
+      return;
+    }
+    if (detail.mode === "error" || detail.mode === "passthrough") {
+      nativeTrimConfirmed = false;
+      if (history) clearHistoryState();
+    }
   });
 
   ext.storage.local.get(DEFAULT_SETTINGS).then((saved) => {

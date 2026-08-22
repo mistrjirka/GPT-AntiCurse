@@ -12,7 +12,8 @@ const DEFAULT_SETTINGS = {
   enabled: true,
   mode: "recent",
   maxDisplayMessages: 64,
-  showGuardNotice: true
+  showGuardNotice: true,
+  stallRecoveryEnabled: true
 };
 const EMPTY_TOTALS = Object.freeze({
   responsesTrimmed: 0,
@@ -25,6 +26,7 @@ const EMPTY_TOTALS = Object.freeze({
 });
 const LIMITED_MODES = new Set(["recent", "windowed-visible"]);
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
+const PAGINATION = globalThis.CGPaginationFirewall;
 const STATS_KEY_PREFIX = "cg-tab-stats:";
 const HISTORY_KEY_PREFIX = "cg-tab-history:";
 const BACKGROUND_STARTED_AT = new Date().toISOString();
@@ -227,6 +229,10 @@ function statsForRequest(details, stats, conversationId = null) {
 function publishStats(tabId, rawStats, requestStartedAt) {
   if (tabId < 0) return false;
   const stats = rawStats || {};
+  // A native older cursor request may have been queued before the newest page
+  // was firewalled. Its empty response must never replace the current-page
+  // stats/history state when that older request finishes later.
+  if (stats.paginationOlderPageBlocked) return false;
   // Cumulative totals describe real completed optimization work, not whichever
   // response currently owns the tab UI. Count it even if a newer SPA response
   // makes this status too old to publish.
@@ -275,6 +281,7 @@ function publishHistory(tabId, history, requestStartedAt) {
 
 function buildHistoryArchive(parsed, transformed, mode, limit, conversationId) {
   if (!LIMITED_MODES.has(mode) || !conversationId) return null;
+  if (typeof parsed?.cursor === "string" && parsed.cursor.trim()) return null;
   const messages = CGTrim.extractVisibleHistory(parsed);
   const fallbackNativeCount = Math.min(messages.length, limit);
   const nativeVisibleCount = transformed.stats && Number.isFinite(Number(transformed.stats.displayAfter))
@@ -291,11 +298,44 @@ function buildHistoryArchive(parsed, transformed, mode, limit, conversationId) {
   };
 }
 
-function transformConversation(parsed, conversationId) {
+function transformConversation(parsed, conversationId, cursorRequest = false) {
   const mode = resolveMode(settings.mode);
   const limit = normalizeMessageLimit(settings.maxDisplayMessages);
-  const transformed = CGTrim.trimConversation(parsed, { mode, maxDisplayMessages: limit });
-  return { mode, transformed, history: buildHistoryArchive(parsed, transformed, mode, limit, conversationId) };
+
+  if (cursorRequest && PAGINATION && typeof PAGINATION.apply === "function") {
+    const blocked = PAGINATION.apply(parsed, { cursorRequest: true });
+    if (blocked.changed) {
+      return {
+        mode,
+        transformed: {
+          changed: true,
+          data: blocked.data,
+          reason: "trimmed",
+          stats: { trimMode: mode, displayBefore: 0, displayAfter: 0, logicalDisplayAfter: 0, ...blocked.stats }
+        },
+        history: null
+      };
+    }
+  }
+
+  const trimmed = CGTrim.trimConversation(parsed, { mode, maxDisplayMessages: limit });
+  let transformed = trimmed;
+  if (PAGINATION && typeof PAGINATION.apply === "function") {
+    const firewalled = PAGINATION.apply(trimmed.data, { cursorRequest: false });
+    if (firewalled.changed) {
+      transformed = {
+        changed: true,
+        data: firewalled.data,
+        reason: "trimmed",
+        stats: { ...(trimmed.stats || {}), ...firewalled.stats }
+      };
+    }
+  }
+  return {
+    mode,
+    transformed,
+    history: cursorRequest ? null : buildHistoryArchive(parsed, transformed, mode, limit, conversationId)
+  };
 }
 
 
@@ -484,7 +524,8 @@ async function processResponse(filter, chunks, totalBytes, details, exportBypass
       return;
     }
 
-    const result = transformConversation(parsed, conversationId);
+    const cursorRequest = !!(PAGINATION && typeof PAGINATION.isCursorRequest === "function" && PAGINATION.isCursorRequest(details.url));
+    const result = transformConversation(parsed, conversationId, cursorRequest);
     publishHistory(details.tabId, result.history, details.timeStamp);
     if (!result.transformed.changed) {
       writeOriginal(filter, chunks);
@@ -671,6 +712,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       if (LIMITED_MODES.has(message.mode)) next.mode = message.mode;
       if (Number.isFinite(Number(message.maxDisplayMessages))) next.maxDisplayMessages = normalizeMessageLimit(message.maxDisplayMessages);
       if (typeof message.showGuardNotice === "boolean") next.showGuardNotice = message.showGuardNotice;
+      if (typeof message.stallRecoveryEnabled === "boolean") next.stallRecoveryEnabled = message.stallRecoveryEnabled;
       return browser.storage.local.set(next).then(() => {
         settings = applySettingChanges(settings, next);
         return settings;

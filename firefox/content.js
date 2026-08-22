@@ -12,6 +12,7 @@ let hideTimer;
 let lastStats = null;
 let lastIssue = null;
 let showGuardNotice = true;
+let performanceEnabled = true;
 let renderQueuedForDomReady = false;
 
 function belongsToCurrentConversation(conversationId) {
@@ -25,6 +26,11 @@ function statsBelongToCurrentConversation(stats) {
 
 function issueBelongsToCurrentConversation(issue) {
   return !issue || !issue.extra || belongsToCurrentConversation(issue.extra.conversationId);
+}
+
+function syncPerformanceClass() {
+  if (performanceEnabled === true) document.documentElement.classList.add("cg-anticurse-performance");
+  else document.documentElement.classList.remove("cg-anticurse-performance");
 }
 
 function recordIssue(scope, code, error, extra) {
@@ -62,14 +68,21 @@ function installBadgeObserver() {
   badgeObserver.observe(document.body, { childList: true });
 }
 
-function removeBadge() {
+function stopBadgeObserver() {
+  if (badgeObserver) badgeObserver.disconnect();
+  badgeObserver = null;
+}
+
+function removeBadge(stopObserver = false) {
   clearTimeout(hideTimer);
   for (const element of statusBadges()) element.remove();
   badge = null;
+  if (stopObserver) stopBadgeObserver();
 }
 
 function ensureBadge() {
   installBadgeObserver();
+  if (badge && document.documentElement.contains(badge)) return badge;
   reconcileBadges();
   if (badge) return badge;
   badge = document.createElement("div");
@@ -162,7 +175,7 @@ function render(stats) {
   }
   installBadgeObserver();
   if (!showGuardNotice) {
-    removeBadge();
+    removeBadge(true);
     return;
   }
   if (renderIssueIfNeeded()) return;
@@ -207,6 +220,7 @@ function render(stats) {
 }
 
 function acceptStats(stats) {
+  if (stats && stats.paginationOlderPageBlocked) return false;
   if (!stats) {
     lastStats = null;
     render(null);
@@ -227,23 +241,33 @@ function acceptStats(stats) {
   window.dispatchEvent(new CustomEvent(STATS_EVENT, { detail: {
     mode: lastStats.mode,
     reason: lastStats.reason,
-    conversationId: lastStats.conversationId
+    conversationId: lastStats.conversationId,
+    displayAfter: Number.isFinite(Number(lastStats.displayAfter)) ? Number(lastStats.displayAfter) : null,
+    paginationFirewall: !!lastStats.paginationFirewall,
+    paginationCursorSuppressed: !!lastStats.paginationCursorSuppressed
   } }));
   return true;
 }
 
-browser.storage.local.get({ showGuardNotice: true, cgLastIssue: null }).then((saved) => {
+browser.storage.local.get({ enabled: true, showGuardNotice: true, cgLastIssue: null }).then((saved) => {
+  performanceEnabled = saved.enabled !== false;
+  syncPerformanceClass();
   showGuardNotice = saved.showGuardNotice !== false;
   lastIssue = saved.cgLastIssue || null;
-  if (!showGuardNotice) removeBadge();
+  if (!showGuardNotice) removeBadge(true);
 }).catch((error) => recordIssue("settings", "firefox-content-storage-read-failed", error));
 
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes.showGuardNotice) showGuardNotice = changes.showGuardNotice.newValue !== false;
-  if (changes.cgLastIssue) lastIssue = changes.cgLastIssue.newValue || null;
+  const enabledChanged = !!changes.enabled;
+  const noticeChanged = !!changes.showGuardNotice;
+  const issueChanged = !!changes.cgLastIssue;
+  if (!enabledChanged && !noticeChanged && !issueChanged) return;
+  if (enabledChanged) { performanceEnabled = changes.enabled.newValue !== false; syncPerformanceClass(); }
+  if (noticeChanged) showGuardNotice = changes.showGuardNotice.newValue !== false;
+  if (issueChanged) lastIssue = changes.cgLastIssue.newValue || null;
   if (showGuardNotice) render(lastStats);
-  else removeBadge();
+  else removeBadge(true);
 });
 
 browser.runtime.onMessage.addListener((message) => {

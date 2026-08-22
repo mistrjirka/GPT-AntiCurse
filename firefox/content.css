@@ -134,3 +134,10 @@
   #cg-window-history-host .cg-history-turn-outer,
   #cg-window-history-host .cg-history-control { padding-left: 64px; padding-right: 64px; }
 }
+
+/* Firefox profiles showed this background-position shimmer causing avoidable paint/style churn.
+   Keep the visual gradient, but stop the non-composited animation while the performance guard is active. */
+html.cg-anticurse-performance .loading-shimmer-tertiary {
+  animation: none !important;
+  background-position: 0 0 !important;
+}

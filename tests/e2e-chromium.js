@@ -122,7 +122,18 @@ const FIXTURE_HTML = String.raw`<!doctype html>
     return result.reverse();
   }
 
-  fetch('/backend-api/conversation/e2e').then((response) => response.json()).then((data) => {
+  fetch('/backend-api/conversation/e2e').then((response) => response.json()).then(async (data) => {
+    window.__receivedCursor = data.cursor ?? null;
+    window.__nativePaginationRequests = 0;
+    // If the cursor leaks through AntiCurse, model ChatGPT immediately fetching
+    // and merging raw older graph pages into its own state. Correct v0.7.0
+    // behavior exposes cursor=null, so this loop never executes.
+    while (data.cursor) {
+      window.__nativePaginationRequests++;
+      const older = await fetch('/backend-api/conversation/e2e?cursor=' + encodeURIComponent(data.cursor)).then((response) => response.json());
+      Object.assign(data.mapping, older.mapping || {});
+      data.cursor = older.cursor ?? null;
+    }
     window.__receivedConversation = data;
     let visible = 0;
     for (const id of chain(data)) {
@@ -212,7 +223,9 @@ async function assertTrimInvariant(page) {
     hasOldUser: !!window.__receivedConversation.mapping["user-35"],
     hasCutoffUser: !!window.__receivedConversation.mapping["user-36"],
     hasRecentTool: !!window.__receivedConversation.mapping["tool-36"],
-    hasRecentHidden: !!window.__receivedConversation.mapping["hidden-36"]
+    hasRecentHidden: !!window.__receivedConversation.mapping["hidden-36"],
+    cursor: window.__receivedCursor,
+    nativePaginationRequests: window.__nativePaginationRequests
   }));
 
   assert.equal(state.visible, 20, "Recent 8 logical units should keep 4 agent exchanges = 20 raw visible records");
@@ -221,6 +234,8 @@ async function assertTrimInvariant(page) {
   assert.equal(state.hasCutoffUser, true, "logical cutoff must retain the first recent exchange");
   assert.equal(state.hasRecentTool, true, "technical nodes inside retained recent state must survive");
   assert.equal(state.hasRecentHidden, true, "hidden nodes inside retained recent state must survive");
+  assert.equal(state.cursor, null, "pagination firewall must terminate OpenAI's cursor before page/React code receives the newest page");
+  assert.equal(state.nativePaginationRequests, 0, "ChatGPT must not request raw older cursor pages after the firewall");
 }
 
 
@@ -341,7 +356,8 @@ async function recentPagingTest(context, worker) {
   assert.equal(fallback.authoritative, false, "fallback export must never claim authoritative completeness");
   assert.equal(fallback.sourceReason, "http-status");
   assert(fallback.baseArchive && fallback.baseArchive.complete === false, "fallback archive must be explicitly partial");
-  assert(fallback.baseArchive.messages.some((message) => /user-0/.test(message.text || "")), "fallback should use the transient visible-history archive when it is available");
+  assert(fallback.baseArchive.messages.some((message) => /user-39/.test(message.text || "")), "partial fallback should preserve the newest transient page");
+  assert.equal(fallback.baseArchive.messages.some((message) => /user-0/.test(message.text || "")), false, "partial fallback must not pretend cursor-omitted history was captured");
   await assertUnderLimitAgentCompaction(page);
 
   const button = page.locator("#cg-window-history-host .cg-history-previous");
@@ -354,7 +370,10 @@ async function recentPagingTest(context, worker) {
   assert.equal(await button.textContent(), "Load previous 8");
 
   const marker = page.locator("#cg-window-history-host .cg-history-marker");
-  assert((await marker.textContent()).includes("72 older turns available"), "archive must retain history React did not receive");
+  assert((await marker.textContent()).includes("72 older turns available"), "private cursor fetch must retain history React did not receive");
+  const historyHealth = await contentDebug(worker);
+  assert.equal(historyHealth?.state?.archiveBridge?.paginationCursorPreserved, true, "initial OpenAI cursor must remain private in the isolated bridge");
+  assert.equal(historyHealth?.state?.archiveBridge?.fullVisibleArchive, true, "Load previous must rebuild complete lightweight history privately");
 
   for (let index = 0; index < 8; index++) {
     await page.evaluate(() => {
@@ -480,7 +499,9 @@ function paginatedConversationPages(full) {
     let exportStarts = 0;
     await context.route("https://chatgpt.com/api/auth/session", async (route) => {
       authSessionRequests++;
-      if (authSessionRequests === 1) {
+      // #1 is the authoritative lightweight-history fetch; #2 is the first
+      // explicit Export. #3 intentionally fails to exercise client-bootstrap.
+      if (authSessionRequests !== 3) {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -497,14 +518,20 @@ function paginatedConversationPages(full) {
       // The fixture page load models ChatGPT's ordinary request. Export requests
       // are distinguished by a Bearer token from session/bootstrap auth.
       if (!auth) {
-        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fullConversation) });
+        const nativeCursor = url.searchParams.get("cursor");
+        if (!nativeCursor) {
+          await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.first) });
+          return;
+        }
+        assert.equal(nativeCursor, "older-page-2", "native pagination fixture received an unexpected cursor");
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages.second) });
         return;
       }
       assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected export auth: ${auth}`);
       const cursor = url.searchParams.get("cursor");
       if (!cursor) {
         exportStarts++;
-        if (exportStarts === 3) {
+        if (exportStarts === 4) {
           await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "temporary export fixture failure" }) });
           return;
         }

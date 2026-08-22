@@ -19,6 +19,7 @@
   const HYDRATION_WAIT_MS = 8000;
   const VALID_MODES = new Set(["recent", "windowed-visible"]);
   const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "recent", maxDisplayMessages: 64 });
+  const PAGINATION = globalThis.CGPaginationFirewall;
 
   let settings = { ...DEFAULT_SETTINGS };
   let settingsSettled = false;
@@ -128,7 +129,8 @@
       title: typeof data?.title === "string" && data.title.trim() ? data.title.trim() : "ChatGPT conversation",
       sourceUrl: `${location.origin}/c/${encodeURIComponent(id)}`,
       updatedAt: new Date().toISOString(),
-      complete: true,
+      complete: !(typeof data?.cursor === "string" && data.cursor.trim()),
+      paginationCursor: typeof data?.cursor === "string" && data.cursor.trim() ? data.cursor.trim() : null,
       messages
     };
   }
@@ -310,10 +312,41 @@
 
   function transformConversation(data, originalBytes, trace) {
     const started = performance.now();
-    const transformed = CGTrim.trimConversation(data, {
+    const cursorRequest = !!trace.paginationRequest;
+
+    if (cursorRequest && PAGINATION && typeof PAGINATION.apply === "function") {
+      const blocked = PAGINATION.apply(data, { cursorRequest: true });
+      if (blocked.changed) {
+        const transformed = { changed: true, data: blocked.data, reason: "trimmed", stats: {
+          trimMode: resolveMode(settings.mode),
+          displayBefore: 0,
+          displayAfter: 0,
+          logicalDisplayAfter: 0,
+          ...blocked.stats
+        } };
+        publishTransformStats(transformed, originalBytes, started, trace);
+        return transformed.data;
+      }
+    }
+
+    const trimmed = CGTrim.trimConversation(data, {
       mode: resolveMode(settings.mode),
       maxDisplayMessages: normalizeMessageLimit(settings.maxDisplayMessages)
     });
+    let transformed = trimmed;
+
+    if (PAGINATION && typeof PAGINATION.apply === "function") {
+      const firewalled = PAGINATION.apply(trimmed.data, { cursorRequest: false });
+      if (firewalled.changed) {
+        transformed = {
+          changed: true,
+          data: firewalled.data,
+          reason: "trimmed",
+          stats: { ...(trimmed.stats || {}), ...firewalled.stats }
+        };
+      }
+    }
+
     publishTransformStats(transformed, originalBytes, started, trace);
     return transformed.changed ? transformed.data : data;
   }
@@ -406,12 +439,14 @@
     }
 
     const data = decoded.data;
+    const paginationRequest = !!(PAGINATION && typeof PAGINATION.isCursorRequest === "function" && PAGINATION.isCursorRequest(endpointUrl));
     const trace = {
       ...meta,
       safetyWaitMs,
       responseReadMs,
+      paginationRequest,
       ...(decoded.trace || {}),
-      ...publishArchive(data, endpointUrl)
+      ...(paginationRequest ? { archiveOk: false, archiveSkipped: "pagination-page" } : publishArchive(data, endpointUrl))
     };
 
     if (!settings.enabled || !safeToTransform) {
