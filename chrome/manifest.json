@@ -50,6 +50,7 @@
         "export-extract.js",
         "session-auth.js",
         "archive-capture.js",
+        "pro-recovery-guard.js",
         "stall-recovery.js",
         "windowed.js",
         "debug-state.js"
