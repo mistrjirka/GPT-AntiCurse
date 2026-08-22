@@ -48,6 +48,7 @@
         "export-extract.js",
         "session-auth.js",
         "archive-capture.js",
+        "history-source-priority.js",
         "pro-recovery-guard.js",
         "stall-recovery.js",
         "windowed.js",
