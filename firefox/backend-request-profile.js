@@ -13,9 +13,12 @@
   const PROFILE_VERSION = 1;
   const MAX_RECENT = 80;
   const MAX_GROUPS = 120;
+  const FLUSH_DELAY_MS = 250;
   const ENDPOINT = globalThis.CGConversationEndpoint;
   const extensionVersion = browser.runtime.getManifest().version;
   let writeQueue = Promise.resolve();
+  let pendingEvents = [];
+  let flushTimer = null;
 
   function isoNow() {
     return new Date().toISOString();
@@ -140,8 +143,7 @@
     return Object.fromEntries(entries.slice(0, MAX_GROUPS));
   }
 
-  async function persistEvent(event) {
-    const profile = await profileReady;
+  function applyEvent(profile, event) {
     profile.total = Math.max(0, Number(profile.total) || 0) + 1;
     if (event.outcome === "error") profile.failed = Math.max(0, Number(profile.failed) || 0) + 1;
     else profile.completed = Math.max(0, Number(profile.completed) || 0) + 1;
@@ -168,18 +170,44 @@
     profile.recent.push(event);
     if (profile.recent.length > MAX_RECENT) profile.recent.splice(0, profile.recent.length - MAX_RECENT);
     profile.updatedAt = event.at;
+  }
+
+  async function persistBatch(events) {
+    const profile = await profileReady;
+    for (const event of events) applyEvent(profile, event);
     await browser.storage.local.set({ [STORAGE_KEY]: profile });
     return profile;
+  }
+
+  function flush() {
+    if (flushTimer != null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (!pendingEvents.length) return writeQueue;
+    const events = pendingEvents;
+    pendingEvents = [];
+    const operation = writeQueue.then(() => persistBatch(events));
+    writeQueue = operation.catch((error) => {
+      console.warn("[GPT AntiCurse diagnostic] Could not persist backend request metadata", error);
+    });
+    return operation;
+  }
+
+  function scheduleFlush() {
+    if (flushTimer != null) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      flush().catch((error) => console.debug("[GPT AntiCurse diagnostic] Deferred request-profile flush failed", error));
+    }, FLUSH_DELAY_MS);
   }
 
   function record(details, outcome) {
     const event = classify(details, outcome);
     if (!event) return Promise.resolve(false);
-    const operation = writeQueue.then(() => persistEvent(event));
-    writeQueue = operation.catch((error) => {
-      console.warn("[GPT AntiCurse diagnostic] Could not persist backend request metadata", error);
-    });
-    return operation.then(() => true).catch(() => false);
+    pendingEvents.push(event);
+    scheduleFlush();
+    return Promise.resolve(true);
   }
 
   browser.webRequest.onCompleted.addListener(
@@ -193,7 +221,16 @@
   );
 
   browser.runtime.onInstalled.addListener(() => {
-    writeQueue = writeQueue.then(() => browser.storage.local.remove(STORAGE_KEY)).catch((error) => {
+    if (flushTimer != null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    pendingEvents = [];
+    writeQueue = writeQueue.then(async () => {
+      const profile = await profileReady;
+      Object.assign(profile, emptyProfile());
+      await browser.storage.local.remove(STORAGE_KEY);
+    }).catch((error) => {
       console.warn("[GPT AntiCurse diagnostic] Could not reset backend request profile", error);
     });
   });
@@ -206,6 +243,6 @@
     isConversationTarget,
     classify,
     record,
-    flush: () => writeQueue
+    flush
   };
 })();
