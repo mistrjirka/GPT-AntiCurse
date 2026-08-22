@@ -22,7 +22,7 @@
   let turnList = null;
   let turnListObserver = null;
   let shellObservers = [];
-  let shellRefreshRaf = 0;
+  let shellRefreshQueued = false;
   let activeTurn = null;
   let activityObserver = null;
   let activeTurnKey = null;
@@ -31,7 +31,8 @@
   let recoveryGeneration = 0;
   let attemptedTurnKey = null;
   const attemptedTurns = new Set();
-  let visibilityListenerInstalled = false;
+  let candidateTurn = null;
+  let candidateObserver = null;
   let discoveryObserver = null;
   let discoveryTimer = null;
   let countdownUiTimer = null;
@@ -82,7 +83,7 @@
     const hidden = document.visibilityState !== "visible";
     const remainingMs = recoveryRemainingMs();
     const phase = recoveryPhase ||
-      (hidden ? "paused-hidden" : draftBlocked ? "paused-draft" : longWaitBanner ? "checking" : "countdown");
+      (draftBlocked ? "paused-draft" : longWaitBanner ? "checking" : "countdown");
 
     window.dispatchEvent(new CustomEvent(STALL_STATUS_EVENT, { detail: {
       active: true,
@@ -97,7 +98,10 @@
 
     // Recovery itself stays deadline/event-driven. This timer only refreshes the
     // visible countdown while a streaming turn exists.
-    if (!recoveryPhase && !longWaitBanner) countdownUiTimer = setTimeout(publishRecoveryStatus, 1000);
+    // Do not run a cosmetic 1 Hz timer in a hidden tab. The actual watchdog has
+    // its own deadline timer and uses Date.now(), so it keeps running/catches up
+    // without creating a chain of background timers that browsers may throttle.
+    if (!recoveryPhase && !longWaitBanner && !hidden) countdownUiTimer = setTimeout(publishRecoveryStatus, 1000);
   }
 
   function setRecoveryPhase(phase) {
@@ -181,7 +185,15 @@
 
   function scheduleStallCheck(delayOverride) {
     clearTimer();
-    if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) { publishRecoveryStatus(); return; }
+    if (!settings.stallRecoveryEnabled || !activeTurn) { publishRecoveryStatus(); return; }
+    // The streaming marker and the Stop control are mounted independently by
+    // ChatGPT. Keep the already-started deadline while waiting for Stop instead
+    // of dropping the run because those DOM updates arrived in the other order.
+    if (!stopButton()) {
+      stallTimer = setTimeout(() => scheduleStallCheck(), 500);
+      publishRecoveryStatus();
+      return;
+    }
     const elapsed = Date.now() - lastActivityAt;
     const delay = delayOverride == null
       ? (hasLongWaitBanner(activeTurn) ? 0 : Math.max(0, thresholdMs() - elapsed))
@@ -199,17 +211,27 @@
 
   function observeActiveTurn(turn) {
     if (activeTurn === turn) return;
+    const nextKey = turnKey(turn);
+    const nextIdentity = nextKey ? `${conversationId() || ""}\u001f${nextKey}` : null;
+    const sameLogicalTurn = !!nextIdentity && nextIdentity === observeActiveTurn.lastIdentity;
     if (activityObserver) activityObserver.disconnect();
     activityObserver = null;
     activeTurn = turn || null;
-    activeTurnKey = turnKey(activeTurn);
+    activeTurnKey = nextKey;
     clearTimer();
     recoveryGeneration++;
     recoveryPhase = null;
     if (!activeTurn) { publishRecoveryStatus(); return; }
 
-    lastActivityAt = Date.now();
+    // React may remount the same logical turn when a browser tab is hidden or
+    // shown. A DOM-node replacement is not model progress, so preserve the
+    // wall-clock deadline for the same conversation/turn identity.
+    if (!sameLogicalTurn) {
+      observeActiveTurn.lastIdentity = nextIdentity;
+      lastActivityAt = Date.now();
+    }
     activityObserver = new MutationObserver((records) => {
+      if (!stopButton() || !activeTurn?.querySelector(STREAMING_SELECTOR)) { syncActiveTurn(); return; }
       // This explicit ChatGPT long-wait UI is a stall signal, not progress.
       // React inserting/animating it must not restart the ordinary deadline.
       if (hasLongWaitBanner(activeTurn)) { scheduleStallCheck(0); return; }
@@ -224,6 +246,7 @@
     });
     scheduleStallCheck();
   }
+  observeActiveTurn.lastIdentity = null;
 
   function findActiveTurn() {
     if (!turnList || !turnList.isConnected) return null;
@@ -236,25 +259,64 @@
     return null;
   }
 
+  function disconnectCandidateObserver() {
+    if (candidateObserver) candidateObserver.disconnect();
+    candidateObserver = null;
+    candidateTurn = null;
+  }
+
+  function latestTurnWrapper() {
+    if (!turnList || !turnList.isConnected) return null;
+    const children = Array.from(turnList.children);
+    for (let index = children.length - 1; index >= 0; index--) {
+      if (children[index].matches(TURN_CONTAINER_SELECTOR)) return children[index];
+    }
+    return null;
+  }
+
+  function watchLatestTurnForStreaming() {
+    const latest = latestTurnWrapper();
+    if (!latest || latest === candidateTurn) return;
+    disconnectCandidateObserver();
+    candidateTurn = latest;
+    candidateObserver = new MutationObserver(() => {
+      if (!candidateTurn || !candidateTurn.isConnected) { disconnectCandidateObserver(); scheduleDiscovery(); return; }
+      if (!candidateTurn.querySelector(STREAMING_SELECTOR)) return;
+      disconnectCandidateObserver();
+      syncActiveTurn();
+    });
+    // This observer exists only while there is no detected active run, and only
+    // on the newest turn. It closes the race where ChatGPT mounts the turn
+    // wrapper before adding data-streaming-response-status inside it.
+    candidateObserver.observe(candidateTurn, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-streaming-response-status"]
+    });
+  }
+
   function syncActiveTurn() {
     const next = findActiveTurn();
     if (next !== activeTurn) observeActiveTurn(next);
-    else if (activeTurn && !stopButton()) observeActiveTurn(null);
+    if (next) disconnectCandidateObserver();
+    else watchLatestTurnForStreaming();
   }
 
   function disconnectShellObservers() {
     for (const observer of shellObservers) observer.disconnect();
     shellObservers = [];
-    if (shellRefreshRaf) cancelAnimationFrame(shellRefreshRaf);
-    shellRefreshRaf = 0;
+    shellRefreshQueued = false;
   }
 
   function scheduleShellRefresh() {
-    if (shellRefreshRaf) return;
-    shellRefreshRaf = requestAnimationFrame(() => {
-      shellRefreshRaf = 0;
+    if (shellRefreshQueued) return;
+    shellRefreshQueued = true;
+    queueMicrotask(() => {
+      shellRefreshQueued = false;
       if (turnList && turnList.isConnected) return;
       turnList = null;
+      disconnectCandidateObserver();
       scheduleDiscovery();
     });
   }
@@ -333,21 +395,23 @@
   }
 
   function onVisibilityChange() {
-    if (document.visibilityState !== "visible") return;
-    removeVisibilityWakeup();
+    // Visibility changes do not pause or restart the deadline. Re-evaluate from
+    // Date.now() so a throttled background timer catches up immediately.
     if (activeTurn) scheduleStallCheck(0);
+    else publishRecoveryStatus();
   }
 
-  function installVisibilityWakeup() {
-    if (visibilityListenerInstalled) return;
-    visibilityListenerInstalled = true;
-    document.addEventListener("visibilitychange", onVisibilityChange, { passive: true });
-  }
-
-  function removeVisibilityWakeup() {
-    if (!visibilityListenerInstalled) return;
-    visibilityListenerInstalled = false;
-    document.removeEventListener("visibilitychange", onVisibilityChange);
+  function onPotentialRunStart(event) {
+    if (!settings.stallRecoveryEnabled) return;
+    const target = event && event.target instanceof Element ? event.target : null;
+    const isSubmit = event?.type === "submit" && !!target?.closest('form[data-type="unified-composer"], form');
+    const isSendClick = event?.type === "click" && !!target?.closest('#composer-submit-button:not([data-testid="stop-button"])');
+    const isComposerEnter = event?.type === "keydown" && event.key === "Enter" && !event.shiftKey && !!target?.closest(COMPOSER_SELECTOR);
+    if (!isSubmit && !isSendClick && !isComposerEnter) return;
+    // Discovery intentionally self-expires after 10 seconds when a page is idle.
+    // Wake it whenever the user can start a new run so long-open/new-chat tabs
+    // cannot permanently miss the watchdog.
+    queueMicrotask(scheduleDiscovery);
   }
 
   function waitForCondition(test, root, timeoutMs) {
@@ -387,7 +451,7 @@
     if (hasUserDraft()) return false;
     const input = composer();
     if (!replaceComposerWithNudge(input)) return false;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await Promise.resolve();
     // The user can type during this frame. Never send if the composer changed
     // from AntiCurse's exact fixed nudge or gained an attachment.
     if (!composerContainsOnlyNudge()) return false;
@@ -432,9 +496,11 @@
 
   async function checkForStall() {
     stallTimer = null;
-    if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) return;
-    if (document.visibilityState !== "visible") { installVisibilityWakeup(); return; }
-
+    if (!settings.stallRecoveryEnabled || !activeTurn) return;
+    if (!activeTurn.querySelector(STREAMING_SELECTOR)) { syncActiveTurn(); return; }
+    // Stop can be briefly remounted independently from the active turn. Do not
+    // silently lose the watchdog during that transient DOM gap.
+    if (!stopButton()) { scheduleStallCheck(500); return; }
     // OR semantics: the explicit long-wait banner is independently sufficient;
     // without it, retain the conservative inactivity + backend-confirmation path.
     const longWaitBanner = hasLongWaitBanner(activeTurn);
@@ -477,7 +543,7 @@
     clearTimer();
     clearCountdownUiTimer();
     clearDiscovery();
-    removeVisibilityWakeup();
+    disconnectCandidateObserver();
     disconnectShellObservers();
     if (activityObserver) activityObserver.disconnect();
     if (turnListObserver) turnListObserver.disconnect();
@@ -505,6 +571,10 @@
       else { scheduleDiscovery(); publishRecoveryStatus(); }
     });
 
+    document.addEventListener("visibilitychange", onVisibilityChange, { passive: true });
+    document.addEventListener("submit", onPotentialRunStart, true);
+    document.addEventListener("click", onPotentialRunStart, true);
+    document.addEventListener("keydown", onPotentialRunStart, true);
     if (settings.stallRecoveryEnabled) scheduleDiscovery();
   }
 
@@ -526,7 +596,11 @@
         toolTimeoutSeconds: settings.stallRecoveryToolTimeoutSeconds,
         turnListObserver: !!turnListObserver,
         shellObserverCount: shellObservers.length,
-        discoveryObserver: !!discoveryObserver
+        discoveryObserver: !!discoveryObserver,
+        candidateObserver: !!candidateObserver,
+        stopButton: !!stopButton(),
+        visibilityState: document.visibilityState,
+        latestTurnHasStreaming: !!latestTurnWrapper()?.querySelector(STREAMING_SELECTOR)
       };
     }
   };

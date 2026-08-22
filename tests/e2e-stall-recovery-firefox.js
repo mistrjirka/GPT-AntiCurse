@@ -6,7 +6,7 @@ const https = require("https");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
-const { Builder } = require("selenium-webdriver");
+const { Builder, By } = require("selenium-webdriver");
 const firefox = require("selenium-webdriver/firefox");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -69,8 +69,21 @@ function fixtureHtml() {
     button.disabled = false;
   }
 
-  active = makeTurn(1, id === 'tool-timeout');
-  setStop();
+  if (id === 'late-run-after-idle') {
+    setSubmit(false);
+  } else active = makeTurn(1, id === 'tool-timeout');
+  if (id === 'late-streaming-marker' && active) active.streaming.removeAttribute('data-streaming-response-status');
+  if (active) setStop();
+  if (id === 'late-streaming-marker' && active) {
+    setTimeout(() => active.streaming.setAttribute('data-streaming-response-status', 'streaming'), 60);
+  }
+  if (id === 'same-turn-remount' && active) {
+    setTimeout(() => {
+      const replacement = active.wrapper.cloneNode(true);
+      active.wrapper.replaceWith(replacement);
+      active = { wrapper: replacement, streaming: replacement.querySelector('[data-streaming-response-status]') };
+    }, 120);
+  }
   if (id === 'disabled-until-input') {
     new MutationObserver(() => {
       if ((composer.textContent || '').trim()) button.disabled = false;
@@ -89,6 +102,11 @@ function fixtureHtml() {
   if (id === 'draft-protection') composer.textContent = 'do not overwrite me';
 
   button.addEventListener('click', () => {
+    if (id === 'late-run-after-idle' && !active) {
+      window.__state.userStarts = (window.__state.userStarts || 0) + 1;
+      setTimeout(() => { active = makeTurn(1, false); setStop(); }, 50);
+      return;
+    }
     if (button.getAttribute('data-testid') === 'stop-button') {
       window.__state.stopClicks++;
       if (id === 'disabled-until-input') setSubmit(true);
@@ -176,6 +194,18 @@ async function openCase(driver, id) {
   const extensionDir = path.join(temp, "firefox");
   const xpi = path.join(temp, "gpt-anticurse-firefox.xpi");
   fs.cpSync(path.join(ROOT, "firefox"), extensionDir, { recursive: true });
+  const hookName = "stall-background-test-hook.js";
+  fs.writeFileSync(path.join(extensionDir, hookName), `
+    if (location.pathname.endsWith('/background-hidden')) {
+      try { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }); } catch {}
+      globalThis.requestAnimationFrame = () => 1;
+    }
+  `);
+  const manifestPath = path.join(extensionDir, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const isolated = manifest.content_scripts.find((entry) => (entry.js || []).includes("stall-recovery.js"));
+  isolated.js.splice(isolated.js.indexOf("stall-recovery.js"), 0, hookName);
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
   const watchdogPath = path.join(extensionDir, "stall-recovery.js");
   let watchdog = fs.readFileSync(watchdogPath, "utf8");
@@ -184,7 +214,8 @@ async function openCase(driver, id) {
     .replace("stallRecoveryToolTimeoutSeconds: 300", "stallRecoveryToolTimeoutSeconds: 0.55")
     .replace("stallRecoveryGraceSeconds: 10", "stallRecoveryGraceSeconds: 0.06")
     .replace("clampSeconds(next.stallRecoveryTimeoutSeconds, settings.stallRecoveryTimeoutSeconds, 60, 1800)", "clampSeconds(next.stallRecoveryTimeoutSeconds, settings.stallRecoveryTimeoutSeconds, 0.05, 1800)")
-    .replace("clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 120, 3600)", "clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 0.10, 3600)");
+    .replace("clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 120, 3600)", "clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 0.10, 3600)")
+    .replace("discoveryTimer = setTimeout(clearDiscovery, 10_000)", "discoveryTimer = setTimeout(clearDiscovery, 300)");
   fs.writeFileSync(watchdogPath, watchdog);
   execFileSync("zip", ["-qr", xpi, "."], { cwd: extensionDir });
 
@@ -240,6 +271,27 @@ async function openCase(driver, id) {
     assert.equal(current.stopClicks, 0);
     assert.equal(current.sends, 0);
     assert((statusCounts.get("backend-fail-open") || 0) >= 1);
+
+    await openCase(driver, "late-run-after-idle");
+    await driver.sleep(450);
+    await driver.findElement(By.css('#composer-submit-button')).click();
+    assert.equal(await driver.executeScript("return window.__state.userStarts"), 1, "Firefox fixture must launch the run through the Send click");
+    await waitFor(driver, "return window.__state.sends === 1", 4000);
+    assert.equal((await state(driver)).sentText, ".", "Firefox run started after discovery expiry must still be recovered");
+
+    await openCase(driver, "late-streaming-marker");
+    await waitFor(driver, "return window.__state.sends === 1", 4000);
+    assert.equal((await state(driver)).sentText, ".", "Firefox late streaming marker must start the watchdog");
+
+    await openCase(driver, "background-hidden");
+    await waitFor(driver, "return window.__state.sends === 1", 5000);
+    current = await state(driver);
+    assert.equal(current.stopClicks, 1, "Firefox hidden-tab emulation must click Stop");
+    assert.equal(current.sentText, ".", "Firefox hidden-tab emulation must send the nudge");
+
+    await openCase(driver, "same-turn-remount");
+    await waitFor(driver, "return window.__state.sends === 1", 4000);
+    assert.equal((await state(driver)).sentText, ".", "Firefox same logical turn remount must preserve a recoverable watchdog");
 
     await openCase(driver, "activity-reset");
     await driver.sleep(120);

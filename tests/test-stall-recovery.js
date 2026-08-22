@@ -26,7 +26,13 @@ assert(chromeSource.includes("our systems are thinking a bit more about this req
 assert(chromeSource.includes("help.openai.com/articles/20001326"));
 assert(chromeSource.includes("if (!longWaitBanner && await streamStatus(id)"), "banner must OR with, not depend on, backend stall confirmation");
 assert(chromeSource.includes("hasLongWaitBanner(activeTurn) ? 0"), "banner must schedule an immediate recovery check");
-assert(chromeSource.includes("document.visibilityState !== \"visible\""));
+assert(!chromeSource.includes('if (document.visibilityState !== "visible")'), "hidden tabs must never pause recovery");
+assert(!chromeSource.includes("paused-hidden"), "hidden tabs must remain on the same wall-clock deadline");
+assert(chromeSource.includes("watchLatestTurnForStreaming"), "watchdog must close the late streaming-marker race");
+assert(chromeSource.includes("onPotentialRunStart"), "long-idle tabs must wake discovery when a run is launched");
+assert(chromeSource.includes("queueMicrotask(scheduleDiscovery)"), "run-start wakeup must be lightweight and event-driven");
+assert(chromeSource.includes("sameLogicalTurn"), "same logical turn remounts must preserve the deadline");
+assert(!chromeSource.includes("requestAnimationFrame("), "stall recovery must not depend on animation frames that stop in background tabs");
 assert(chromeSource.includes("hasUserDraft()"));
 assert(chromeSource.includes("attemptedTurnKey"));
 assert(!chromeSource.includes("sessionStorage.setItem"), "stall recovery must not persist a reload-resume marker");
@@ -47,6 +53,7 @@ for (const [browser, content] of [["chrome", chromeContent], ["firefox", firefox
   assert(content.includes("__gpt_anticurse_stall_status__"), `${browser}: on-page status must listen for recovery countdowns`);
   assert(content.includes("auto-continue in"), `${browser}: bottom-right status must render the countdown`);
   assert(content.includes("auto-continue resuming"), `${browser}: status must show active recovery phase`);
+  assert(!content.includes("paused-hidden"), `${browser}: hidden tabs must not render a paused state`);
 }
 
 for (const [browser, manifest, popup] of [["chrome", chromeManifest, chromePopup], ["firefox", firefoxManifest, firefoxPopup]]) {

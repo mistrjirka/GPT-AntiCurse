@@ -67,8 +67,21 @@ function fixtureHtml() {
     button.disabled = false;
   }
 
-  active = makeTurn(1, id === 'tool-timeout');
-  setStop();
+  if (id === 'late-run-after-idle') {
+    setSubmit(false);
+  } else active = makeTurn(1, id === 'tool-timeout');
+  if (id === 'late-streaming-marker' && active) active.streaming.removeAttribute('data-streaming-response-status');
+  if (active) setStop();
+  if (id === 'late-streaming-marker' && active) {
+    setTimeout(() => active.streaming.setAttribute('data-streaming-response-status', 'streaming'), 60);
+  }
+  if (id === 'same-turn-remount' && active) {
+    setTimeout(() => {
+      const replacement = active.wrapper.cloneNode(true);
+      active.wrapper.replaceWith(replacement);
+      active = { wrapper: replacement, streaming: replacement.querySelector('[data-streaming-response-status]') };
+    }, 120);
+  }
   if (id === 'disabled-until-input') {
     new MutationObserver(() => {
       if ((composer.textContent || '').trim()) button.disabled = false;
@@ -88,6 +101,11 @@ function fixtureHtml() {
   if (id === 'draft-protection') composer.textContent = 'do not overwrite me';
 
   button.addEventListener('click', () => {
+    if (id === 'late-run-after-idle' && !active) {
+      window.__state.userStarts = (window.__state.userStarts || 0) + 1;
+      setTimeout(() => { active = makeTurn(1, false); setStop(); }, 50);
+      return;
+    }
     if (button.getAttribute('data-testid') === 'stop-button') {
       window.__state.stopClicks++;
       if (id === 'disabled-until-input') setSubmit(true);
@@ -169,6 +187,18 @@ async function state(page) {
   const extensionPath = path.join(tempRoot, "chrome");
   const userDataDir = path.join(tempRoot, "profile");
   fs.cpSync(path.join(ROOT, "chrome"), extensionPath, { recursive: true });
+  const hookName = "stall-background-test-hook.js";
+  fs.writeFileSync(path.join(extensionPath, hookName), `
+    if (location.pathname.endsWith('/background-hidden')) {
+      try { Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }); } catch {}
+      globalThis.requestAnimationFrame = () => 1;
+    }
+  `);
+  const manifestPath = path.join(extensionPath, "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const isolated = manifest.content_scripts.find((entry) => (entry.js || []).includes("stall-recovery.js"));
+  isolated.js.splice(isolated.js.indexOf("stall-recovery.js"), 0, hookName);
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
   // Only the E2E copy shortens the production timer clamps. The exact packaged
   // source is separately syntax/static-tested with 120s / 300s / 10s defaults.
@@ -176,7 +206,8 @@ async function state(page) {
   let watchdog = fs.readFileSync(watchdogPath, "utf8");
   watchdog = watchdog
     .replace("clampSeconds(next.stallRecoveryTimeoutSeconds, settings.stallRecoveryTimeoutSeconds, 60, 1800)", "clampSeconds(next.stallRecoveryTimeoutSeconds, settings.stallRecoveryTimeoutSeconds, 0.05, 1800)")
-    .replace("clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 120, 3600)", "clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 0.10, 3600)");
+    .replace("clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 120, 3600)", "clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 0.10, 3600)")
+    .replace("discoveryTimer = setTimeout(clearDiscovery, 10_000)", "discoveryTimer = setTimeout(clearDiscovery, 300)");
   fs.writeFileSync(watchdogPath, watchdog);
 
   const statusCounts = new Map();
@@ -243,6 +274,39 @@ async function state(page) {
       assert.equal(s.stopClicks, 0);
       assert.equal(s.sends, 0);
       assert((statusCounts.get("backend-fail-open") || 0) >= 1);
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "late-run-after-idle");
+      await page.waitForTimeout(450);
+      await page.click('#composer-submit-button');
+      assert.equal(await page.evaluate(() => window.__state.userStarts), 1, "fixture must launch the run through the Send click");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000, polling: 25 });
+      assert.equal((await state(page)).sentText, ".", "run started after discovery expiry must still be recovered");
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "late-streaming-marker");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000, polling: 25 });
+      assert.equal((await state(page)).sentText, ".", "late streaming marker must still start the watchdog");
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "background-hidden");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 4000, polling: 25 });
+      const s = await state(page);
+      assert.equal(s.stopClicks, 1, "hidden-tab emulation must still click Stop");
+      assert.equal(s.sentText, ".", "hidden-tab emulation must still send the nudge");
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "same-turn-remount");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000, polling: 20 });
+      assert.equal((await state(page)).sentText, ".", "same logical turn remount must preserve a recoverable watchdog");
       await page.close();
     }
 
