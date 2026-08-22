@@ -22,6 +22,7 @@
     "scripts": [
       "conversation-endpoint.js",
       "diagnostics.js",
+      "backend-request-profile.js",
       "trim.js",
       "trim-logical.js",
       "trim-pipeline.js",
