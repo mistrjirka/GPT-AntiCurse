@@ -22,7 +22,7 @@
   });
 
   try {
-    importScripts("diagnostics.js", "background.js");
+    importScripts("diagnostics.js", "background.js", "stall-scheduler.js");
     bootState = {
       ok: true,
       phase: "ready",

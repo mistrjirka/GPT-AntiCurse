@@ -93,9 +93,9 @@ Older-history loading remains available during the current page session without 
 
 ## Stalled-run recovery
 
-When **Auto-recover stalled runs** is enabled, AntiCurse watches only the currently streaming turn for meaningful progress. After roughly 2 minutes without progress (5 minutes while a tool is visibly active), it checks ChatGPT's `stream_status` twice with a 10-second grace period. Recovery proceeds only while the tab is visible, the backend still reports exactly `IS_STREAMING`, the real Stop button is present, and the composer has no text or attachment. The bottom-right status pill shows the remaining recovery countdown and the current recovery phase.
+When **Auto-recover stalled runs** is enabled, AntiCurse watches only the currently streaming turn for meaningful progress. After roughly 2 minutes without progress (5 minutes while a tool is visibly active), it verifies ChatGPT's backend state before intervening and keeps the same wall-clock deadline when the tab is in the background. A background extension alarm backs up throttled page timers. Recovery prefers ChatGPT's real Stop button; if the page still shows a streaming turn but that control has disappeared, AntiCurse can use ChatGPT's current stop endpoint instead. The composer must still have no user text or attachment. The bottom-right status pill shows the remaining recovery countdown and current recovery phase.
 
-A recovery clicks Stop, waits for the run to stop, inserts a fixed `.` continuation nudge, waits for ChatGPT to enable the Send control, and submits it. It attempts each turn at most once and never overwrites a draft. AntiCurse does **not** reload the page as a recovery fallback.
+A recovery stops the old run when it is still active, inserts a fixed `.` continuation nudge, waits for ChatGPT to enable the Send control, and submits it. It attempts each turn at most once and never overwrites a draft. AntiCurse does **not** reload the page as a recovery fallback.
 
 ## Privacy
 

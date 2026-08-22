@@ -14,8 +14,8 @@
   const TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
   const TURN_CONTAINER_SELECTOR = '[data-turn-id-container]';
   const STREAMING_SELECTOR = '[data-streaming-response-status]';
-  const STOP_SELECTOR = '#composer-submit-button[data-testid="stop-button"]';
-  const SUBMIT_SELECTOR = '#composer-submit-button:not([data-testid="stop-button"])';
+  const STOP_SELECTOR = '#composer-submit-button[data-testid="stop-button"], button[data-testid="stop-button"]';
+  const SUBMIT_SELECTOR = '#composer-submit-button[data-testid="send-button"], button[data-testid="send-button"], #composer-submit-button:not([data-testid="stop-button"])';
   const COMPOSER_SELECTOR = '#prompt-textarea[contenteditable="true"]';
 
   let settings = { ...DEFAULTS };
@@ -37,6 +37,8 @@
   let discoveryTimer = null;
   let countdownUiTimer = null;
   let recoveryPhase = null;
+  let stallCheckInFlight = false;
+  let backgroundWakeDueAt = null;
 
   function clampSeconds(value, fallback, min, max) {
     const number = Number(value);
@@ -62,7 +64,7 @@
   }
 
   function recoveryRemainingMs() {
-    if (!activeTurn || !stopButton()) return null;
+    if (!activeTurn || !activeTurn.querySelector(STREAMING_SELECTOR)) return null;
     if (hasLongWaitBanner(activeTurn)) return 0;
     return Math.max(0, thresholdMs() - (Date.now() - lastActivityAt));
   }
@@ -70,7 +72,7 @@
   function publishRecoveryStatus() {
     clearCountdownUiTimer();
     const id = conversationId();
-    const active = settings.stallRecoveryEnabled && !!activeTurn && !!stopButton();
+    const active = settings.stallRecoveryEnabled && !!activeTurn && !!activeTurn.querySelector(STREAMING_SELECTOR);
     if (!active) {
       recoveryPhase = null;
       window.dispatchEvent(new CustomEvent(STALL_STATUS_EVENT, { detail: { active: false, conversationId: id } }));
@@ -93,7 +95,8 @@
       tool,
       longWaitBanner,
       draftBlocked,
-      hidden
+      hidden,
+      stopButton: !!stopButton()
     } }));
 
     // Recovery itself stays deadline/event-driven. This timer only refreshes the
@@ -115,7 +118,31 @@
     try { return decodeURIComponent(match[1]); } catch { return null; }
   }
 
+  function sendRuntimeMessage(message) {
+    try {
+      const result = ext.runtime.sendMessage(message);
+      if (result && typeof result.catch === "function") result.catch((error) => console.debug("[GPT AntiCurse] stall alarm message failed", error));
+    } catch { /* background wake-up is a reliability backup only */ }
+  }
+
+  function scheduleBackgroundWakeup(dueAt) {
+    if (!Number.isFinite(dueAt)) return;
+    // Do not re-arm the extension alarm for every streamed token. An existing
+    // earlier alarm is a safe checkpoint: when it fires we recompute the true
+    // remaining time from Date.now() and the latest activity timestamp.
+    if (Number.isFinite(backgroundWakeDueAt) && backgroundWakeDueAt <= dueAt) return;
+    backgroundWakeDueAt = dueAt;
+    sendRuntimeMessage({ type: "cg-stall-alarm-schedule", dueAt });
+  }
+
+  function clearBackgroundWakeup() {
+    if (backgroundWakeDueAt == null) return;
+    backgroundWakeDueAt = null;
+    sendRuntimeMessage({ type: "cg-stall-alarm-clear" });
+  }
+
   function stopButton() { return document.querySelector(STOP_SELECTOR); }
+  function submitButton() { return document.querySelector(SUBMIT_SELECTOR); }
   function composer() { return document.querySelector(COMPOSER_SELECTOR); }
   function draftText() { const node = composer(); return node ? (node.textContent || "").trim() : ""; }
 
@@ -163,11 +190,16 @@
 
   function runningTool(turn = activeTurn) {
     if (!turn) return false;
+    const iconSelector = '[data-testid="cot-v5-tool-icon-pile"], [data-testid*="tool-icon"]';
     for (const shimmer of turn.querySelectorAll(".loading-shimmer-tertiary")) {
-      const row = shimmer.closest("div");
-      if (row && row.querySelector('[data-testid="cot-v5-tool-icon-pile"], [data-testid*="tool-icon"]')) return true;
-      const parent = shimmer.parentElement && shimmer.parentElement.parentElement;
-      if (parent && parent.querySelector('[data-testid="cot-v5-tool-icon-pile"], [data-testid*="tool-icon"]')) return true;
+      // Current ChatGPT nests the shimmer text inside two small layout wrappers;
+      // the tool icon is a sibling under their common parent. Walk only a few
+      // local ancestors so completed tool cards elsewhere in the turn do not
+      // accidentally extend the timeout.
+      let node = shimmer.parentElement;
+      for (let depth = 0; node && node !== turn && depth < 4; depth++, node = node.parentElement) {
+        if (node.querySelector(iconSelector)) return true;
+      }
     }
     return !!turn.querySelector('[aria-busy="true"][data-testid*="tool"], [data-state="running"][data-testid*="tool"]');
   }
@@ -185,12 +217,8 @@
 
   function scheduleStallCheck(delayOverride) {
     clearTimer();
-    if (!settings.stallRecoveryEnabled || !activeTurn) { publishRecoveryStatus(); return; }
-    // The streaming marker and the Stop control are mounted independently by
-    // ChatGPT. Keep the already-started deadline while waiting for Stop instead
-    // of dropping the run because those DOM updates arrived in the other order.
-    if (!stopButton()) {
-      stallTimer = setTimeout(() => scheduleStallCheck(), 500);
+    if (!settings.stallRecoveryEnabled || !activeTurn || !activeTurn.querySelector(STREAMING_SELECTOR)) {
+      clearBackgroundWakeup();
       publishRecoveryStatus();
       return;
     }
@@ -198,7 +226,11 @@
     const delay = delayOverride == null
       ? (hasLongWaitBanner(activeTurn) ? 0 : Math.max(0, thresholdMs() - elapsed))
       : Math.max(0, delayOverride);
+    const dueAt = Date.now() + delay;
     stallTimer = setTimeout(checkForStall, delay);
+    // Browser-extension alarms are not subject to the same background-tab timer
+    // throttling as this content script. Keep one per tab as a wake-up backup.
+    scheduleBackgroundWakeup(dueAt);
     publishRecoveryStatus();
   }
 
@@ -221,7 +253,7 @@
     clearTimer();
     recoveryGeneration++;
     recoveryPhase = null;
-    if (!activeTurn) { publishRecoveryStatus(); return; }
+    if (!activeTurn) { clearBackgroundWakeup(); publishRecoveryStatus(); return; }
 
     // React may remount the same logical turn when a browser tab is hidden or
     // shown. A DOM-node replacement is not model progress, so preserve the
@@ -231,7 +263,7 @@
       lastActivityAt = Date.now();
     }
     activityObserver = new MutationObserver((records) => {
-      if (!stopButton() || !activeTurn?.querySelector(STREAMING_SELECTOR)) { syncActiveTurn(); return; }
+      if (!activeTurn?.querySelector(STREAMING_SELECTOR)) { syncActiveTurn(); return; }
       // This explicit ChatGPT long-wait UI is a stall signal, not progress.
       // React inserting/animating it must not restart the ordinary deadline.
       if (hasLongWaitBanner(activeTurn)) { scheduleStallCheck(0); return; }
@@ -338,7 +370,12 @@
   function installTurnListObserver() {
     const sections = document.querySelectorAll(TURN_SELECTOR);
     const section = sections.length ? sections[sections.length - 1] : null;
-    const wrapper = section && section.closest(TURN_CONTAINER_SELECTOR);
+    // Current ChatGPT puts data-turn-id-container on both the section and its
+    // outer turn wrapper. Prefer the matching parent so we observe the real list
+    // of turns rather than accidentally treating one turn as the whole list.
+    const wrapper = section && section.parentElement?.matches(TURN_CONTAINER_SELECTOR)
+      ? section.parentElement
+      : section && section.closest(TURN_CONTAINER_SELECTOR);
     const nextList = wrapper && wrapper.parentElement;
     if (!nextList) return false;
     if (nextList === turnList && turnListObserver) {
@@ -391,6 +428,31 @@
       return typeof data?.status === "string" ? data.status : null;
     } catch {
       return null;
+    }
+  }
+
+  async function interruptConversation(id) {
+    if (!id || !SESSION_AUTH || typeof SESSION_AUTH.resolveAccessToken !== "function") return false;
+    const auth = await SESSION_AUTH.resolveAccessToken({ isCurrent: () => conversationId() === id });
+    if (!auth.ok || conversationId() !== id) return false;
+    try {
+      // This is the same backend route used by ChatGPT's current Stop action.
+      // The conduit/turn-trace headers used by the site are optional; the
+      // authenticated conversation id is sufficient for the fallback.
+      const response = await fetch(`${location.origin}/backend-api/stop_conversation`, {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          authorization: `Bearer ${auth.accessToken}`
+        },
+        body: JSON.stringify({ conversation_id: id, exclude_async_types: [] })
+      });
+      return response.ok;
+    } catch {
+      return false;
     }
   }
 
@@ -460,12 +522,12 @@
     // replace it only after the input event. Insert the nudge first, then wait.
     const submitReady = await waitForCondition(() => {
       if (!composerContainsOnlyNudge()) return false;
-      const candidate = document.querySelector(SUBMIT_SELECTOR);
+      const candidate = submitButton();
       return !!candidate && !candidate.disabled && candidate.getAttribute("aria-disabled") !== "true";
     }, input.closest("form") || document.documentElement, 3_000);
     if (!submitReady || !composerContainsOnlyNudge()) return false;
 
-    const submit = document.querySelector(SUBMIT_SELECTOR);
+    const submit = submitButton();
     if (!submit || submit.disabled || submit.getAttribute("aria-disabled") === "true") return false;
     submit.click();
     return waitForCondition(
@@ -475,34 +537,50 @@
     );
   }
 
-  async function recoverStall(id, key, generation) {
+  async function recoverStall(id, key, generation, backendStatus = null) {
     const identity = `${id || ""}\u001f${key || ""}`;
     if (generation !== recoveryGeneration || key !== activeTurnKey || attemptedTurns.has(identity)) return;
     if (hasUserDraft()) { scheduleStallCheck(30_000); return; }
-    const stop = stopButton();
-    if (!stop) return;
+
     setRecoveryPhase("recovering");
     attemptedTurns.add(identity);
     if (attemptedTurns.size > 256) attemptedTurns.delete(attemptedTurns.values().next().value);
     attemptedTurnKey = key;
-    stop.click();
-    const stopped = await waitForCondition(() => !stopButton(), document.documentElement, 10_000);
-    if (!stopped || hasUserDraft()) { setRecoveryPhase(null); return; }
+    clearBackgroundWakeup();
+
+    const stop = stopButton();
+    if (stop) {
+      stop.click();
+      const stopped = await waitForCondition(() => !stopButton(), document.documentElement, 10_000);
+      if (!stopped || hasUserDraft()) { setRecoveryPhase(null); return; }
+    } else if (backendStatus === "IS_STREAMING") {
+      // Live capture shows a real failure mode where the streaming marker stays
+      // mounted but React no longer renders the Stop control. In that state use
+      // ChatGPT's own current stop endpoint instead of waiting forever for a
+      // button that may never return.
+      if (!await interruptConversation(id) || hasUserDraft()) { setRecoveryPhase(null); return; }
+    } else if (backendStatus == null) {
+      // Without either a UI Stop control or a known backend state, fail closed.
+      setRecoveryPhase(null);
+      scheduleStallCheck(30_000);
+      return;
+    }
+
+    // If the backend already reports a non-streaming state while the DOM still
+    // carries a stale streaming marker, there is nothing left to stop. Sending
+    // the fixed nudge is the recovery action itself.
     if (await sendNudge()) { setRecoveryPhase(null); return; }
     // Never reload the chat as a recovery fallback. If ChatGPT does not expose
-    // a usable Send control after Stop, leave the page in place and fail safely.
+    // a usable Send control, leave the page in place and fail safely.
     setRecoveryPhase(null);
   }
 
   async function checkForStall() {
     stallTimer = null;
+    if (stallCheckInFlight) return;
     if (!settings.stallRecoveryEnabled || !activeTurn) return;
     if (!activeTurn.querySelector(STREAMING_SELECTOR)) { syncActiveTurn(); return; }
-    // Stop can be briefly remounted independently from the active turn. Do not
-    // silently lose the watchdog during that transient DOM gap.
-    if (!stopButton()) { scheduleStallCheck(500); return; }
-    // OR semantics: the explicit long-wait banner is independently sufficient;
-    // without it, retain the conservative inactivity + backend-confirmation path.
+
     const longWaitBanner = hasLongWaitBanner(activeTurn);
     const threshold = thresholdMs();
     if (!longWaitBanner) {
@@ -511,38 +589,74 @@
     }
     if (hasUserDraft()) { scheduleStallCheck(30_000); return; }
 
-    const id = conversationId();
-    const key = activeTurnKey;
-    const generation = recoveryGeneration;
-    setRecoveryPhase("checking");
-    if (!longWaitBanner && await streamStatus(id) !== "IS_STREAMING") { setRecoveryPhase(null); return; }
-    if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
-
-    if (!longWaitBanner) {
-      const graceMs = settings.stallRecoveryGraceSeconds * 1000;
-      if (graceMs > 0) {
-        setRecoveryPhase("grace");
-        await new Promise((resolve) => setTimeout(resolve, graceMs));
-      }
-      if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
-      if (Date.now() - lastActivityAt < threshold || hasUserDraft() || !stopButton()) { setRecoveryPhase(null); return; }
-      // The ordinary heuristic always requires a second exact backend
-      // confirmation immediately before intervention.
+    stallCheckInFlight = true;
+    try {
+      const id = conversationId();
+      const key = activeTurnKey;
+      const generation = recoveryGeneration;
+      const hadStopControl = !!stopButton();
       setRecoveryPhase("checking");
-      if (await streamStatus(id) !== "IS_STREAMING") { setRecoveryPhase(null); return; }
-      if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
-    } else if (!hasLongWaitBanner(activeTurn) || hasUserDraft() || !stopButton()) {
-      setRecoveryPhase(null);
-      return;
-    }
 
-    await recoverStall(id, key, generation);
+      // The explicit long-wait banner can still recover immediately through the
+      // visible Stop button. If that control is absent, we need backend state so
+      // the fallback never stops/sends blindly.
+      let firstStatus = null;
+      if (!longWaitBanner || !hadStopControl) firstStatus = await streamStatus(id);
+      if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
+
+      if (!longWaitBanner && firstStatus !== "IS_STREAMING") {
+        // A stale DOM streaming marker + no Stop control + a definite backend
+        // non-streaming state is exactly the live failure captured by the user.
+        if (!stopButton() && firstStatus != null) {
+          await recoverStall(id, key, generation, firstStatus);
+          return;
+        }
+        setRecoveryPhase(null);
+        scheduleStallCheck(30_000);
+        return;
+      }
+
+      if (!longWaitBanner) {
+        const graceMs = settings.stallRecoveryGraceSeconds * 1000;
+        if (graceMs > 0) {
+          setRecoveryPhase("grace");
+          await new Promise((resolve) => setTimeout(resolve, graceMs));
+        }
+        if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
+        if (Date.now() - lastActivityAt < threshold || hasUserDraft() || !activeTurn?.querySelector(STREAMING_SELECTOR)) {
+          setRecoveryPhase(null);
+          return;
+        }
+        // The ordinary heuristic always requires a second exact backend
+        // confirmation immediately before intervention.
+        setRecoveryPhase("checking");
+        const secondStatus = await streamStatus(id);
+        if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
+        if (secondStatus !== "IS_STREAMING") {
+          if (!stopButton() && secondStatus != null) {
+            await recoverStall(id, key, generation, secondStatus);
+            return;
+          }
+          setRecoveryPhase(null);
+          scheduleStallCheck(30_000);
+          return;
+        }
+        await recoverStall(id, key, generation, secondStatus);
+        return;
+      }
+
+      if (!hasLongWaitBanner(activeTurn) || hasUserDraft()) { setRecoveryPhase(null); return; }
+      await recoverStall(id, key, generation, hadStopControl ? null : firstStatus);
+    } finally {
+      stallCheckInFlight = false;
+    }
   }
 
   function teardown() {
     clearTimer();
     clearCountdownUiTimer();
     clearDiscovery();
+    clearBackgroundWakeup();
     disconnectCandidateObserver();
     disconnectShellObservers();
     if (activityObserver) activityObserver.disconnect();
@@ -553,6 +667,7 @@
     activeTurnKey = null;
     turnList = null;
     recoveryPhase = null;
+    stallCheckInFlight = false;
     publishRecoveryStatus();
   }
 
@@ -569,6 +684,15 @@
       applySettings(next);
       if (!settings.stallRecoveryEnabled) teardown();
       else { scheduleDiscovery(); publishRecoveryStatus(); }
+    });
+
+    ext.runtime?.onMessage?.addListener((message) => {
+      if (!message || message.type !== "cg-stall-alarm-fire") return undefined;
+      backgroundWakeDueAt = null;
+      // An alarm may be stale after activity/turn changes; checkForStall derives
+      // everything from the current DOM + wall clock and safely ignores it.
+      queueMicrotask(checkForStall);
+      return undefined;
     });
 
     document.addEventListener("visibilitychange", onVisibilityChange, { passive: true });
@@ -589,6 +713,8 @@
         longWaitBanner: hasLongWaitBanner(),
         recoveryPhase,
         countdownRemainingMs: recoveryRemainingMs(),
+        stallCheckInFlight,
+        backgroundWakeDueAt,
         lastActivityAt,
         attemptedTurnKey,
         attemptedTurnCount: attemptedTurns.size,

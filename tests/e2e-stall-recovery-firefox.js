@@ -37,6 +37,7 @@ function fixtureHtml() {
     const section = document.createElement('section');
     section.setAttribute('data-testid', 'conversation-turn-' + index);
     section.setAttribute('data-turn-id', 'turn-' + index);
+    section.setAttribute('data-turn-id-container', 'turn-' + index);
     const streaming = document.createElement('div');
     streaming.setAttribute('data-streaming-response-status', 'streaming');
     streaming.textContent = 'assistant output ' + index;
@@ -44,10 +45,14 @@ function fixtureHtml() {
       const row = document.createElement('div');
       const icon = document.createElement('span');
       icon.setAttribute('data-testid', 'cot-v5-tool-icon-pile');
+      const inner = document.createElement('div');
+      const inner2 = document.createElement('div');
       const shimmer = document.createElement('span');
       shimmer.className = 'loading-shimmer-tertiary';
       shimmer.textContent = 'Working';
-      row.append(icon, shimmer);
+      inner2.append(shimmer);
+      inner.append(inner2);
+      row.append(icon, inner);
       streaming.append(row);
     }
     section.append(streaming);
@@ -58,22 +63,34 @@ function fixtureHtml() {
 
   let active = null;
   function setSubmit(disabled = false) {
+    button.id = 'composer-submit-button';
     button.setAttribute('data-testid', 'send-button');
     button.textContent = 'Send';
     button.disabled = disabled;
     if (active && active.streaming) active.streaming.removeAttribute('data-streaming-response-status');
   }
   function setStop() {
+    button.id = 'composer-submit-button';
     button.setAttribute('data-testid', 'stop-button');
     button.textContent = 'Stop';
+    button.disabled = false;
+  }
+  function setVoiceOnly() {
+    button.removeAttribute('id');
+    button.removeAttribute('data-testid');
+    button.setAttribute('aria-label', 'Start Voice');
+    button.textContent = 'Voice';
     button.disabled = false;
   }
 
   if (id === 'late-run-after-idle') {
     setSubmit(false);
-  } else active = makeTurn(1, id === 'tool-timeout');
+  } else active = makeTurn(1, id === 'tool-timeout' || id === 'detached-tool-no-stop');
   if (id === 'late-streaming-marker' && active) active.streaming.removeAttribute('data-streaming-response-status');
-  if (active) setStop();
+  if (active) {
+    if (id === 'detached-no-stop' || id === 'detached-tool-no-stop' || id === 'backend-stop-no-button') setVoiceOnly();
+    else setStop();
+  }
   if (id === 'late-streaming-marker' && active) {
     setTimeout(() => active.streaming.setAttribute('data-streaming-response-status', 'streaming'), 60);
   }
@@ -87,6 +104,11 @@ function fixtureHtml() {
   if (id === 'disabled-until-input') {
     new MutationObserver(() => {
       if ((composer.textContent || '').trim()) button.disabled = false;
+    }).observe(composer, { childList: true, subtree: true, characterData: true });
+  }
+  if (id === 'detached-no-stop' || id === 'detached-tool-no-stop' || id === 'backend-stop-no-button') {
+    new MutationObserver(() => {
+      if ((composer.textContent || '').trim()) setSubmit(false);
     }).observe(composer, { childList: true, subtree: true, characterData: true });
   }
   if (id === 'system-delay-banner' && active?.streaming) {
@@ -145,7 +167,7 @@ function createCertificate(dir) {
   return { key: fs.readFileSync(key), cert: fs.readFileSync(cert) };
 }
 
-function createServer(tls, statusCounts) {
+function createServer(tls, statusCounts, interruptCounts) {
   return https.createServer(tls, (req, res) => {
     const url = new URL(req.url, "https://chatgpt.com:8443");
     if (/^\/c\/[^/]+$/.test(url.pathname)) {
@@ -164,9 +186,22 @@ function createServer(tls, statusCounts) {
       assert.equal(req.headers.authorization || "", "Bearer stall-firefox-token");
       const count = (statusCounts.get(id) || 0) + 1;
       statusCounts.set(id, count);
-      const status = id === "backend-fail-open" || id === "system-delay-banner" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
+      const detached = id === "detached-no-stop" || id === "detached-tool-no-stop";
+      const status = detached || id === "backend-fail-open" || id === "system-delay-banner" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ status }));
+      return;
+    }
+    if (url.pathname === "/backend-api/stop_conversation" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        const parsed = body ? JSON.parse(body) : {};
+        const id = parsed.conversation_id;
+        interruptCounts.set(id, (interruptCounts.get(id) || 0) + 1);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+      });
       return;
     }
     res.writeHead(404, { "content-type": "text/plain" });
@@ -220,7 +255,8 @@ async function openCase(driver, id) {
   execFileSync("zip", ["-qr", xpi, "."], { cwd: extensionDir });
 
   const statusCounts = new Map();
-  const server = createServer(createCertificate(temp), statusCounts);
+  const interruptCounts = new Map();
+  const server = createServer(createCertificate(temp), statusCounts, interruptCounts);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(8443, "0.0.0.0", resolve);
@@ -266,11 +302,10 @@ async function openCase(driver, id) {
     assert.equal(statusCounts.get("draft-protection") || 0, 0);
 
     await openCase(driver, "backend-fail-open");
-    await driver.sleep(700);
+    await driver.wait(async () => (statusCounts.get("backend-fail-open") || 0) >= 1, 3000);
     current = await state(driver);
     assert.equal(current.stopClicks, 0);
     assert.equal(current.sends, 0);
-    assert((statusCounts.get("backend-fail-open") || 0) >= 1);
 
     await openCase(driver, "late-run-after-idle");
     await driver.sleep(450);
@@ -282,6 +317,25 @@ async function openCase(driver, id) {
     await openCase(driver, "late-streaming-marker");
     await waitFor(driver, "return window.__state.sends === 1", 4000);
     assert.equal((await state(driver)).sentText, ".", "Firefox late streaming marker must start the watchdog");
+
+    await openCase(driver, "detached-no-stop");
+    await waitFor(driver, "return (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('auto-continue in')", 1500);
+    await waitFor(driver, "return window.__state.sends === 1", 4000);
+    current = await state(driver);
+    assert.equal(current.stopClicks, 0);
+    assert.equal(current.sentText, ".");
+    assert.equal(interruptCounts.get("detached-no-stop") || 0, 0);
+
+    await openCase(driver, "backend-stop-no-button");
+    await waitFor(driver, "return window.__state.sends === 1", 4000);
+    assert.equal(interruptCounts.get("backend-stop-no-button") || 0, 1, "Firefox missing Stop control must use /stop_conversation once");
+    assert.equal((await state(driver)).sentText, ".");
+
+    await openCase(driver, "detached-tool-no-stop");
+    await waitFor(driver, "return (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('tool auto-continue in')", 1500);
+    await driver.sleep(320);
+    assert.equal((await state(driver)).sends, 0, "Firefox live-style no-Stop tool stall must retain the longer timeout");
+    await waitFor(driver, "return window.__state.sends === 1", 4000);
 
     await openCase(driver, "background-hidden");
     await waitFor(driver, "return window.__state.sends === 1", 5000);

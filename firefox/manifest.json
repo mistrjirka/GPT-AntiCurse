@@ -13,7 +13,8 @@
     "storage",
     "webRequest",
     "webRequestBlocking",
-    "webRequestFilterResponse"
+    "webRequestFilterResponse",
+    "alarms"
   ],
   "host_permissions": [
     "https://chatgpt.com/*"
@@ -26,7 +27,8 @@
       "trim-logical.js",
       "trim-pipeline.js",
       "pagination-firewall.js",
-      "background.js"
+      "background.js",
+      "stall-scheduler.js"
     ]
   },
   "content_scripts": [

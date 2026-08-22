@@ -34,6 +34,7 @@ function fixtureHtml() {
     const section = document.createElement('section');
     section.setAttribute('data-testid', 'conversation-turn-' + index);
     section.setAttribute('data-turn-id', 'turn-' + index);
+    section.setAttribute('data-turn-id-container', 'turn-' + index);
     const streaming = document.createElement('div');
     streaming.setAttribute('data-streaming-response-status', 'streaming');
     streaming.textContent = 'assistant output ' + index;
@@ -42,10 +43,14 @@ function fixtureHtml() {
       row.className = 'tool-row';
       const icon = document.createElement('span');
       icon.setAttribute('data-testid', 'cot-v5-tool-icon-pile');
+      const inner = document.createElement('div');
+      const inner2 = document.createElement('div');
       const shimmer = document.createElement('span');
       shimmer.className = 'loading-shimmer-tertiary';
       shimmer.textContent = 'Working';
-      row.append(icon, shimmer);
+      inner2.append(shimmer);
+      inner.append(inner2);
+      row.append(icon, inner);
       streaming.append(row);
     }
     section.append(streaming);
@@ -56,22 +61,34 @@ function fixtureHtml() {
 
   let active = null;
   function setSubmit(disabled = false) {
+    button.id = 'composer-submit-button';
     button.setAttribute('data-testid', 'send-button');
     button.textContent = 'Send';
     button.disabled = disabled;
     if (active && active.streaming) active.streaming.removeAttribute('data-streaming-response-status');
   }
   function setStop() {
+    button.id = 'composer-submit-button';
     button.setAttribute('data-testid', 'stop-button');
     button.textContent = 'Stop';
+    button.disabled = false;
+  }
+  function setVoiceOnly() {
+    button.removeAttribute('id');
+    button.removeAttribute('data-testid');
+    button.setAttribute('aria-label', 'Start Voice');
+    button.textContent = 'Voice';
     button.disabled = false;
   }
 
   if (id === 'late-run-after-idle') {
     setSubmit(false);
-  } else active = makeTurn(1, id === 'tool-timeout');
+  } else active = makeTurn(1, id === 'tool-timeout' || id === 'detached-tool-no-stop');
   if (id === 'late-streaming-marker' && active) active.streaming.removeAttribute('data-streaming-response-status');
-  if (active) setStop();
+  if (active) {
+    if (id === 'detached-no-stop' || id === 'detached-tool-no-stop' || id === 'backend-stop-no-button') setVoiceOnly();
+    else setStop();
+  }
   if (id === 'late-streaming-marker' && active) {
     setTimeout(() => active.streaming.setAttribute('data-streaming-response-status', 'streaming'), 60);
   }
@@ -85,6 +102,11 @@ function fixtureHtml() {
   if (id === 'disabled-until-input') {
     new MutationObserver(() => {
       if ((composer.textContent || '').trim()) button.disabled = false;
+    }).observe(composer, { childList: true, subtree: true, characterData: true });
+  }
+  if (id === 'detached-no-stop' || id === 'detached-tool-no-stop' || id === 'backend-stop-no-button') {
+    new MutationObserver(() => {
+      if ((composer.textContent || '').trim()) setSubmit(false);
     }).observe(composer, { childList: true, subtree: true, characterData: true });
   }
 
@@ -157,7 +179,7 @@ async function configure(worker, enabled = true) {
   await worker.evaluate(async ({ enabled }) => {
     await chrome.storage.local.set({
       enabled: false,
-      showGuardNotice: false,
+      showGuardNotice: true,
       stallRecoveryEnabled: enabled,
       stallRecoveryTimeoutSeconds: 0.20,
       stallRecoveryToolTimeoutSeconds: 0.55,
@@ -211,6 +233,7 @@ async function state(page) {
   fs.writeFileSync(watchdogPath, watchdog);
 
   const statusCounts = new Map();
+  const interruptCounts = new Map();
   const context = await chromium.launchPersistentContext(userDataDir, {
     channel: "chromium",
     headless: true,
@@ -225,8 +248,15 @@ async function state(page) {
       const id = decodeURIComponent(match[1]);
       const count = (statusCounts.get(id) || 0) + 1;
       statusCounts.set(id, count);
-      const status = id === "backend-fail-open" || id === "system-delay-banner" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
+      const detached = id === "detached-no-stop" || id === "detached-tool-no-stop";
+      const status = detached || id === "backend-fail-open" || id === "system-delay-banner" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status }) });
+    });
+    await context.route("https://chatgpt.com/backend-api/stop_conversation", async (route) => {
+      const body = route.request().postDataJSON();
+      const id = body && body.conversation_id;
+      interruptCounts.set(id, (interruptCounts.get(id) || 0) + 1);
+      await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
     });
 
     const worker = await waitForWorker(context);
@@ -291,6 +321,35 @@ async function state(page) {
       const page = await openCase(context, "late-streaming-marker");
       await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000, polling: 25 });
       assert.equal((await state(page)).sentText, ".", "late streaming marker must still start the watchdog");
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "detached-no-stop");
+      await page.waitForFunction(() => (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('auto-continue in'), null, { timeout: 1500 });
+      assert.equal(await page.locator('[data-testid="stop-button"]').count(), 0, "live detached fixture must have no Stop button");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3500, polling: 20 });
+      const s = await state(page);
+      assert.equal(s.stopClicks, 0, "stale non-streaming backend should not need a Stop click");
+      assert.equal(s.sentText, ".");
+      assert.equal(interruptCounts.get("detached-no-stop") || 0, 0, "already-stopped backend must not receive an interrupt POST");
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "backend-stop-no-button");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3500, polling: 20 });
+      assert.equal(interruptCounts.get("backend-stop-no-button") || 0, 1, "live backend with missing Stop control must use /stop_conversation once");
+      assert.equal((await state(page)).sentText, ".");
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "detached-tool-no-stop");
+      await page.waitForFunction(() => (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('tool auto-continue in'), null, { timeout: 1500 });
+      await page.waitForTimeout(320);
+      assert.equal((await state(page)).sends, 0, "live-style tool stall must retain the longer tool deadline even with no Stop button");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3500, polling: 20 });
       await page.close();
     }
 

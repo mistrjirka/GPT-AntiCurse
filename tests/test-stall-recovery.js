@@ -7,6 +7,8 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const chromeSource = fs.readFileSync(path.join(ROOT, "chrome", "stall-recovery.js"), "utf8");
 const firefoxSource = fs.readFileSync(path.join(ROOT, "firefox", "stall-recovery.js"), "utf8");
+const chromeScheduler = fs.readFileSync(path.join(ROOT, "chrome", "stall-scheduler.js"), "utf8");
+const firefoxScheduler = fs.readFileSync(path.join(ROOT, "firefox", "stall-scheduler.js"), "utf8");
 const chromeContent = fs.readFileSync(path.join(ROOT, "chrome", "content.js"), "utf8");
 const firefoxContent = fs.readFileSync(path.join(ROOT, "firefox", "content.js"), "utf8");
 const chromeManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "chrome", "manifest.json"), "utf8"));
@@ -19,12 +21,12 @@ assert.equal(chromeSource, firefoxSource, "watchdog must remain byte-identical a
 assert(chromeSource.includes("stallRecoveryTimeoutSeconds: 120"));
 assert(chromeSource.includes("stallRecoveryToolTimeoutSeconds: 300"));
 assert(chromeSource.includes("stallRecoveryGraceSeconds: 10"));
-assert(chromeSource.includes('!== "IS_STREAMING"'), "ordinary recovery must require exact backend streaming status");
+assert(chromeSource.includes('!== "IS_STREAMING"'), "ordinary recovery must require exact backend streaming status before stopping an active backend run");
 assert.equal((chromeSource.match(/streamStatus\(id\)/g) || []).length >= 2, true, "ordinary recovery must confirm stream status twice");
 assert(chromeSource.includes("function hasLongWaitBanner"), "explicit ChatGPT long-wait UI must be recognized as a stall signal");
 assert(chromeSource.includes("our systems are thinking a bit more about this request"));
 assert(chromeSource.includes("help.openai.com/articles/20001326"));
-assert(chromeSource.includes("if (!longWaitBanner && await streamStatus(id)"), "banner must OR with, not depend on, backend stall confirmation");
+assert(chromeSource.includes("if (!longWaitBanner || !hadStopControl) firstStatus = await streamStatus(id)"), "banner with a visible Stop control may bypass backend polling, while no-Stop fallback must verify backend state");
 assert(chromeSource.includes("hasLongWaitBanner(activeTurn) ? 0"), "banner must schedule an immediate recovery check");
 assert(!chromeSource.includes('if (document.visibilityState !== "visible")'), "hidden tabs must never pause recovery");
 assert(!chromeSource.includes("paused-hidden"), "hidden tabs must remain on the same wall-clock deadline");
@@ -32,6 +34,10 @@ assert(chromeSource.includes("watchLatestTurnForStreaming"), "watchdog must clos
 assert(chromeSource.includes("onPotentialRunStart"), "long-idle tabs must wake discovery when a run is launched");
 assert(chromeSource.includes("queueMicrotask(scheduleDiscovery)"), "run-start wakeup must be lightweight and event-driven");
 assert(chromeSource.includes("sameLogicalTurn"), "same logical turn remounts must preserve the deadline");
+assert(chromeSource.includes("activeTurn.querySelector(STREAMING_SELECTOR)"), "streaming DOM state, not Stop-button presence, must drive the timer");
+assert(chromeSource.includes("/backend-api/stop_conversation"), "missing-Stop recovery must use ChatGPT's current backend stop route");
+assert(chromeSource.includes("scheduleBackgroundWakeup"), "content watchdog must arm a background alarm backup");
+assert(chromeSource.includes("cg-stall-alarm-fire"), "content watchdog must accept background alarm wakeups");
 assert(!chromeSource.includes("requestAnimationFrame("), "stall recovery must not depend on animation frames that stop in background tabs");
 assert(chromeSource.includes("hasUserDraft()"));
 assert(chromeSource.includes("attemptedTurnKey"));
@@ -56,10 +62,15 @@ for (const [browser, content] of [["chrome", chromeContent], ["firefox", firefox
   assert(!content.includes("paused-hidden"), `${browser}: hidden tabs must not render a paused state`);
 }
 
+assert.equal(chromeScheduler, firefoxScheduler, "background stall scheduler must remain byte-identical across browsers");
+assert(chromeScheduler.includes("ext.alarms.create"), "background scheduler must use extension alarms");
+assert(chromeScheduler.includes("ext.tabs.sendMessage"), "alarm must wake the target content script");
+
 for (const [browser, manifest, popup] of [["chrome", chromeManifest, chromePopup], ["firefox", firefoxManifest, firefoxPopup]]) {
   const scripts = manifest.content_scripts.flatMap((entry) => entry.js || []);
   assert(scripts.includes("session-auth.js"), `${browser}: shared auth helper must be packaged`);
   assert(scripts.includes("stall-recovery.js"), `${browser}: watchdog must be a normal packaged content script`);
+  assert(manifest.permissions.includes("alarms"), `${browser}: background deadline wakeups require alarms permission`);
   assert(popup.includes('id="stallRecovery"'), `${browser}: auto-recovery toggle must be visible in the popup`);
 }
 
