@@ -35,6 +35,7 @@ jobs:
           cmp firefox/conversation-endpoint.js chrome/conversation-endpoint.js
           cmp firefox/pagination-firewall.js chrome/pagination-firewall.js
           cmp firefox/session-auth.js chrome/session-auth.js
+          cmp firefox/pro-recovery-guard.js chrome/pro-recovery-guard.js
           cmp firefox/stall-recovery.js chrome/stall-recovery.js
           cmp firefox/archive.js chrome/archive.js
           cmp firefox/conversation-scope.js chrome/conversation-scope.js
@@ -92,6 +93,7 @@ jobs:
             tests/test-pagination-firewall.js
             tests/test-conversation-endpoints.js
             tests/test-firefox-backend-request-profile.js
+            tests/test-pro-recovery-guard.js
             tests/test-stall-recovery.js
           )
           for test in "${tests[@]}"; do
