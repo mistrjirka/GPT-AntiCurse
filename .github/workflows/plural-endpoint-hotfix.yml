@@ -1,0 +1,96 @@
+name: Apply plural conversation endpoint hotfix
+
+on:
+  push:
+    branches: [fix/plural-conversation-endpoint]
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: fix/plural-conversation-endpoint
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply exact endpoint drift fix
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count):
+              p = Path(path)
+              s = p.read_text()
+              actual = s.count(old)
+              if actual != count:
+                  raise SystemExit(f"{path}: expected {count} occurrences, found {actual}: {old!r}")
+              p.write_text(s.replace(old, new))
+
+          replace('chrome/main.js', '      return url.origin === location.origin && /^\\/backend-api\\/conversation\\/[^/]+\\/?$/.test(url.pathname);', '      if (url.origin !== location.origin) return false;\n      return !!conversationIdFromEndpoint(url.href);', 1)
+          replace('chrome/main.js', '      const match = url.pathname.match(/^\\/backend-api\\/conversation\\/([^/]+)\\/?$/);\n      return match ? decodeURIComponent(match[1]) : null;', '      const match = url.pathname.match(/^\\/backend-api\\/conversations?\\/([^/]+)\\/?$/);\n      if (!match) return null;\n      const id = decodeURIComponent(match[1]);\n      return id && id !== "init" ? id : null;', 1)
+          replace('firefox/background.js', '    const match = url.pathname.match(/^\\/backend-api\\/conversation\\/([^/]+)\\/?$/);\n    return match ? decodeURIComponent(match[1]) : null;', '    const match = url.pathname.match(/^\\/backend-api\\/conversations?\\/([^/]+)\\/?$/);\n    if (!match) return null;\n    const id = decodeURIComponent(match[1]);\n    return id && id !== "init" ? id : null;', 1)
+          replace('firefox/background.js', '{ urls: ["https://chatgpt.com/backend-api/conversation/*"] },', '{ urls: ["https://chatgpt.com/backend-api/conversation/*", "https://chatgpt.com/backend-api/conversations/*"] },', 3)
+
+          replace('tests/e2e-firefox.js', "fetch('/backend-api/conversation/e2e-firefox').then(r=>r.json())", "fetch('/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10').then(r=>r.json())", 1)
+          replace('tests/e2e-firefox.js', "fetch('/backend-api/conversation/e2e-firefox?cursor='+encodeURIComponent(data.cursor)).then(r=>r.json())", "fetch('/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10&cursor='+encodeURIComponent(data.cursor)).then(r=>r.json())", 1)
+          replace('tests/e2e-firefox.js', '    if (url.pathname === "/backend-api/conversation/e2e-firefox") {', '    if (url.pathname === "/backend-api/conversation/e2e-firefox" || url.pathname === "/backend-api/conversations/e2e-firefox") {', 1)
+
+          replace('tests/e2e-chromium.js', "fetch('/backend-api/conversation/e2e').then((response) => response.json())", "fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10').then((response) => response.json())", 1)
+          replace('tests/e2e-chromium.js', "fetch('/backend-api/conversation/e2e?cursor=' + encodeURIComponent(data.cursor)).then((response) => response.json())", "fetch('/backend-api/conversations/e2e?include_has_versions=true&num_turns=10&cursor=' + encodeURIComponent(data.cursor)).then((response) => response.json())", 1)
+          replace('tests/e2e-chromium.js', '    if (url.pathname === "/backend-api/conversation/e2e") {', '    if (url.pathname === "/backend-api/conversation/e2e" || url.pathname === "/backend-api/conversations/e2e") {', 1)
+
+          Path('tests/test-conversation-endpoints.js').write_text(r'''"use strict";
+const assert = require("assert");
+const fs = require("fs");
+const chromeMain = fs.readFileSync("chrome/main.js", "utf8");
+const firefoxBackground = fs.readFileSync("firefox/background.js", "utf8");
+const chromeE2E = fs.readFileSync("tests/e2e-chromium.js", "utf8");
+const firefoxE2E = fs.readFileSync("tests/e2e-firefox.js", "utf8");
+assert(chromeMain.includes("/backend-api\\/conversations?\\/"));
+assert(firefoxBackground.includes("/backend-api\\/conversations?\\/"));
+assert(firefoxBackground.includes("https://chatgpt.com/backend-api/conversations/*"));
+assert(chromeMain.includes('id !== "init"'));
+assert(firefoxBackground.includes('id !== "init"'));
+assert(chromeE2E.includes("/backend-api/conversations/e2e?include_has_versions=true&num_turns=10"));
+assert(firefoxE2E.includes("/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10"));
+console.log("conversation endpoint regression tests: PASS");
+''')
+
+          release = Path('.github/workflows/release.yml')
+          rs = release.read_text()
+          needle = '            tests/test-pagination-firewall.js\n            tests/test-stall-recovery.js\n'
+          if rs.count(needle) != 1:
+              raise SystemExit('release workflow unit-test list anchor changed')
+          release.write_text(rs.replace(needle, '            tests/test-pagination-firewall.js\n            tests/test-conversation-endpoints.js\n            tests/test-stall-recovery.js\n'))
+          PY
+      - name: Run static and unit gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m json.tool firefox/manifest.json >/dev/null
+          python -m json.tool chrome/manifest.json >/dev/null
+          for file in firefox/*.js chrome/*.js tests/*.js; do node --check "$file"; done
+          node tests/test-conversation-endpoints.js
+          node tests/test-pagination-firewall.js
+          node tests/test-firefox-export-bypass.js
+          node tests/test-history-request-loop.js
+          node tests/test-stall-recovery.js
+          cmp firefox/pagination-firewall.js chrome/pagination-firewall.js
+          cmp firefox/archive-capture.js chrome/archive-capture.js
+          if grep -REn --include='*.js' '(^|[^[:alnum:]_])(eval|Function)[[:space:]]*\\(' firefox chrome; then exit 1; fi
+      - name: Commit tested hotfix and remove temporary runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/plural-endpoint-hotfix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add chrome/main.js firefox/background.js tests/e2e-chromium.js tests/e2e-firefox.js tests/test-conversation-endpoints.js .github/workflows/release.yml
+          git commit -m 'Support current plural conversation endpoint'
+          git push origin HEAD:fix/plural-conversation-endpoint
