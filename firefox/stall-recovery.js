@@ -94,6 +94,17 @@
     return false;
   }
 
+  function hasLongWaitBanner(turn = activeTurn) {
+    if (!turn) return false;
+    for (const shimmer of turn.querySelectorAll(`${STREAMING_SELECTOR} .loading-shimmer-tertiary`)) {
+      const text = String(shimmer.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+      if (text.includes("our systems are thinking a bit more about this request")) return true;
+      const status = shimmer.closest(STREAMING_SELECTOR);
+      if (status && status.querySelector('a[href*="help.openai.com/articles/20001326"], a[href*="/articles/20001326"]')) return true;
+    }
+    return false;
+  }
+
   function runningTool(turn = activeTurn) {
     if (!turn) return false;
     for (const shimmer of turn.querySelectorAll(".loading-shimmer-tertiary")) {
@@ -120,7 +131,9 @@
     clearTimer();
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) return;
     const elapsed = Date.now() - lastActivityAt;
-    const delay = delayOverride == null ? Math.max(0, thresholdMs() - elapsed) : Math.max(0, delayOverride);
+    const delay = delayOverride == null
+      ? (hasLongWaitBanner(activeTurn) ? 0 : Math.max(0, thresholdMs() - elapsed))
+      : Math.max(0, delayOverride);
     stallTimer = setTimeout(checkForStall, delay);
   }
 
@@ -142,6 +155,9 @@
 
     lastActivityAt = Date.now();
     activityObserver = new MutationObserver((records) => {
+      // This explicit ChatGPT long-wait UI is a stall signal, not progress.
+      // React inserting/animating it must not restart the ordinary deadline.
+      if (hasLongWaitBanner(activeTurn)) { scheduleStallCheck(0); return; }
       if (records.some(mutationIsMeaningful)) markActivity();
     });
     activityObserver.observe(activeTurn, {
@@ -377,25 +393,36 @@
     stallTimer = null;
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) return;
     if (document.visibilityState !== "visible") { installVisibilityWakeup(); return; }
-    const elapsed = Date.now() - lastActivityAt;
+
+    // OR semantics: the explicit long-wait banner is independently sufficient;
+    // without it, retain the conservative inactivity + backend-confirmation path.
+    const longWaitBanner = hasLongWaitBanner(activeTurn);
     const threshold = thresholdMs();
-    if (elapsed < threshold) { scheduleStallCheck(threshold - elapsed); return; }
+    if (!longWaitBanner) {
+      const elapsed = Date.now() - lastActivityAt;
+      if (elapsed < threshold) { scheduleStallCheck(threshold - elapsed); return; }
+    }
     if (hasUserDraft()) { scheduleStallCheck(30_000); return; }
 
     const id = conversationId();
     const key = activeTurnKey;
     const generation = recoveryGeneration;
-    if (await streamStatus(id) !== "IS_STREAMING") return;
+    if (!longWaitBanner && await streamStatus(id) !== "IS_STREAMING") return;
     if (generation !== recoveryGeneration || key !== activeTurnKey) return;
 
-    const graceMs = settings.stallRecoveryGraceSeconds * 1000;
-    if (graceMs > 0) await new Promise((resolve) => setTimeout(resolve, graceMs));
-    if (generation !== recoveryGeneration || key !== activeTurnKey) return;
-    if (Date.now() - lastActivityAt < threshold || hasUserDraft() || !stopButton()) return;
-    // Always require a second exact backend confirmation immediately before
-    // intervention, even if a future configuration sets the grace to zero.
-    if (await streamStatus(id) !== "IS_STREAMING") return;
-    if (generation !== recoveryGeneration || key !== activeTurnKey) return;
+    if (!longWaitBanner) {
+      const graceMs = settings.stallRecoveryGraceSeconds * 1000;
+      if (graceMs > 0) await new Promise((resolve) => setTimeout(resolve, graceMs));
+      if (generation !== recoveryGeneration || key !== activeTurnKey) return;
+      if (Date.now() - lastActivityAt < threshold || hasUserDraft() || !stopButton()) return;
+      // The ordinary heuristic always requires a second exact backend
+      // confirmation immediately before intervention.
+      if (await streamStatus(id) !== "IS_STREAMING") return;
+      if (generation !== recoveryGeneration || key !== activeTurnKey) return;
+    } else if (!hasLongWaitBanner(activeTurn) || hasUserDraft() || !stopButton()) {
+      return;
+    }
+
     await recoverStall(id, key, generation);
   }
 
@@ -452,6 +479,7 @@
         activeTurn: !!activeTurn,
         activeTurnKey,
         runningTool: runningTool(),
+        longWaitBanner: hasLongWaitBanner(),
         lastActivityAt,
         attemptedTurnKey,
         attemptedTurnCount: attemptedTurns.size,
