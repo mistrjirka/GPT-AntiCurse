@@ -36,6 +36,7 @@ const EXPORT_CONFIRM_HEADER_NAME = "x-gpt-anticurse-export-bypassed";
 const EXPORT_BYPASS_TTL_MS = 10000;
 const responseFilterStates = new Map();
 const exportBypassTokens = new Map();
+const standaloneExportBypassRequests = new Map();
 let exportBypassDisconnects = 0;
 let invalidExportBypassMarkers = 0;
 
@@ -110,6 +111,21 @@ function conversationIdFromEndpoint(urlString) {
 
 function isConversationDocument(urlString) {
   return !!conversationIdFromEndpoint(urlString);
+}
+
+function exportConversationIdFromUrl(urlString) {
+  const exact = conversationIdFromEndpoint(urlString);
+  if (exact) return exact;
+  try {
+    const url = new URL(urlString);
+    if (url.protocol !== "https:" || url.hostname !== "chatgpt.com") return null;
+    const match = url.pathname.match(/^\/backend-api\/conversations\/([^/]+)\/messages\/?$/);
+    if (!match) return null;
+    const id = decodeURIComponent(match[1]).trim();
+    return id || null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function removedNodeCount(stats) {
@@ -548,6 +564,9 @@ function cleanupExportBypassTokens(now = Date.now()) {
   for (const [token, value] of exportBypassTokens) {
     if (!value || value.expiresAt <= now) exportBypassTokens.delete(token);
   }
+  for (const [requestId, value] of standaloneExportBypassRequests) {
+    if (!value || value.expiresAt <= now) standaloneExportBypassRequests.delete(requestId);
+  }
 }
 
 function createExportBypass(sender, conversationId) {
@@ -579,7 +598,7 @@ function stripExportRequestMarker(details) {
 
   cleanupExportBypassTokens();
   const grant = exportBypassTokens.get(suppliedToken);
-  const conversationId = conversationIdFromEndpoint(details && details.url);
+  const conversationId = exportConversationIdFromUrl(details && details.url);
   const valid = !!grant &&
     grant.expiresAt > Date.now() &&
     grant.tabId === details.tabId &&
@@ -587,7 +606,17 @@ function stripExportRequestMarker(details) {
   if (grant) exportBypassTokens.delete(suppliedToken);
   if (valid) {
     const state = responseFilterStates.get(details.requestId);
-    if (state) state.exportBypass = true;
+    if (state) {
+      state.exportBypass = true;
+    } else {
+      // `/conversations/<id>/messages` is intentionally not a normal AntiCurse
+      // interception target. For a validated private history fetch we only strip
+      // the one-shot marker and confirm the bypass back to the content script.
+      standaloneExportBypassRequests.set(details.requestId, {
+        tabId: details.tabId,
+        expiresAt: Date.now() + EXPORT_BYPASS_TTL_MS
+      });
+    }
   } else {
     invalidExportBypassMarkers++;
   }
@@ -596,10 +625,15 @@ function stripExportRequestMarker(details) {
 }
 
 function confirmExportBypassResponse(details) {
+  cleanupExportBypassTokens();
   const state = responseFilterStates.get(details && details.requestId);
+  const standalone = standaloneExportBypassRequests.get(details && details.requestId);
+  if (standalone) standaloneExportBypassRequests.delete(details.requestId);
   const headers = Array.isArray(details && details.responseHeaders) ? details.responseHeaders : [];
   const responseHeaders = headers.filter((header) => String(header && header.name || "").toLowerCase() !== EXPORT_CONFIRM_HEADER_NAME);
-  if (!state || !state.exportBypass) return responseHeaders.length === headers.length ? {} : { responseHeaders };
+  if (!(state && state.exportBypass) && !standalone) {
+    return responseHeaders.length === headers.length ? {} : { responseHeaders };
+  }
   responseHeaders.push({ name: "X-GPT-AntiCurse-Export-Bypassed", value: "1" });
   return { responseHeaders };
 }
@@ -796,6 +830,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       sessionWritesPending: sessionWriteQueues.size,
       activeResponseFilters: responseFilterStates.size,
       pendingExportBypasses: exportBypassTokens.size,
+      pendingStandaloneExportBypasses: standaloneExportBypassRequests.size,
       exportBypassDisconnects,
       invalidExportBypassMarkers
     });
@@ -856,6 +891,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
 browser.tabs.onRemoved.addListener((tabId) => {
   lastStatsByTab.delete(tabId);
   for (const [token, grant] of exportBypassTokens) if (grant && grant.tabId === tabId) exportBypassTokens.delete(token);
+  for (const [requestId, grant] of standaloneExportBypassRequests) if (grant && grant.tabId === tabId) standaloneExportBypassRequests.delete(requestId);
   historyByTab.delete(tabId);
   sessionWriteQueues.delete(sessionKey(STATS_KEY_PREFIX, tabId));
   sessionWriteQueues.delete(sessionKey(HISTORY_KEY_PREFIX, tabId));
