@@ -249,6 +249,7 @@ async function openCase(driver, id) {
     await waitFor(driver, "return window.__state.sends === 1", 4000);
 
     await openCase(driver, "tool-timeout");
+    await waitFor(driver, "return (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('tool auto-continue in')", 1500);
     await driver.sleep(330);
     assert.equal((await state(driver)).sends, 0, "Firefox active tool must use the longer timeout");
     assert.equal(statusCounts.get("tool-timeout") || 0, 0);

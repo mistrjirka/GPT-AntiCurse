@@ -321,6 +321,12 @@ function messageHidden(message) {
   ));
 }
 
+function messageToolTargeted(message) {
+  if (messageRole(message) !== "assistant") return false;
+  const recipient = String(message && message.recipient || "").trim().toLowerCase();
+  return !!recipient && recipient !== "all" && recipient !== "assistant";
+}
+
 function messageText(message) {
   const content = message && message.content;
   if (!content) return "";
@@ -346,7 +352,7 @@ function paginatedVisibleHistory(data) {
   for (let index = 0; index < data.messages.length; index++) {
     const message = data.messages[index];
     const role = messageRole(message);
-    if ((role !== "user" && role !== "assistant") || messageHidden(message)) continue;
+    if ((role !== "user" && role !== "assistant") || messageHidden(message) || messageToolTargeted(message)) continue;
     messages.push({
       id: message && message.id ? message.id : `paginated-message-${index}`,
       role,
@@ -357,18 +363,60 @@ function paginatedVisibleHistory(data) {
   return messages;
 }
 
+function paginatedGraph(data, conversationId) {
+  const mapping = Object.create(null);
+  const orderedIds = [];
+  for (const message of data.messages || []) {
+    const id = String(message && message.id || "").trim();
+    if (!id || mapping[id]) continue;
+    orderedIds.push(id);
+    mapping[id] = { id, message, parent: null, children: [] };
+  }
+  for (let index = 0; index < orderedIds.length; index++) {
+    const id = orderedIds[index];
+    mapping[id].parent = index > 0 ? orderedIds[index - 1] : null;
+    mapping[id].children = index + 1 < orderedIds.length ? [orderedIds[index + 1]] : [];
+  }
+  const requestedCurrent = String(data.current_node || "").trim();
+  const currentNode = requestedCurrent && mapping[requestedCurrent]
+    ? requestedCurrent
+    : orderedIds[orderedIds.length - 1] || null;
+  return {
+    ...data,
+    id: data.id || data.conversation_id || conversationId,
+    conversation_id: data.conversation_id || data.id || conversationId,
+    mapping,
+    current_node: currentNode
+  };
+}
+
+function activeMessagesFromGraph(data) {
+  const mapping = data && data.mapping;
+  let id = data && data.current_node;
+  if (!mapping || !id || !mapping[id]) return [];
+  const reversed = [];
+  const seen = new Set();
+  while (id && mapping[id] && !seen.has(id)) {
+    seen.add(id);
+    const node = mapping[id];
+    if (node.message) reversed.push(node.message);
+    id = node.parent || null;
+  }
+  reversed.reverse();
+  return reversed;
+}
+
 function buildPaginatedHistoryArchive(parsed, mode, limit, conversationId) {
   if (!LIMITED_MODES.has(mode) || !conversationId || !paginatedConversationEnvelope(parsed)) return null;
   // When the server says older pages exist, do not pretend this newest page is a
-  // complete archive. The isolated authoritative-history path will fetch the full
-  // graph after the native page has been safely bounded.
+  // complete archive. The isolated authoritative-history path will fetch it.
   if (parsed.page_info?.has_previous_page === true || paginatedCursor(parsed)) return null;
   const messages = paginatedVisibleHistory(parsed);
   return {
     ok: true,
     conversationId,
     messages,
-    nativeVisibleCount: messages.length,
+    nativeVisibleCount: Math.min(messages.length, limit),
     pageSize: limit,
     maxRendered: Math.max(limit, Math.min(500, limit * 3)),
     source: "firefox-network-filter-paginated"
@@ -378,11 +426,18 @@ function buildPaginatedHistoryArchive(parsed, mode, limit, conversationId) {
 function transformPaginatedConversation(parsed, conversationId, mode, limit) {
   const pageInfo = parsed.page_info || {};
   const hadOlderPages = pageInfo.has_previous_page === true || !!paginatedCursor(parsed);
-  const messages = paginatedVisibleHistory(parsed);
-  const nodeCount = Math.max(1, parsed.messages.length + 1); // ChatGPT adds one synthetic paginated root.
-  const data = hadOlderPages
+  const graph = paginatedGraph(parsed, conversationId);
+  const trimmed = graph.current_node
+    ? CGTrim.trimConversation(graph, { mode, maxDisplayMessages: limit })
+    : { changed: false, data: graph, reason: "below-limit", stats: {} };
+  const keptMessages = activeMessagesFromGraph(trimmed.data);
+  const rawMessagesChanged = keptMessages.length !== parsed.messages.length || !!trimmed.changed;
+  const changed = hadOlderPages || rawMessagesChanged;
+  const data = changed
     ? {
         ...parsed,
+        messages: keptMessages,
+        current_node: trimmed.data.current_node || parsed.current_node,
         page_info: {
           ...pageInfo,
           has_previous_page: false,
@@ -390,27 +445,32 @@ function transformPaginatedConversation(parsed, conversationId, mode, limit) {
         }
       }
     : parsed;
+  const renderedBefore = paginatedVisibleHistory(parsed).length;
+  const renderedAfter = paginatedVisibleHistory({ ...parsed, messages: keptMessages }).length;
   const stats = {
+    ...(trimmed.stats || {}),
     trimMode: mode,
-    mappingNodesBefore: nodeCount,
-    activePathNodesBefore: nodeCount,
-    mappingNodesAfter: nodeCount,
-    discardedNodes: 0,
-    displayBefore: messages.length,
-    displayAfter: messages.length,
-    logicalDisplayAfter: messages.length,
-    currentNodePreserved: true,
+    mappingNodesBefore: Math.max(0, Number(trimmed.stats?.mappingNodesBefore) || parsed.messages.length),
+    mappingNodesAfter: Math.max(0, Number(trimmed.stats?.mappingNodesAfter) || keptMessages.length),
+    discardedNodes: Math.max(0, parsed.messages.length - keptMessages.length),
+    displayBefore: renderedBefore,
+    displayAfter: renderedAfter,
+    logicalDisplayAfter: Number.isFinite(Number(trimmed.stats?.logicalDisplayAfter))
+      ? Number(trimmed.stats.logicalDisplayAfter)
+      : renderedAfter,
+    currentNodePreserved: (trimmed.data.current_node || parsed.current_node) === parsed.current_node,
     paginationFirewall: true,
     paginationCursorSuppressed: hadOlderPages,
     paginatedConversationEnvelope: true,
-    paginatedMessages: parsed.messages.length
+    paginatedMessages: parsed.messages.length,
+    paginatedMessagesAfter: keptMessages.length
   };
   return {
     mode,
     transformed: {
-      changed: hadOlderPages,
+      changed,
       data,
-      reason: hadOlderPages ? "trimmed" : "below-limit",
+      reason: changed ? "trimmed" : "below-limit",
       stats
     },
     history: buildPaginatedHistoryArchive(parsed, mode, limit, conversationId)

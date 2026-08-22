@@ -21,6 +21,7 @@
 }
 #cg-conversation-guard-status strong { color: #fff; font-weight: 700; }
 #cg-conversation-guard-status .cg-accent { color: #5eead4; }
+#cg-conversation-guard-status .cg-recovery { color: #99f6e4; font-variant-numeric: tabular-nums; white-space: nowrap; }
 #cg-conversation-guard-status .cg-sep { color: rgba(255,255,255,.3); }
 #cg-conversation-guard-status .cg-dot {
   width: 7px;
