@@ -1,4 +1,4 @@
-/* Accumulate untouched native ChatGPT pagination pages into one bounded-history archive. */
+/* Accumulate untouched native ChatGPT pagination pages into one local history archive. */
 (function (global) {
   "use strict";
 
@@ -25,7 +25,7 @@
       const message = combined[index];
       const key = messageKey(message, index);
       if (positions.has(key)) {
-        // Prefer the later/newer copy while retaining chronological position.
+        // The newer page wins overlapping records while retaining chronology.
         result[positions.get(key)] = message;
         continue;
       }
@@ -35,19 +35,19 @@
     return result;
   }
 
-  function historyFromState(state) {
+  function historyFromState(state, complete) {
+    const pageSize = Math.max(1, Number(state.pageSize) || 64);
     return {
       ok: true,
+      complete: complete === true,
       conversationId: state.conversationId,
       messages: state.messages.slice(),
       nativeVisibleCount: Math.max(0, Number(state.nativeVisibleCount) || 0),
-      pageSize: Math.max(1, Number(state.pageSize) || 64),
-      maxRendered: Math.max(
-        Math.max(1, Number(state.pageSize) || 64),
-        Math.min(500, Math.max(1, Number(state.pageSize) || 64) * 3)
-      ),
+      pageSize,
+      maxRendered: Math.max(pageSize, Math.min(500, pageSize * 3)),
       source: "firefox-native-pagination",
-      sourcePages: state.pageCount
+      sourcePages: state.pageCount,
+      olderPagesPending: complete !== true && !!state.nextCursor
     };
   }
 
@@ -55,6 +55,7 @@
     const maxPages = Math.max(2, Math.min(1000, Number(options.maxPages) || DEFAULT_MAX_PAGES));
     const states = new Map();
     let completed = 0;
+    let partialPublishes = 0;
     let ignored = 0;
     let aborted = 0;
 
@@ -85,22 +86,18 @@
           nativeVisibleCount: Math.max(0, Number(page.nativeVisibleCount) || 0),
           seenCursors: new Set(nextCursor ? [nextCursor] : [])
         };
-        if (!nextCursor) {
-          completed++;
-          return {
-            accepted: true,
-            complete: true,
-            continueNativePagination: false,
-            history: historyFromState(state),
-            pageCount: 1
-          };
+        const complete = !nextCursor;
+        if (complete) completed++;
+        else {
+          states.set(tabId, state);
+          partialPublishes++;
         }
-        states.set(tabId, state);
         return {
           accepted: true,
-          complete: false,
+          complete,
           continueNativePagination: false,
           nextCursor,
+          history: historyFromState(state, complete),
           pageCount: 1
         };
       }
@@ -115,36 +112,41 @@
       state.pageCount++;
 
       if (!nextCursor) {
+        state.nextCursor = null;
         states.delete(tabId);
         completed++;
         return {
           accepted: true,
           complete: true,
           continueNativePagination: false,
-          history: historyFromState(state),
+          history: historyFromState(state, true),
           pageCount: state.pageCount
         };
       }
 
       if (state.pageCount >= maxPages || state.seenCursors.has(nextCursor)) {
+        const reason = state.pageCount >= maxPages ? "page-limit" : "cursor-loop";
         states.delete(tabId);
         aborted++;
         return {
           accepted: true,
           complete: false,
           continueNativePagination: false,
-          reason: state.pageCount >= maxPages ? "page-limit" : "cursor-loop",
+          reason,
+          history: historyFromState(state, false),
           pageCount: state.pageCount
         };
       }
 
       state.nextCursor = nextCursor;
       state.seenCursors.add(nextCursor);
+      partialPublishes++;
       return {
         accepted: true,
         complete: false,
         continueNativePagination: true,
         nextCursor,
+        history: historyFromState(state, false),
         pageCount: state.pageCount
       };
     }
@@ -162,7 +164,7 @@
           nextCursor: !!state.nextCursor
         });
       }
-      return { activeCount: states.size, bufferedMessages, completed, ignored, aborted, active };
+      return { activeCount: states.size, bufferedMessages, completed, partialPublishes, ignored, aborted, active };
     }
 
     return Object.freeze({ observe, clear, debug });
