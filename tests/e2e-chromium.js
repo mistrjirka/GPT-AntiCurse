@@ -620,7 +620,12 @@ function rawPaginatedConversationPages(full) {
     await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversations\/e2e\/messages(?:\?.*)?$/, async (route) => {
       const request = route.request();
       const auth = request.headers()["authorization"] || "";
-      assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected paginated export auth: ${auth}`);
+      // The real ChatGPT page now sees the truthful newest-page cursor and may
+      // make one native before-page request with no Authorization header. The
+      // isolated AntiCurse archive/export fetch remains authenticated.
+      if (auth) {
+        assert(["Bearer e2e-access-token", "Bearer bootstrap-access-token"].includes(auth), `unexpected paginated export auth: ${auth}`);
+      }
       const url = new URL(request.url());
       assert.equal(url.searchParams.get("include_has_versions"), "true");
       assert.equal(url.searchParams.get("num_turns"), "10");

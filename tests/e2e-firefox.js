@@ -192,7 +192,9 @@ function createServer(tls, fullConversation) {
       return;
     }
     if (url.pathname === "/backend-api/conversations/e2e-firefox/messages") {
-      assert.equal(req.headers.authorization || "", "Bearer firefox-e2e-token");
+      // Native ChatGPT pagination is intentionally allowed one request and has
+      // no Authorization header. AntiCurse's isolated authoritative fetch does.
+      if (req.headers.authorization) assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
       assert.equal(url.searchParams.get("include_has_versions"), "true");
       assert.equal(url.searchParams.get("num_turns"), "10");
       assert.equal(url.searchParams.get("before"), "older-firefox-page");
