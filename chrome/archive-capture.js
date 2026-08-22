@@ -181,12 +181,23 @@
     return { ok: true, headers: { "X-GPT-AntiCurse-Export": grant.token } };
   }
 
-  async function fetchConversationPage(token, accessToken, cursor) {
-    const base = `${location.origin}/backend-api/conversation/${encodeURIComponent(token.id)}`;
-    const endpointUrl = cursor ? `${base}?cursor=${encodeURIComponent(cursor)}` : base;
+  function exportEndpointUrl(token, cursor, endpointFamily) {
+    const base = `${location.origin}/backend-api/${endpointFamily}/${encodeURIComponent(token.id)}`;
+    const params = new URLSearchParams();
+    if (endpointFamily === "conversations") {
+      params.set("include_has_versions", "true");
+      params.set("num_turns", "10");
+    }
+    if (cursor) params.set("cursor", cursor);
+    const query = params.toString();
+    return query ? `${base}?${query}` : base;
+  }
+
+  async function fetchConversationPageFromFamily(token, accessToken, cursor, endpointFamily) {
+    const endpointUrl = exportEndpointUrl(token, cursor, endpointFamily);
     const bypass = await firefoxBypassHeader(token);
-    if (!bypass.ok) return { ...bypass, endpointUrl };
-    if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl };
+    if (!bypass.ok) return { ...bypass, endpointUrl, endpointFamily };
+    if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl, endpointFamily };
 
     let response;
     try {
@@ -201,22 +212,40 @@
         }
       });
     } catch (error) {
-      return { ok: false, reason: "network-failed", error: String(error && error.message ? error.message : error), endpointUrl };
+      return { ok: false, reason: "network-failed", error: String(error && error.message ? error.message : error), endpointUrl, endpointFamily };
     }
-    if (!response.ok) return { ok: false, reason: "http-status", status: response.status, endpointUrl };
+    if (!response.ok) return { ok: false, reason: "http-status", status: response.status, endpointUrl, endpointFamily };
     if (IS_FIREFOX && response.headers.get("X-GPT-AntiCurse-Export-Bypassed") !== "1") {
-      return { ok: false, reason: "export-bypass-unconfirmed", endpointUrl };
+      return { ok: false, reason: "export-bypass-unconfirmed", endpointUrl, endpointFamily };
     }
     try {
       const data = await response.json();
-      if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl };
+      if (!scope.isCurrent(token)) return { ok: false, reason: "conversation-changed", endpointUrl, endpointFamily };
       if (!data || typeof data !== "object" || !data.mapping || typeof data.mapping !== "object" || Array.isArray(data.mapping)) {
-        return { ok: false, reason: "unsupported-conversation-shape", endpointUrl };
+        return { ok: false, reason: "unsupported-conversation-shape", endpointUrl, endpointFamily };
       }
-      return { ok: true, data, endpointUrl };
+      return { ok: true, data, endpointUrl, endpointFamily };
     } catch (error) {
-      return { ok: false, reason: "json-parse-failed", error: String(error && error.message ? error.message : error), endpointUrl };
+      return { ok: false, reason: "json-parse-failed", error: String(error && error.message ? error.message : error), endpointUrl, endpointFamily };
     }
+  }
+
+  function canFallbackToPlural(page, endpointFamily) {
+    if (endpointFamily !== "conversation" || !page) return false;
+    if (page.reason === "unsupported-conversation-shape") return true;
+    return page.reason === "http-status" && [404, 405, 410].includes(Number(page.status));
+  }
+
+  async function fetchConversationPage(token, accessToken, cursor, endpointFamily = null) {
+    const families = endpointFamily ? [endpointFamily] : ["conversation", "conversations"];
+    let lastFailure = null;
+    for (const family of families) {
+      const page = await fetchConversationPageFromFamily(token, accessToken, cursor, family);
+      if (page.ok) return page;
+      lastFailure = page;
+      if (endpointFamily || !canFallbackToPlural(page, family)) return page;
+    }
+    return lastFailure || { ok: false, reason: "conversation-endpoint-unavailable" };
   }
 
   async function fetchAuthoritativeConversation(token) {
@@ -236,11 +265,13 @@
     let conversationId = token.id;
     let pageCount = 0;
     let endpointUrl = null;
+    let endpointFamily = null;
 
     while (pageCount < EXPORT_MAX_PAGES) {
-      const page = await fetchConversationPage(token, auth.accessToken, cursor);
+      const page = await fetchConversationPage(token, auth.accessToken, cursor, endpointFamily);
       if (!page.ok) return { ...page, pageCount };
       endpointUrl = page.endpointUrl;
+      endpointFamily = page.endpointFamily;
       const data = page.data;
       Object.assign(mapping, data.mapping || {});
       if (!currentNode && data.current_node) currentNode = data.current_node;
@@ -270,6 +301,7 @@
     return {
       ok: true,
       endpointUrl,
+      endpointFamily,
       pageCount,
       authSource: auth.authSource || null,
       authFallbackReason: auth.authFallbackReason || null,
@@ -321,7 +353,8 @@
       archive,
       cached: false,
       sourcePages: source.pageCount,
-      sourceAuth: source.authSource || null
+      sourceAuth: source.authSource || null,
+      sourceEndpointFamily: source.endpointFamily || null
     };
   }
 
@@ -379,6 +412,7 @@
       sourceReason: source.ok ? null : source.reason,
       sourcePages: source.ok ? source.pageCount : Number(source.pageCount) || 0,
       sourceAuth: source.ok ? source.authSource : null,
+      sourceEndpointFamily: source.ok ? source.endpointFamily || null : null,
       baseArchive,
       // Authoritative raw archives already reconcile the rendered tail against
       // their visible projection. Partial fallbacks still use the legacy popup merge.

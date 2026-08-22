@@ -6,6 +6,7 @@ const path = require("path");
 const vm = require("vm");
 const { performance } = require("perf_hooks");
 
+const endpointSource = fs.readFileSync(path.join(__dirname, "..", "firefox", "conversation-endpoint.js"), "utf8");
 const source = fs.readFileSync(path.join(__dirname, "..", "firefox", "background.js"), "utf8");
 const listeners = {};
 const filters = new Map();
@@ -13,7 +14,12 @@ const session = new Map();
 let tokenCounter = 0;
 
 function eventSlot(name) {
-  return { addListener(listener) { listeners[name] = listener; } };
+  return {
+    addListener(listener, filter) {
+      listeners[name] = listener;
+      if (filter) listeners[`${name}Filter`] = filter;
+    }
+  };
 }
 
 const browser = {
@@ -91,7 +97,30 @@ const context = {
   }
 };
 context.globalThis = context;
+vm.runInNewContext(endpointSource, context, { filename: "firefox/conversation-endpoint.js" });
 vm.runInNewContext(source, context, { filename: "firefox/background.js" });
+
+for (const name of ["beforeRequest", "beforeSendHeaders", "headersReceived"]) {
+  const urls = listeners[`${name}Filter`]?.urls || [];
+  assert(urls.includes("https://chatgpt.com/backend-api/conversation/*"), `${name} must retain singular coverage`);
+  assert(urls.includes("https://chatgpt.com/backend-api/conversations/*"), `${name} must cover plural conversations`);
+}
+listeners.beforeRequest({
+  requestId: "unrelated-plural",
+  tabId: 7,
+  method: "GET",
+  url: "https://chatgpt.com/backend-api/conversations/conv-a/stream_status",
+  timeStamp: Date.now()
+});
+assert.equal(filters.has("unrelated-plural"), false, "nested plural routes must fail open");
+listeners.beforeRequest({
+  requestId: "plural-search",
+  tabId: 7,
+  method: "GET",
+  url: "https://chatgpt.com/backend-api/conversations/search?query=test",
+  timeStamp: Date.now()
+});
+assert.equal(filters.has("plural-search"), false, "plural search route must fail open");
 
 async function issueToken(tabId, conversationId) {
   return listeners.runtimeMessage(
@@ -100,12 +129,12 @@ async function issueToken(tabId, conversationId) {
   );
 }
 
-function startRequest(requestId, tabId, conversationId, query = "") {
+function startRequest(requestId, tabId, conversationId, query = "", endpointFamily = "conversation") {
   listeners.beforeRequest({
     requestId,
     tabId,
     method: "GET",
-    url: `https://chatgpt.com/backend-api/conversation/${conversationId}${query}`,
+    url: `https://chatgpt.com/backend-api/${endpointFamily}/${conversationId}${query}`,
     timeStamp: Date.now()
   });
   return filters.get(requestId);
@@ -213,6 +242,20 @@ function startRequest(requestId, tabId, conversationId, query = "") {
   assert(!wrongTabHeaders.responseHeaders || !wrongTabHeaders.responseHeaders.some((header) => /Bypassed/i.test(header.name)));
   filters.get("wrong-tab").error = "test cleanup";
   filters.get("wrong-tab").onerror();
+
+  const pluralGrant = await issueToken(10, "conv-plural");
+  const pluralFilter = startRequest("plural-valid", 10, "conv-plural", "?include_has_versions=true&num_turns=10", "conversations");
+  const pluralRequestHeaders = listeners.beforeSendHeaders({
+    requestId: "plural-valid",
+    tabId: 10,
+    url: "https://chatgpt.com/backend-api/conversations/conv-plural?include_has_versions=true&num_turns=10",
+    requestHeaders: [{ name: "X-GPT-AntiCurse-Export", value: pluralGrant.token }]
+  });
+  assert(!pluralRequestHeaders.requestHeaders.some((header) => /gpt-anticurse-export/i.test(header.name)), "plural export marker must never reach OpenAI");
+  const pluralResponseHeaders = listeners.headersReceived({ requestId: "plural-valid", responseHeaders: [] });
+  assert(pluralResponseHeaders.responseHeaders.some((header) => /Export-Bypassed/i.test(header.name)), "plural export bypass must be confirmed");
+  pluralFilter.ondata({ data: new Uint8Array([6]).buffer });
+  assert.equal(pluralFilter.disconnected, 1);
 
   console.log("Firefox one-shot export bypass tests: PASS");
 })().catch((error) => {

@@ -66,7 +66,9 @@ for (const input of [null, {}, { mapping: [] }, { mapping: "unexpected", cursor:
 }
 
 assert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversation/x?cursor=abc"), true);
+assert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversations/x?include_has_versions=true&num_turns=10&cursor=abc"), true);
 assert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversation/x?foo=cursor"), false);
+assert.equal(firewall.isCursorRequest("https://chatgpt.com/backend-api/conversations/x?foo=cursor"), false);
 assert.equal(firewall.isCursorRequest("not a valid url but cursor-like"), false);
 
 console.log("pagination firewall unit tests: PASS");

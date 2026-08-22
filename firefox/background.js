@@ -27,6 +27,7 @@ const EMPTY_TOTALS = Object.freeze({
 const LIMITED_MODES = new Set(["recent", "windowed-visible"]);
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const PAGINATION = globalThis.CGPaginationFirewall;
+const ENDPOINT = globalThis.CGConversationEndpoint;
 const STATS_KEY_PREFIX = "cg-tab-stats:";
 const HISTORY_KEY_PREFIX = "cg-tab-history:";
 const BACKGROUND_STARTED_AT = new Date().toISOString();
@@ -103,13 +104,8 @@ const settingsReady = browser.storage.local.get({ ...DEFAULT_SETTINGS, cgTotals:
 });
 
 function conversationIdFromEndpoint(urlString) {
-  try {
-    const url = new URL(urlString);
-    const match = url.pathname.match(/^\/backend-api\/conversation\/([^/]+)\/?$/);
-    return match ? decodeURIComponent(match[1]) : null;
-  } catch (_) {
-    return null;
-  }
+  if (!ENDPOINT || typeof ENDPOINT.conversationId !== "function") return null;
+  return ENDPOINT.conversationId(urlString);
 }
 
 function isConversationDocument(urlString) {
@@ -630,19 +626,19 @@ browser.storage.onChanged.addListener((changes, area) => {
 
 browser.webRequest.onBeforeRequest.addListener(
   interceptConversation,
-  { urls: ["https://chatgpt.com/backend-api/conversation/*"] },
+  { urls: ["https://chatgpt.com/backend-api/conversation/*", "https://chatgpt.com/backend-api/conversations/*"] },
   ["blocking"]
 );
 
 browser.webRequest.onBeforeSendHeaders.addListener(
   stripExportRequestMarker,
-  { urls: ["https://chatgpt.com/backend-api/conversation/*"] },
+  { urls: ["https://chatgpt.com/backend-api/conversation/*", "https://chatgpt.com/backend-api/conversations/*"] },
   ["blocking", "requestHeaders"]
 );
 
 browser.webRequest.onHeadersReceived.addListener(
   confirmExportBypassResponse,
-  { urls: ["https://chatgpt.com/backend-api/conversation/*"] },
+  { urls: ["https://chatgpt.com/backend-api/conversation/*", "https://chatgpt.com/backend-api/conversations/*"] },
   ["blocking", "responseHeaders"]
 );
 

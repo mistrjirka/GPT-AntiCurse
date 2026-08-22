@@ -101,12 +101,12 @@ html,body{margin:0;height:100%;font-family:system-ui,sans-serif}[data-scroll-roo
   function hidden(node){ const m=node&&node.message&&node.message.metadata; return !!(m&&(m.is_visually_hidden_from_conversation===true||m.is_user_system_message===true)); }
   function role(node){ return node&&node.message&&node.message.author&&node.message.author.role; }
   function chain(data){ const r=[],s=new Set(); let id=data.current_node; while(id&&data.mapping[id]&&!s.has(id)){s.add(id);r.push(id);id=data.mapping[id].parent||null;} return r.reverse(); }
-  fetch('/backend-api/conversation/e2e-firefox').then(r=>r.json()).then(async data=>{
+  fetch('/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10').then(r=>r.json()).then(async data=>{
     window.__receivedCursor=data.cursor??null;
     window.__nativePaginationRequests=0;
     while(data.cursor){
       window.__nativePaginationRequests++;
-      const older=await fetch('/backend-api/conversation/e2e-firefox?cursor='+encodeURIComponent(data.cursor)).then(r=>r.json());
+      const older=await fetch('/backend-api/conversations/e2e-firefox?include_has_versions=true&num_turns=10&cursor='+encodeURIComponent(data.cursor)).then(r=>r.json());
       Object.assign(data.mapping,older.mapping||{}); data.cursor=older.cursor??null;
     }
     window.__receivedConversation=data;
@@ -153,10 +153,15 @@ function createServer(tls, fullConversation) {
       res.end(JSON.stringify({ accessToken: "firefox-e2e-token" }));
       return;
     }
-    if (url.pathname === "/backend-api/conversation/e2e-firefox") {
+    if (url.pathname === "/backend-api/conversation/e2e-firefox" || url.pathname === "/backend-api/conversations/e2e-firefox") {
       const auth = req.headers.authorization || "";
       const cursor = url.searchParams.get("cursor");
       if (auth) assert.equal(auth, "Bearer firefox-e2e-token");
+      if (!auth) {
+        assert.equal(url.pathname, "/backend-api/conversations/e2e-firefox");
+        assert.equal(url.searchParams.get("include_has_versions"), "true");
+        assert.equal(url.searchParams.get("num_turns"), "10");
+      }
       if (cursor) assert.equal(cursor, "older-firefox-page");
       const body = cursor ? pages.second : pages.first;
       res.writeHead(200, { "content-type": "application/json" });
