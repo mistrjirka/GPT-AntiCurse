@@ -1,29 +1,22 @@
-# GPT AntiCurse v0.7.3
+# GPT AntiCurse v0.7.4
 
-Compatibility and recovery fixes for ChatGPT's current paginated conversation format.
+Reliability fixes for Firefox long-conversation history and stalled-run recovery.
 
-## Current ChatGPT conversation format
+## Firefox history reliability
 
-- Supports the current plural conversation response shaped as `messages` + `page_info` in both Firefox and Chromium.
-- Applies the normal logical/technical-state trimmer to that raw message list, so internal tool/progress records are actually removed instead of only suppressing the pagination cursor.
-- Restores meaningful **Internal nodes removed** and measured payload-reduction counters for the new response shape.
-- Fetches older history through ChatGPT's current `/conversations/<id>/messages?before=...` pagination route while keeping those raw older pages out of ChatGPT's active React state.
-- Keeps the older singular/mapping endpoint compatible as a fallback.
+- Reuses complete conversation history already captured from ChatGPT's native Firefox response before making any authenticated history refetch.
+- Avoids the redundant native-request + AntiCurse-refetch pattern that could trigger HTTP 429 rate limits when opening or refreshing several long conversations.
+- Keeps network history retrieval as a fallback only when captured history is unavailable or incomplete.
+- Adds per-conversation rate-limit cooldown for the fallback path: 15 seconds initially, exponentially backing off up to 5 minutes after repeated 429 responses.
+- Local captured history can satisfy the request immediately even while a network fallback is cooling down.
 
-## History and popup
+## Pro model recovery safety
 
-- **Auto window** is now the default history mode for fresh installs. Existing saved mode choices are preserved on upgrade.
-- Fixes Firefox popup intrinsic sizing so the popup cannot collapse to effectively zero width; narrow touch layouts retain a dedicated mobile override.
+- Pro model runs (`*-pro`, including GPT-5.6 Pro) are never automatically stopped or auto-continued by AntiCurse.
+- Human Stop/Send actions on Pro remain completely native and unrestricted.
+- Non-Pro stalled-run recovery behavior is unchanged.
 
-## Stalled-run recovery
+## Verification
 
-- Adds a live bottom-right countdown such as `auto-continue in 1:42`, including the longer active-tool deadline and checking/confirming/resuming states.
-- Fixes recovery when ChatGPT leaves the Send button disabled while the composer is empty: AntiCurse now stops the run, inserts `.`, waits for Send to become usable, and then submits it.
-- Removes the page-reload recovery fallback entirely. If Send never becomes usable, AntiCurse leaves the page in place and fails safely.
-- Existing draft/attachment, visible-tab, one-attempt-per-turn, long-wait-banner, and backend `IS_STREAMING` safeguards remain.
-
-## Regression coverage
-
-- Chromium and Firefox E2Es exercise the current raw plural document response and the `/messages?before=` continuation route.
-- Stall-recovery E2Es include the real failure mode where Send starts disabled and only becomes enabled after the `.` input event; both browsers must recover without reloading.
-- Native-history fidelity, hydration, packaging, endpoint, export-bypass, and logical-trimming coverage remains in place.
+- Full unit/code-quality, packaging, Chromium E2E, Firefox E2E, stall-recovery, hydration, and native-fidelity test suites pass.
+- Live Firefox smoke testing confirmed working trimmed history with no current issue and no observed 429s across the recorded tabs.
