@@ -51,6 +51,13 @@
     }
   }
 
+  function debugState(globalName) {
+    const value = globalThis[globalName];
+    if (!value || typeof value.debug !== "function") return { present: !!value };
+    try { return { present: true, ...value.debug() }; }
+    catch (error) { return { present: true, debugError: String(error && error.message ? error.message : error) }; }
+  }
+
   async function snapshot() {
     const saved = await ext.storage.local.get({
       enabled: true,
@@ -112,11 +119,8 @@
         syntheticTurns: host ? host.querySelectorAll(".cg-history-turn").length : 0
       },
       historyController: historyControllerState(),
-      stallRecovery: (() => {
-        const recovery = globalThis.CGAntiCurseStallRecovery;
-        try { return recovery && typeof recovery.debug === "function" ? { present: true, ...recovery.debug() } : { present: !!recovery }; }
-        catch (error) { return { present: !!recovery, debugError: String(error && error.message ? error.message : error) }; }
-      })(),
+      proRecoveryGuard: debugState("CGAntiCurseProRecoveryGuard"),
+      stallRecovery: debugState("CGAntiCurseStallRecovery"),
       archiveBridge: bridgeState,
       backendHistory: await backendHistory(id, Number(saved.maxDisplayMessages) || 64),
       backendRequestProfile: saved.cgBackendRequestProfile || null,
