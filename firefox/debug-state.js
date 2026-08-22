@@ -59,7 +59,8 @@
       showGuardNotice: true,
       stallRecoveryEnabled: true,
       archiveExportLevel: "progress",
-      cgLastIssue: null
+      cgLastIssue: null,
+      cgBackendRequestProfile: null
     });
     const id = scope.currentId();
     const scroller = findScroller();
@@ -118,6 +119,7 @@
       })(),
       archiveBridge: bridgeState,
       backendHistory: await backendHistory(id, Number(saved.maxDisplayMessages) || 64),
+      backendRequestProfile: saved.cgBackendRequestProfile || null,
       lastIssue: saved.cgLastIssue || null
     };
   }
