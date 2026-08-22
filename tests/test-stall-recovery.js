@@ -17,8 +17,13 @@ assert.equal(chromeSource, firefoxSource, "watchdog must remain byte-identical a
 assert(chromeSource.includes("stallRecoveryTimeoutSeconds: 120"));
 assert(chromeSource.includes("stallRecoveryToolTimeoutSeconds: 300"));
 assert(chromeSource.includes("stallRecoveryGraceSeconds: 10"));
-assert(chromeSource.includes('!== "IS_STREAMING"'), "recovery must require exact backend streaming status");
-assert.equal((chromeSource.match(/streamStatus\(id\)/g) || []).length >= 2, true, "recovery must confirm stream status twice");
+assert(chromeSource.includes('!== "IS_STREAMING"'), "ordinary recovery must require exact backend streaming status");
+assert.equal((chromeSource.match(/streamStatus\(id\)/g) || []).length >= 2, true, "ordinary recovery must confirm stream status twice");
+assert(chromeSource.includes("function hasLongWaitBanner"), "explicit ChatGPT long-wait UI must be recognized as a stall signal");
+assert(chromeSource.includes("our systems are thinking a bit more about this request"));
+assert(chromeSource.includes("help.openai.com/articles/20001326"));
+assert(chromeSource.includes("if (!longWaitBanner && await streamStatus(id)"), "banner must OR with, not depend on, backend stall confirmation");
+assert(chromeSource.includes("hasLongWaitBanner(activeTurn) ? 0"), "banner must schedule an immediate recovery check");
 assert(chromeSource.includes("document.visibilityState !== \"visible\""));
 assert(chromeSource.includes("hasUserDraft()"));
 assert(chromeSource.includes("attemptedTurnKey"));

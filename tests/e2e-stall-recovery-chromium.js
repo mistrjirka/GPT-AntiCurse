@@ -75,6 +75,16 @@ function fixtureHtml() {
     setSubmit(false);
   }
 
+  if (id === 'system-delay-banner' && active?.streaming) {
+    const banner = document.createElement('span');
+    banner.className = 'loading-shimmer-tertiary';
+    banner.append('Our systems are thinking a bit more about this request before responding. You can retry with a faster model for a quicker response, though it may be less capable of handling complex requests. ');
+    const learnMore = document.createElement('a');
+    learnMore.href = 'https://help.openai.com/articles/20001326';
+    learnMore.textContent = 'Learn more';
+    banner.append(learnMore);
+    active.streaming.append(banner);
+  }
   if (id === 'draft-protection') composer.textContent = 'do not overwrite me';
 
   button.addEventListener('click', () => {
@@ -184,7 +194,7 @@ async function state(page) {
       const id = decodeURIComponent(match[1]);
       const count = (statusCounts.get(id) || 0) + 1;
       statusCounts.set(id, count);
-      const status = id === "backend-fail-open" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
+      const status = id === "backend-fail-open" || id === "system-delay-banner" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status }) });
     });
 
@@ -200,6 +210,16 @@ async function state(page) {
       assert(statusCounts.get("basic") >= 2, "basic recovery must confirm backend streaming twice");
       await page.waitForTimeout(450);
       assert.equal((await state(page)).sends, 1, "same recovered run must not loop");
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "system-delay-banner");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 2000 });
+      const s = await state(page);
+      assert.equal(s.stopClicks, 1, "explicit long-wait banner must trigger auto-resume");
+      assert.equal(s.sentText, ".");
+      assert.equal(statusCounts.get("system-delay-banner") || 0, 0, "banner must be sufficient without backend stall confirmation");
       await page.close();
     }
 

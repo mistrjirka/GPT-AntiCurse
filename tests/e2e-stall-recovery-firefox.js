@@ -76,6 +76,16 @@ function fixtureHtml() {
   } else {
     setSubmit(false);
   }
+  if (id === 'system-delay-banner' && active?.streaming) {
+    const banner = document.createElement('span');
+    banner.className = 'loading-shimmer-tertiary';
+    banner.append('Our systems are thinking a bit more about this request before responding. You can retry with a faster model for a quicker response, though it may be less capable of handling complex requests. ');
+    const learnMore = document.createElement('a');
+    learnMore.href = 'https://help.openai.com/articles/20001326';
+    learnMore.textContent = 'Learn more';
+    banner.append(learnMore);
+    active.streaming.append(banner);
+  }
   if (id === 'draft-protection') composer.textContent = 'do not overwrite me';
 
   button.addEventListener('click', () => {
@@ -136,7 +146,7 @@ function createServer(tls, statusCounts) {
       assert.equal(req.headers.authorization || "", "Bearer stall-firefox-token");
       const count = (statusCounts.get(id) || 0) + 1;
       statusCounts.set(id, count);
-      const status = id === "backend-fail-open" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
+      const status = id === "backend-fail-open" || id === "system-delay-banner" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ status }));
       return;
@@ -206,6 +216,13 @@ async function openCase(driver, id) {
     assert((statusCounts.get("basic") || 0) >= 2, "Firefox recovery must confirm backend streaming twice");
     await driver.sleep(450);
     assert.equal((await state(driver)).sends, 1, "Firefox recovery must not loop on the same turn");
+
+    await openCase(driver, "system-delay-banner");
+    await waitFor(driver, "return window.__state.sends === 1", 2000);
+    current = await state(driver);
+    assert.equal(current.stopClicks, 1, "Firefox explicit long-wait banner must trigger auto-resume");
+    assert.equal(current.sentText, ".");
+    assert.equal(statusCounts.get("system-delay-banner") || 0, 0, "Firefox banner path must not depend on backend stall confirmation");
 
     await openCase(driver, "draft-protection");
     await driver.sleep(700);
