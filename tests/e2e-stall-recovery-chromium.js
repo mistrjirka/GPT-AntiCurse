@@ -18,6 +18,11 @@ function fixtureHtml() {
 </form>
 <script>
 (() => {
+  window.__fixtureStarted = true;
+  window.__fixtureErrors = [];
+  window.addEventListener('error', (event) => {
+    window.__fixtureErrors.push(String(event.error && event.error.stack || event.message || 'unknown fixture error'));
+  });
   const id = location.pathname.split('/').pop();
   const stateKey = '__ac_fixture_state:' + id;
   const previous = JSON.parse(sessionStorage.getItem(stateKey) || '{}');
@@ -28,6 +33,7 @@ function fixtureHtml() {
     sentText: previous.sentText || '',
     trustedInputEvents: Number(previous.trustedInputEvents || 0)
   };
+  window.__state = persistent;
   const save = () => sessionStorage.setItem(stateKey, JSON.stringify(persistent));
   save();
 
@@ -36,10 +42,10 @@ function fixtureHtml() {
   const form = composer.closest('form');
   const button = document.getElementById('composer-submit-button');
   const modelLabel = document.querySelector('[data-animated-slider-trigger="true"]');
+  if (!list || !composer || !form || !button || !modelLabel) throw new Error('recovery fixture DOM is incomplete');
   const secondLoad = persistent.loads >= 2;
   modelLabel.textContent = id === 'reload-pro' && secondLoad ? 'Pro' : 'Thinking';
 
-  window.__state = persistent;
   function syncState() { Object.assign(window.__state, persistent); save(); }
 
   function makeTurn(index, { output = true, streaming = true, model = 'gpt-5-6-thinking' } = {}) {
@@ -172,9 +178,20 @@ async function configure(worker) {
   await worker.evaluate(async () => chrome.storage.local.set({ enabled: false, showGuardNotice: true, stallRecoveryEnabled: true }));
 }
 async function openCase(context, id) {
+  console.log(`CASE ${id}`);
   const page = await context.newPage();
+  page.on("pageerror", (error) => console.error(`PAGEERROR ${id}:`, error && error.stack || error));
+  page.on("console", (message) => { if (message.type() === "error") console.error(`CONSOLE ${id}:`, message.text()); });
   await page.goto(`https://chatgpt.com/c/${id}`, { waitUntil: "load" });
-  await page.waitForFunction(() => !!window.__state);
+  try {
+    await page.waitForFunction(() => !!window.__state || !!window.__fixtureErrors?.length, null, { timeout: 5000 });
+  } catch (error) {
+    const diagnostic = await page.evaluate(() => ({ href: location.href, readyState: document.readyState, started: !!window.__fixtureStarted, state: window.__state || null, errors: window.__fixtureErrors || null, bodyText: document.body?.innerText?.slice(0, 300) || "" })).catch((evalError) => ({ evalError: String(evalError) }));
+    console.error(`FIXTURE INIT ${id}:`, JSON.stringify(diagnostic));
+    throw error;
+  }
+  const errors = await page.evaluate(() => window.__fixtureErrors || []);
+  if (errors.length) throw new Error(`fixture ${id} failed: ${errors.join(" | ")}`);
   return page;
 }
 async function state(page) {
