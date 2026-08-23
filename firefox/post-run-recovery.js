@@ -23,9 +23,10 @@
   let observer = null;
   let activeSnapshot = null;
   let handling = false;
+  let reviewScheduled = false;
+  let pollTimer = null;
   let manualStopKey = null;
   let manualStopAt = 0;
-  let pollTimer = null;
   let lastAction = null;
   let lastReason = null;
   let lastFailure = null;
@@ -50,8 +51,7 @@
   function turnKey(turn) {
     if (!turn) return null;
     const section = turn.matches?.('[data-testid^="conversation-turn-"]')
-      ? turn
-      : turn.querySelector?.('[data-testid^="conversation-turn-"]');
+      ? turn : turn.querySelector?.('[data-testid^="conversation-turn-"]');
     return (section && (section.getAttribute("data-turn-id") || section.getAttribute("data-testid"))) ||
       turn.getAttribute?.("data-turn-id-container") || null;
   }
@@ -76,13 +76,10 @@
 
   function hasUsefulAssistantAnswer(turn) {
     if (!turn) return false;
-    // ChatGPT's actual assistant answer body is structurally separate from
-    // thinking/tool/status UI. Do not count arbitrary wrapper text as an answer.
     for (const body of turn.querySelectorAll('[data-message-author-role="assistant"] .markdown.prose, [id^="textdoc-message-"] .ProseMirror')) {
       if (String(body.textContent || "").trim()) return true;
       if (body.querySelector?.("img, video, audio, pre, code, table")) return true;
     }
-    // A media-only assistant result is also useful even when no Markdown body is present.
     const assistant = turn.querySelector('[data-message-author-role="assistant"]');
     return !!assistant?.querySelector("img, video, audio");
   }
@@ -92,9 +89,7 @@
     try {
       const state = GUARD.activeRecoveryState();
       return state && typeof state === "object" ? state : { decision: "unknown", autoRecoveryAllowed: false };
-    } catch {
-      return { decision: "unknown", autoRecoveryAllowed: false };
-    }
+    } catch { return { decision: "unknown", autoRecoveryAllowed: false }; }
   }
 
   function snapshotApproval(state, key) {
@@ -126,12 +121,10 @@
     const slug = latestAssistantModelSlug();
     if (!slug || !GUARD || typeof GUARD.modelSlugIsPro !== "function" || GUARD.modelSlugIsPro(slug)) return null;
     return {
-      turnKey: key,
-      modelSlug: slug,
+      turnKey: key, modelSlug: slug,
       selectedModelLabel: state.selectedModelLabel || null,
       selectedModelLane: state.selectedModelLane || null,
-      decision: "non-pro",
-      detectionSource: "latest-assistant-model-slug"
+      decision: "non-pro", detectionSource: "latest-assistant-model-slug"
     };
   }
 
@@ -141,9 +134,7 @@
     try {
       const state = recovery.debug();
       return !!state?.recoveryPhase || Number(state?.recoveryInFlightCount || 0) > 0;
-    } catch {
-      return false;
-    }
+    } catch { return false; }
   }
 
   async function streamStatus(id) {
@@ -152,56 +143,45 @@
     if (!auth.ok || conversationId() !== id) return null;
     try {
       const response = await fetch(`${location.origin}/backend-api/conversation/${encodeURIComponent(id)}/stream_status`, {
-        method: "GET",
-        credentials: "same-origin",
-        cache: "no-store",
+        method: "GET", credentials: "same-origin", cache: "no-store",
         headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` }
       });
       if (!response.ok) return null;
       const data = await response.json();
       return typeof data?.status === "string" ? data.status : null;
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }
 
   function waitForCondition(test, timeoutMs) {
     return new Promise((resolve) => {
-      let done = false;
-      let timer = null;
+      let done = false, timer = null;
+      const local = new MutationObserver(() => { try { if (test()) finish(true); } catch {} });
       const finish = (value) => {
         if (done) return;
-        done = true;
-        observerLocal.disconnect();
+        done = true; local.disconnect();
         if (timer !== null) clearTimeout(timer);
         resolve(value);
       };
-      const observerLocal = new MutationObserver(() => {
-        try { if (test()) finish(true); } catch { /* continue */ }
-      });
-      try { if (test()) { resolve(true); return; } } catch { /* continue */ }
-      observerLocal.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+      try { if (test()) { finish(true); return; } } catch {}
+      local.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
       timer = setTimeout(() => finish(false), timeoutMs);
     });
   }
 
   function restoreApproval(approval) {
     if (!GUARD || typeof GUARD.restoreRecoveryHandoff !== "function") return false;
-    try { return GUARD.restoreRecoveryHandoff(approval)?.autoRecoveryAllowed === true; }
-    catch { return false; }
+    try { return GUARD.restoreRecoveryHandoff(approval)?.autoRecoveryAllowed === true; } catch { return false; }
   }
-
   function armNudge(key) {
     if (!GUARD || typeof GUARD.armRecoveryNudge !== "function") return false;
-    try { return GUARD.armRecoveryNudge(key)?.autoRecoveryAllowed === true; }
-    catch { return false; }
+    try { return GUARD.armRecoveryNudge(key)?.autoRecoveryAllowed === true; } catch { return false; }
   }
 
   function clearNudge() {
     const input = composer();
     if (!input || !composerContainsOnlyNudge()) return false;
     if (COMPOSER_INPUT && typeof COMPOSER_INPUT.clearExactText === "function") {
-      try { if (COMPOSER_INPUT.clearExactText(input, ".")) return true; } catch { /* fallback */ }
+      try { if (COMPOSER_INPUT.clearExactText(input, ".")) return true; } catch {}
     }
     input.replaceChildren();
     input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward", data: null }));
@@ -209,7 +189,7 @@
   }
 
   async function sendNudge(approval) {
-    if (hasUserDraft() || modelState().decision === "pro") { lastFailure = "draft-or-pro-before-send"; return false; }
+    if (!approval || hasUserDraft() || modelState().decision === "pro") { lastFailure = "draft-or-pro-before-send"; return false; }
     if (!restoreApproval(approval)) { lastFailure = "handoff-restore-rejected"; return false; }
     const input = composer();
     if (!input || !input.isConnected || draftText()) { lastFailure = "composer-not-empty"; return false; }
@@ -219,12 +199,10 @@
       try { inserted = COMPOSER_INPUT.insertText(input, "."); } catch { inserted = false; }
     }
     if (!inserted) {
-      input.focus({ preventScroll: true });
+      try { input.focus({ preventScroll: true }); } catch { input.focus(); }
       const before = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: "." });
       if (!input.dispatchEvent(before)) { lastFailure = "insert-beforeinput-blocked"; return false; }
-      const p = document.createElement("p");
-      p.textContent = ".";
-      input.replaceChildren(p);
+      const p = document.createElement("p"); p.textContent = "."; input.replaceChildren(p);
       input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "." }));
     }
     await new Promise((resolve) => queueMicrotask(resolve));
@@ -236,13 +214,11 @@
     }, SEND_READY_TIMEOUT_MS);
     if (!ready || !composerContainsOnlyNudge()) { lastFailure = "send-not-ready"; clearNudge(); return false; }
     if (!armNudge(approval.turnKey || null)) { lastFailure = "guard-not-armed"; clearNudge(); return false; }
-
     const submit = document.querySelector(SUBMIT_SELECTOR);
     if (!submit) { lastFailure = "send-button-missing"; clearNudge(); return false; }
     submit.click();
     const confirmed = await waitForCondition(() => !!stopButton() || (() => {
-      const live = activeStreamingTurn();
-      const key = turnKey(live);
+      const key = turnKey(activeStreamingTurn());
       return !!key && key !== approval.turnKey;
     })(), SEND_CONFIRM_TIMEOUT_MS);
     if (!confirmed) { lastFailure = "send-not-confirmed"; clearNudge(); return false; }
@@ -251,15 +227,13 @@
 
   async function stopIfStillRunning(id, approval) {
     const status = await streamStatus(id);
-    const running = !!stopButton() || status === "IS_STREAMING";
-    if (!running) return true;
+    if (!stopButton() && status !== "IS_STREAMING") return true;
     const state = modelState();
-    if (state.autoRecoveryAllowed !== true) { lastFailure = state.decision === "pro" ? "pro-before-stop" : "model-unknown-before-stop"; return false; }
-    const stop = stopButton();
-    if (!stop) {
-      const appeared = await waitForCondition(() => !!stopButton(), 10_000);
-      if (!appeared) { lastFailure = "running-without-stop"; return false; }
+    if (state.autoRecoveryAllowed !== true) {
+      lastFailure = state.decision === "pro" ? "pro-before-stop" : "model-unknown-before-stop";
+      return false;
     }
+    if (!stopButton() && !(await waitForCondition(() => !!stopButton(), 10_000))) { lastFailure = "running-without-stop"; return false; }
     const liveApproval = snapshotApproval(modelState(), turnKey(activeStreamingTurn()) || approval.turnKey);
     const button = stopButton();
     if (!button) { lastFailure = "stop-missing"; return false; }
@@ -268,14 +242,11 @@
     while (Date.now() < deadline) {
       if (modelState().decision === "pro") { lastFailure = "pro-during-stop"; return false; }
       const current = await streamStatus(id);
-      if (current !== "IS_STREAMING" && current !== null) {
-        approval.turnKey = liveApproval.turnKey;
-        approval.modelSlug = liveApproval.modelSlug;
-        approval.selectedModelLabel = liveApproval.selectedModelLabel;
-        approval.selectedModelLane = liveApproval.selectedModelLane;
+      if (current !== null && current !== "IS_STREAMING") {
+        Object.assign(approval, liveApproval);
         return true;
       }
-      if (!stopButton() && document.querySelector(SUBMIT_SELECTOR) && current === null) return true;
+      if (current === null && !stopButton() && document.querySelector(SUBMIT_SELECTOR)) return true;
       await new Promise((resolve) => setTimeout(resolve, BACKEND_POLL_MS));
     }
     lastFailure = "stop-not-settled";
@@ -284,39 +255,24 @@
 
   function deliveryIntent() {
     if (!DELIVERY || typeof DELIVERY.debug !== "function") return null;
-    let state;
-    try { state = DELIVERY.debug(); } catch { return null; }
-    const latch = state?.latch;
-    const id = conversationId();
-    const at = Number(latch?.at || 0);
+    let state; try { state = DELIVERY.debug(); } catch { return null; }
+    const latch = state?.latch, id = conversationId(), at = Number(latch?.at || 0);
     if (!id || !at || Date.now() - at > DELIVERY_INTENT_TTL_MS) return null;
-    // Only a latch written before this navigation is evidence that the current
-    // page is the result of the detector's reload, not the page about to reload.
     if (at >= Number(performance.timeOrigin || 0)) return null;
     const token = `${at}:${String(latch.messageId || "")}`;
-    try {
-      if (sessionStorage.getItem(`${DELIVERY_CONSUMED_PREFIX}${id}`) === token) return null;
-    } catch { return null; }
+    try { if (sessionStorage.getItem(`${DELIVERY_CONSUMED_PREFIX}${id}`) === token) return null; } catch { return null; }
     return { id, at, token };
   }
 
   function consumeDeliveryIntent(intent) {
-    try {
-      sessionStorage.setItem(`${DELIVERY_CONSUMED_PREFIX}${intent.id}`, intent.token);
-      return true;
-    } catch {
-      return false;
-    }
+    try { sessionStorage.setItem(`${DELIVERY_CONSUMED_PREFIX}${intent.id}`, intent.token); return true; }
+    catch { return false; }
   }
 
   async function handleDeliveryIntent(intent) {
     if (!intent || handling || !settings.stallRecoveryEnabled) return;
-    handling = true;
-    lastReason = "retryable-network-error";
-    lastAction = "delivery-followup";
-    lastFailure = null;
-    lastDeliveryLatchAt = intent.at;
-    resumeAttempts++;
+    handling = true; lastReason = "retryable-network-error"; lastAction = "delivery-followup"; lastFailure = null;
+    lastDeliveryLatchAt = intent.at; resumeAttempts++;
     try {
       const ready = await waitForCondition(() => !!composer() && document.readyState !== "loading", 30_000);
       if (!ready || conversationId() !== intent.id || hasUserDraft()) { lastFailure = "delivery-page-not-ready"; return; }
@@ -325,33 +281,20 @@
       if (!consumeDeliveryIntent(intent)) { lastFailure = "delivery-consume-failed"; return; }
       if (!(await stopIfStillRunning(intent.id, approval))) return;
       if (hasUserDraft()) { lastFailure = "user-draft-after-stop"; return; }
-      if (await sendNudge(approval)) {
-        resumeSuccesses++;
-        lastHandledTurnKey = approval.turnKey || null;
-        lastAction = "delivery-resumed";
-      }
-    } finally {
-      handling = false;
-    }
+      if (await sendNudge(approval)) { resumeSuccesses++; lastHandledTurnKey = approval.turnKey || null; lastAction = "delivery-resumed"; }
+    } finally { handling = false; }
   }
 
   async function handleIncompleteEnd(snapshot) {
     if (!snapshot || handling || !settings.stallRecoveryEnabled || stallTransactionActive()) return;
     if (snapshot.sawUsefulAnswer || hasUserDraft()) return;
     if (manualStopKey === snapshot.turnKey && Date.now() - manualStopAt < 30_000) {
-      manualStopSuppressions++;
-      activeSnapshot = null;
-      return;
+      manualStopSuppressions++; activeSnapshot = null; return;
     }
-    handling = true;
-    lastReason = "ended-without-useful-answer";
-    lastAction = "checking-ended-turn";
-    lastFailure = null;
-    resumeAttempts++;
+    handling = true; lastReason = "ended-without-useful-answer"; lastAction = "checking-ended-turn"; lastFailure = null; resumeAttempts++;
     try {
       const id = snapshot.conversationId;
       if (!id || conversationId() !== id) return;
-      // Give React/backend a brief chance to finish the terminal transition.
       let status = await streamStatus(id);
       const deadline = Date.now() + 30_000;
       while (status === "IS_STREAMING" && Date.now() < deadline && !stopButton()) {
@@ -359,13 +302,10 @@
         status = await streamStatus(id);
       }
       if (status === "IS_STREAMING" || stopButton()) return;
-      const latest = latestAssistantTurn();
-      if (hasUsefulAssistantAnswer(latest)) return;
+      if (hasUsefulAssistantAnswer(latestAssistantTurn())) return;
       if (hasUserDraft() || modelState().decision === "pro") return;
       if (await sendNudge(snapshot.approval)) {
-        resumeSuccesses++;
-        lastHandledTurnKey = snapshot.turnKey || null;
-        lastAction = "incomplete-turn-resumed";
+        resumeSuccesses++; lastHandledTurnKey = snapshot.turnKey || null; lastAction = "incomplete-turn-resumed";
       }
     } finally {
       if (activeSnapshot === snapshot) activeSnapshot = null;
@@ -375,54 +315,48 @@
 
   function captureOrFinishRun() {
     if (!settings.stallRecoveryEnabled || handling) return;
-    const live = activeStreamingTurn();
-    const stop = stopButton();
+    const live = activeStreamingTurn(), stop = stopButton();
     if (live && stop) {
       const state = modelState();
-      if (state.autoRecoveryAllowed !== true) {
-        if (state.decision === "pro") activeSnapshot = null;
-        return;
-      }
+      if (state.autoRecoveryAllowed !== true) { if (state.decision === "pro") activeSnapshot = null; return; }
       const key = turnKey(live) || state.turnKey;
       if (!activeSnapshot || activeSnapshot.conversationId !== conversationId() || activeSnapshot.turnKey !== key) {
         activeSnapshot = {
-          conversationId: conversationId(),
-          turnKey: key || null,
-          approval: snapshotApproval(state, key),
-          sawUsefulAnswer: hasUsefulAssistantAnswer(live),
-          capturedAt: Date.now()
+          conversationId: conversationId(), turnKey: key || null,
+          approval: snapshotApproval(state, key), sawUsefulAnswer: hasUsefulAssistantAnswer(live), capturedAt: Date.now()
         };
-      } else if (hasUsefulAssistantAnswer(live)) {
-        activeSnapshot.sawUsefulAnswer = true;
-      }
+      } else if (hasUsefulAssistantAnswer(live)) activeSnapshot.sawUsefulAnswer = true;
       return;
     }
-
     if (!stop && activeSnapshot) {
-      if (hasUsefulAssistantAnswer(latestAssistantTurn())) activeSnapshot.sawUsefulAnswer = true;
-      if (!activeSnapshot.sawUsefulAnswer) queueMicrotask(() => handleIncompleteEnd(activeSnapshot));
+      const snapshot = activeSnapshot;
+      if (hasUsefulAssistantAnswer(latestAssistantTurn())) snapshot.sawUsefulAnswer = true;
+      if (!snapshot.sawUsefulAnswer) queueMicrotask(() => handleIncompleteEnd(snapshot));
       else activeSnapshot = null;
     }
   }
 
+  function reviewNow() {
+    reviewScheduled = false;
+    captureOrFinishRun();
+    const intent = deliveryIntent();
+    if (intent) handleDeliveryIntent(intent);
+  }
+
   function schedulePoll() {
+    // Capture the beginning of a run immediately. The slower poll is only a
+    // terminal/debounce fallback, so a short tool run cannot begin and end
+    // entirely between samples.
+    if (!reviewScheduled) { reviewScheduled = true; queueMicrotask(reviewNow); }
     if (pollTimer !== null) return;
-    pollTimer = setTimeout(() => {
-      pollTimer = null;
-      captureOrFinishRun();
-      const intent = deliveryIntent();
-      if (intent) handleDeliveryIntent(intent);
-    }, 750);
+    pollTimer = setTimeout(() => { pollTimer = null; reviewNow(); }, 750);
   }
 
   document.addEventListener("click", (event) => {
     if (!event.isTrusted) return;
     const target = event.target;
-    if (!(target instanceof Element)) return;
-    const stop = target.closest(STOP_SELECTOR);
-    if (!stop) return;
-    const live = activeStreamingTurn();
-    manualStopKey = turnKey(live) || activeSnapshot?.turnKey || null;
+    if (!(target instanceof Element) || !target.closest(STOP_SELECTOR)) return;
+    manualStopKey = turnKey(activeStreamingTurn()) || activeSnapshot?.turnKey || null;
     manualStopAt = Date.now();
   }, true);
 
@@ -430,9 +364,7 @@
     if (observer || !document.documentElement) return;
     observer = new MutationObserver(schedulePoll);
     observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, characterData: true });
-    captureOrFinishRun();
-    const intent = deliveryIntent();
-    if (intent) queueMicrotask(() => handleDeliveryIntent(intent));
+    reviewNow();
   }
 
   ext.storage?.local?.get?.({ stallRecoveryEnabled: true }).then((stored) => {
@@ -445,8 +377,8 @@
     settings.stallRecoveryEnabled = changes.stallRecoveryEnabled.newValue !== false;
     if (settings.stallRecoveryEnabled) startObserver();
     else {
-      if (observer) observer.disconnect();
-      observer = null;
+      if (observer) observer.disconnect(); observer = null;
+      if (pollTimer !== null) clearTimeout(pollTimer); pollTimer = null;
       activeSnapshot = null;
     }
   });
@@ -455,21 +387,11 @@
     hasUsefulAssistantAnswer,
     debug() {
       return {
-        enabled: settings.stallRecoveryEnabled,
-        observerActive: !!observer,
-        handling,
+        enabled: settings.stallRecoveryEnabled, observerActive: !!observer, handling,
         activeTurnKey: activeSnapshot?.turnKey || null,
         activeSawUsefulAnswer: activeSnapshot?.sawUsefulAnswer ?? null,
-        manualStopKey,
-        manualStopAt,
-        lastAction,
-        lastReason,
-        lastFailure,
-        lastHandledTurnKey,
-        lastDeliveryLatchAt,
-        resumeAttempts,
-        resumeSuccesses,
-        manualStopSuppressions
+        manualStopKey, manualStopAt, lastAction, lastReason, lastFailure, lastHandledTurnKey,
+        lastDeliveryLatchAt, resumeAttempts, resumeSuccesses, manualStopSuppressions
       };
     }
   });
