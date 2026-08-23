@@ -1,6 +1,5 @@
 "use strict";
 
-const ext = typeof browser !== "undefined" ? browser : chrome;
 const DOM_GATE = globalThis.CGAntiCurseDomReady;
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const STATS_EVENT = "__gpt_anticurse_stats_ready__";
@@ -297,7 +296,7 @@ function acceptStats(stats) {
   return true;
 }
 
-ext.storage.local.get({ enabled: true, showGuardNotice: true, cgLastIssue: null }).then((saved) => {
+browser.storage.local.get({ enabled: true, showGuardNotice: true, cgLastIssue: null }).then((saved) => {
   performanceEnabled = saved.enabled !== false;
   syncPerformanceClass();
   showGuardNotice = saved.showGuardNotice !== false;
@@ -305,7 +304,7 @@ ext.storage.local.get({ enabled: true, showGuardNotice: true, cgLastIssue: null 
   if (!showGuardNotice) removeBadge(true);
 }).catch((error) => recordIssue("settings", "firefox-content-storage-read-failed", error));
 
-ext.storage.onChanged.addListener((changes, area) => {
+browser.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   const enabledChanged = !!changes.enabled;
   const noticeChanged = !!changes.showGuardNotice;
@@ -325,11 +324,11 @@ window.addEventListener(STALL_STATUS_EVENT, (event) => {
   render(lastStats);
 });
 
-ext.runtime.onMessage.addListener((message) => {
+browser.runtime.onMessage.addListener((message) => {
   if (message && message.type === "cg-stats") acceptStats(message.stats);
 });
 
-ext.runtime.sendMessage({
+browser.runtime.sendMessage({
   type: "cg-get-stats",
   conversationId: conversationScope.currentId()
 }).then(acceptStats).catch((error) => {
