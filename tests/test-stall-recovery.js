@@ -17,8 +17,8 @@ const css = fs.readFileSync(path.join(ROOT, "chrome", "content.css"), "utf8");
 
 assert.equal(chromeSource, firefoxSource, "watchdog must remain byte-identical across browser packages");
 assert(chromeSource.includes("const STALL_TIMEOUT_MS = 120_000;"), "ordinary recovery must use one fixed 120-second stall deadline");
-assert(chromeSource.includes("const STOP_SETTLE_TIMEOUT_MS = 180_000;"), "slow ChatGPT Stop settlement must have its own recovery-operation ceiling");
-assert(chromeSource.includes("const SEND_READY_TIMEOUT_MS = 180_000;"), "Send readiness must tolerate slow ChatGPT cancellation/UI transitions");
+assert(chromeSource.includes("const STOP_SETTLE_TIMEOUT_MS = 180_000;"), "slow ChatGPT Stop settlement must retain a recovery-operation bound");
+assert(chromeSource.includes("const SEND_READY_TIMEOUT_MS = 180_000;"), "Send readiness must retain a recovery-operation bound");
 assert(chromeSource.includes("const SEND_CONFIRM_TIMEOUT_MS = 30_000;"));
 assert(!chromeSource.includes("stallRecoveryToolTimeoutSeconds"), "tool DOM must never switch recovery to a five-minute stall deadline");
 assert(!chromeSource.includes("stallRecoveryGraceSeconds"), "the removed post-deadline grace delay must not return");
@@ -40,7 +40,7 @@ assert(chromeSource.includes('setRecoveryPhase("stopping")'));
 assert(chromeSource.includes('setRecoveryPhase("sending")'));
 assert(chromeSource.includes('setRecoveryPhase("confirming")'));
 assert(chromeSource.includes("function waitForStopSettlement"));
-assert(chromeSource.includes("!stopButton() && !originalTurnStillStreaming(key)"), "nudge must wait for both Stop and the original stream to settle");
+assert(chromeSource.includes("!stopButton() && !originalTurnStillStreaming(key)"), "DOM settlement remains one valid fast path");
 assert(chromeSource.includes("if (recoveringTurns.size || recoveryPhase) return null;"), "countdown must be suspended for the entire recovery transaction");
 assert(chromeSource.includes("lastRecoveryFailure"), "debug telemetry must retain the exact recovery failure stage");
 assert(chromeSource.includes("recoveryNudgeModelState(key)"), "post-Stop validation must accept only the guard's same-turn non-Pro handoff");
@@ -53,13 +53,13 @@ assert(chromeSource.includes("function clearSyntheticNudge"), "failed recovery m
 assert(chromeSource.includes("composerContainsOnlyNudge()"));
 assert(chromeSource.includes("hasUserDraft()"));
 assert(chromeSource.includes("attemptedTurnKey"));
-assert(!chromeSource.includes("sessionStorage.setItem"), "stall recovery must not persist a reload-resume marker");
-assert(!chromeSource.includes("location.reload()"), "stall recovery itself must never reload the page");
+assert(!chromeSource.includes("sessionStorage.setItem"), "the watchdog itself should delegate persisted reload state to its dedicated helper");
+assert(!chromeSource.includes("location.reload()"), "the watchdog itself should delegate guarded reloads to its dedicated helper");
 assert(chromeSource.includes("Insert the nudge first"), "recovery must populate the composer before requiring Send to become enabled");
 assert(chromeSource.includes('paragraph.textContent = "."'));
 assert(!chromeSource.includes("setInterval("), "watchdog must remain event-driven");
 assert(!chromeSource.includes("innerHTML"));
-assert(!chromeSource.includes("execCommand"));
+assert(!chromeSource.includes("execCommand"), "editor commands belong in the dedicated composer helper, not the watchdog");
 assert(!/(^|[^\w])(eval|Function)\s*\(/.test(chromeSource));
 assert(chromeSource.includes('turnListObserver.observe(turnList, { childList: true, subtree: true })'));
 assert(chromeSource.includes('activityObserver.observe(activeTurn, {'));
@@ -74,9 +74,11 @@ assert(chromeSource.includes("assistantOutputPresent"));
 
 assert.equal(statusUi, firefoxStatusUi, "compact recovery status adapter must remain byte-identical across browsers");
 assert(statusUi.includes("__gpt_anticurse_stall_status__"), "status adapter must listen for recovery state");
-for (const expected of ['return "Pro off"', 'return "model ?"', 'return "loading"', 'return "stopping"', 'return "sending"', 'return "sent…"']) {
+for (const expected of ['return "Pro off"', 'return "model ?"', 'return "stopping"', 'return "sending"', 'return "sent…"']) {
   assert(statusUi.includes(expected), `compact status adapter missing ${expected}`);
 }
+assert(statusUi.includes('case "loading": return Number.isFinite(Number(value.remainingMs)) ? `loading ${countdown(value.remainingMs)}` : "loading";'), "loading state must expose its bounded countdown when available");
+assert(statusUi.includes('case "reloading": return "reload";'));
 assert(!statusUi.includes("tool auto-continue in"), "status adapter must not restore tool-specific countdowns");
 
 for (const [browser, manifest, popup] of [["chrome", chromeManifest, chromePopup], ["firefox", firefoxManifest, firefoxPopup]]) {
