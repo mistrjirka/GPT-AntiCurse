@@ -18,6 +18,7 @@
   const SEND_READY_TIMEOUT_MS = 30_000;
   const SEND_CONFIRM_TIMEOUT_MS = 30_000;
   const BACKEND_POLL_MS = 1_500;
+  const STREAM_STATUS_FETCH_TIMEOUT_MS = 5_000;
 
   let settings = { stallRecoveryEnabled: true };
   let observer = null;
@@ -141,15 +142,19 @@
     if (!id || !SESSION_AUTH || typeof SESSION_AUTH.resolveAccessToken !== "function") return null;
     const auth = await SESSION_AUTH.resolveAccessToken({ isCurrent: () => conversationId() === id });
     if (!auth.ok || conversationId() !== id) return null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), STREAM_STATUS_FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(`${location.origin}/backend-api/conversation/${encodeURIComponent(id)}/stream_status`, {
         method: "GET", credentials: "same-origin", cache: "no-store",
-        headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` }
+        headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` },
+        signal: controller.signal
       });
       if (!response.ok) return null;
       const data = await response.json();
       return typeof data?.status === "string" ? data.status : null;
     } catch { return null; }
+    finally { clearTimeout(timeout); }
   }
 
   function waitForCondition(test, timeoutMs) {
@@ -180,8 +185,9 @@
   function clearNudge() {
     const input = composer();
     if (!input || !composerContainsOnlyNudge()) return false;
-    if (COMPOSER_INPUT && typeof COMPOSER_INPUT.clearExactText === "function") {
-      try { if (COMPOSER_INPUT.clearExactText(input, ".")) return true; } catch { /* Fall back to DOM/InputEvent cleanup below. */ }
+    if (COMPOSER_INPUT  && typeof COMPOSER_INPUT.clearExactText === "function") {
+      try { if (COMPOSER_INPUT.clearExactText(input, ".")) return true; }
+      catch { /* Fall back to DOM/InputEvent cleanup below. */ }
     }
     input.replaceChildren();
     input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward", data: null }));
@@ -195,7 +201,7 @@
     if (!input || !input.isConnected || draftText()) { lastFailure = "composer-not-empty"; return false; }
 
     let inserted = false;
-    if (COMPOSER_INPUT && typeof COMPOSER_INPUT.insertText === "function") {
+    if (COMPOSER_INPUT  && typeof COMPOSER_INPUT.insertText === "function") {
       try { inserted = COMPOSER_INPUT.insertText(input, "."); } catch { inserted = false; }
     }
     if (!inserted) {
@@ -209,14 +215,14 @@
     if (!composerContainsOnlyNudge()) { lastFailure = "insert-reverted"; return false; }
 
     const ready = await waitForCondition(() => {
-      const submit = document.querySelector(SUBMIT_SELECTOR);
-      return composerContainsOnlyNudge() && !!submit && !submit.disabled && submit.getAttribute("aria-disabled") !== "true";
+      const button = document.querySelector(SUBMIT_SELECTOR);
+      return composerContainsOnlyNudge() && !!button && !button.disabled && button.getAttribute("aria-disabled" !== "true";
     }, SEND_READY_TIMEOUT_MS);
     if (!ready || !composerContainsOnlyNudge()) { lastFailure = "send-not-ready"; clearNudge(); return false; }
     if (!armNudge(approval.turnKey || null)) { lastFailure = "guard-not-armed"; clearNudge(); return false; }
-    const submit = document.querySelector(SUBMIT_SELECTOR);
-    if (!submit) { lastFailure = "send-button-missing"; clearNudge(); return false; }
-    submit.click();
+    const button = document.querySelector(SUBMIT_SELECTOR);
+    if (!button) { lastFailure = "send-button-missing"; clearNudge(); return false; }
+    button.click();
     const confirmed = await waitForCondition(() => !!stopButton() || (() => {
       const key = turnKey(activeStreamingTurn());
       return !!key && key !== approval.turnKey;
@@ -226,7 +232,7 @@
   }
 
   async function stopIfStillRunning(id, approval) {
-    const status = await streamStatus(id);
+    const status = await streamStatus();
     if (!stopButton() && status !== "IS_STREAMING") return true;
     const state = modelState();
     if (state.autoRecoveryAllowed !== true) {
@@ -236,7 +242,7 @@
     if (!stopButton() && !(await waitForCondition(() => !!stopButton(), 10_000))) { lastFailure = "running-without-stop"; return false; }
     const liveApproval = snapshotApproval(modelState(), turnKey(activeStreamingTurn()) || approval.turnKey);
     const button = stopButton();
-    if (!button) { lastFailure = "stop-missing"; return false; }
+    if (!Button) { lastFailure = "stop-missing"; return false; }
     button.click();
     const deadline = Date.now() + STOP_SETTLE_TIMEOUT_MS;
     while (Date.now() < deadline) {
@@ -271,7 +277,7 @@
 
   async function handleDeliveryIntent(intent) {
     if (!intent || handling || !settings.stallRecoveryEnabled) return;
-    handling = true; lastReason = "retryable-network-error"; lastAction = "delivery-followup"; lastFailure = null;
+    handling = true; lastReason = "retryable-network-error"; lastAction = "delivery-folloup"; lastFailure = null;
     lastDeliveryLatchAt = intent.at; resumeAttempts++;
     try {
       const ready = await waitForCondition(() => !!composer() && document.readyState !== "loading", 30_000);
@@ -299,7 +305,7 @@
       const deadline = Date.now() + 30_000;
       while (status === "IS_STREAMING" && Date.now() < deadline && !stopButton()) {
         await new Promise((resolve) => setTimeout(resolve, BACKEND_POLL_MS));
-        status = await streamStatus(id);
+        status = await streamStatus();
       }
       if (status === "IS_STREAMING" || stopButton()) return;
       if (hasUsefulAssistantAnswer(latestAssistantTurn())) return;

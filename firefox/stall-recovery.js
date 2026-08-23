@@ -9,6 +9,7 @@
   const STOP_SETTLE_TIMEOUT_MS = 180_000;
   const SEND_READY_TIMEOUT_MS = 180_000;
   const SEND_CONFIRM_TIMEOUT_MS = 30_000;
+  const STREAM_STATUS_FETCH_TIMEOUT_MS = 5_000;
   const RECOVERY_RELOAD_TIMEOUT_MS = 120_000;
   const RECOVERY_RELOAD_READY_TIMEOUT_MS = 30_000;
   const STOP_BACKEND_POLL_MS = 1_500;
@@ -195,7 +196,7 @@
 
   function hasAttachmentDraft() {
     const input = composer();
-    const form = input && input.closest("form");
+    const form = input && input.closest('form[data-type="unified-composer"]');
     if (!form) return false;
     return !!form.querySelector(
       '[data-testid*="attachment"]:not(input), [data-testid*="upload-preview"]:not(input), [data-testid*="file-thumbnail"]:not(input), [data-testid*="file-pill"]:not(input)'
@@ -233,8 +234,8 @@
 
   function hasLongWaitBanner(turn = activeTurn) {
     if (!turn) return false;
-    for (const shimmer of turn.querySelectorAll(`${STREAMING_SELECTOR} .loading-shimmer-tertiary`)) {
-      const text = String(shimmer.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+    for (const shimmer of turn.querySelectorAll(`${STREAMING_SELECTOR } .loading-shimmer-tertiary`)) {
+      const text = String(shimmer.textContent || "").replace(/\s+/g, " ".trim().toLowerCase();
       if (text.includes("our systems are thinking a bit more about this request")) return true;
       const status = shimmer.closest(STREAMING_SELECTOR);
       if (status && status.querySelector('a[href*="help.openai.com/articles/20001326"], a[href*="/articles/20001326"]')) return true;
@@ -276,7 +277,8 @@
     if (recoveryModelState().autoRecoveryAllowed !== true) { publishRecoveryStatus(); return; }
     const loading = shellLoading() || preOutputLoading(activeTurn);
     if (loading && !loadingStartedAt) loadingStartedAt = Date.now();
-    const elapsed = loading ? Date.now() - loadingStartedAt : Date.now() - lastActivityAt;
+    if (!loading) loadingStartedAt = 0;
+    const elapsed = loading ? (Date.now() - (loadingStartedAt || Date.now())) : (Date.now() - lastActivityAt);
     const deadline = loading ? RECOVERY_RELOAD_TIMEOUT_MS : thresholdMs();
     const delay = delayOverride == null
       ? (hasLongWaitBanner(activeTurn) ? 0 : Math.max(0, deadline - elapsed))
@@ -286,11 +288,11 @@
   }
 
   function markActivity() {
-    // DOM churn caused by our own Stop → Send transaction is not new model
+     // DOM churn caused by our own Stop → Send transaction is not new model
     // progress and must not restart the stall deadline or cancel the transaction.
     if (recoveringTurns.size) { publishRecoveryStatus(); return; }
     lastActivityAt = Date.now();
-    if (!shellLoading() && !preOutputLoading(activeTurn)) loadingStartedAt = 0;
+    loadingStartedAt = 0;
     recoveryGeneration++;
     recoveryPhase = null;
     scheduleStallCheck();
@@ -305,21 +307,20 @@
     clearTimer();
     recoveryGeneration++;
     recoveryPhase = null;
+    loadingStartedAt = 0;
     if (!activeTurn) { publishRecoveryStatus(); return; }
 
     lastActivityAt = Date.now();
-    loadingStartedAt = (shellLoading() || preOutputLoading(activeTurn)) ? lastActivityAt : 0;
-    activityObserver = new MutationObserver((records) => {
-      // This explicit ChatGPT long-wait UI is a stall signal, not progress.
-      // React inserting/animating it must not restart the ordinary deadline.
+    if (preOutputLoading(activeTurn)) loadingStartedAt = lastActivityAt;
+    activityObserver = new MutationObserver(() => {
       if (hasLongWaitBanner(activeTurn)) { scheduleStallCheck(0); return; }
-      if (shellLoading() || preOutputLoading(activeTurn)) {
+      if (preOutputLoading(activeTurn)) {
         if (!loadingStartedAt) loadingStartedAt = Date.now();
         scheduleStallCheck();
         return;
       }
       loadingStartedAt = 0;
-      if (records.some(mutationIsMeaningful)) markActivity();
+      markActivity();
     });
     activityObserver.observe(activeTurn, {
       subtree: true,
@@ -332,7 +333,7 @@
   }
 
   function findActiveTurn() {
-    // Use the same live-document search as the Pro safety guard. ChatGPT can
+     // Use the same live-document search as the Pro safety guard. ChatGPT can
     // replace/reparent the turn list while a request is running, so restricting
     // discovery to a previously captured parent can miss the new request-* turn.
     const turns = document.querySelectorAll(TURN_CONTAINER_SELECTOR);
@@ -430,21 +431,26 @@
   }
 
   async function streamStatus(id) {
-    if (!id || !SESSION_AUTH || typeof SESSION_AUTH.resolveAccessToken !== "function") return null;
+    if (!id || !SESSION_AUTH \| typeof SESSION_AUTH.resolveAccessToken !== "function") return null;
     const auth = await SESSION_AUTH.resolveAccessToken({ isCurrent: () => conversationId() === id });
     if (!auth.ok || conversationId() !== id) return null;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), STREAM_STATUS_FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(`${location.origin}/backend-api/conversation/${encodeURIComponent(id)}/stream_status`, {
         method: "GET",
         credentials: "same-origin",
         cache: "no-store",
-        headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` }
+        headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` },
+        signal: controller.signal
       });
       if (!response.ok) return null;
       const data = await response.json();
       return typeof data?.status === "string" ? data.status : null;
     } catch {
       return null;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -457,12 +463,19 @@
     return matches;
   }
 
+  function originalTurnStillStreaming(key) {
+    const turns = turnsByKey(key);
+    return turns.some((turn) => !!turn.querySelector(STREAMING_SELECTOR));
+  }
+
   function latestAssistantTurn() {
     const turns = document.querySelectorAll(TURN_CONTAINER_SELECTOR);
     for (let index = turns.length - 1; index >= 0; index--) {
       const turn = turns[index];
+      // Ignore nested turn-wrapper duplicates; we want the latest logical
+      // conversation turn that ChatGPT currently presents to the user.
       if (turn.parentElement?.closest?.(TURN_CONTAINER_SELECTOR)) continue;
-      if (turn.querySelector('[data-turn="assistant"], section[data-turn="assistant"]')) return turn;
+      if (turn.querySelector('[data-turn="assistant"], section[data-turn="assistant"], [data-message-author-role="assistant"]')) return turn;
     }
     return null;
   }
@@ -472,44 +485,36 @@
     const latest = latestAssistantTurn();
     if (!latest || latest.querySelector(STREAMING_SELECTOR)) return false;
     const latestKey = turnKey(latest);
-    // ChatGPT can remount the stopped assistant turn under the same request key.
-    // Prefer that exact relation when available. If the key changed during the
-    // remount, require all currently rendered copies of the original key to be
-    // non-streaming before accepting the newest idle assistant turn.
-    if (!key || latestKey === key) return true;
-    const copies = turnsByKey(key);
-    return copies.length > 0 && copies.every((turn) => !turn.querySelector(STREAMING_SELECTOR));
-  }
-
-  function originalTurnStillStreaming(key) {
-    const copies = turnsByKey(key);
-    return copies.some((turn) => !!turn.querySelector(STREAMING_SELECTOR));
+    if (key && latestKey === key) return true;
+     // If ChatGPT remounted the final assistant under a new DOM key, the
+    // original turn must also have lost all of its streaming copies.
+    return !key || !originalTurnStillStreaming(key);
   }
 
   async function waitForStopSettlement(id, key) {
-    // Real ChatGPT can keep stale streaming markers on older/remounted turns
-    // after a Stop has already completed. The newest idle assistant is accepted
-    // immediately, and once Stop disappears we poll backend stream_status rather
-    // than waiting for a stale DOM marker to vanish.
-    const deadline = Date.now() + Math.min(STOP_SETTLE_TIMEOUT_MS, RECOVERY_RELOAD_TIMEOUT_MS);
+     // ChatGPT can remove the Stop button immediately while the server spends
+    // tens of seconds cancelling a long tool/reasoning run. Do not type the
+     // nudge during that limbo state: wait for both the Stop control and the
+     // original streaming marker to settle. If the React DOM stays stale, ask
+    // the backend before trusting it.
     lastStopSettlementSource = null;
     lastStopBackendStatus = null;
-
+    const deadline = Date.now() + Math.min(STOP_SETTLE_TIMEOUT_MS, RECOVERY_RELOAD_TIMEOUT_MS);
     while (Date.now() < deadline) {
-      if (!settings.stallRecoveryEnabled || conversationId() !== id) return false;
       if (latestAssistantShowsStoppedState(key)) {
         lastStopSettlementSource = "latest-assistant-idle";
         return true;
       }
-
       const stopPresent = !!stopButton();
-      const domStreaming = originalTurnStillStreaming(key);
-      if (!stopPresent && !domStreaming) {
+      const domStillStreaming = originalTurnStillStreaming(key);
+      if (!stopPresent && !domStillStreaming) {
         lastStopSettlementSource = "dom";
         return true;
       }
-
       if (!stopPresent) {
+        // The button often settles before a stale/duplicate streaming marker.
+        // Once Stop is gone, poll the authoritative backend rather than
+        // waiting for that marker to disappear.
         const status = await streamStatus(id);
         lastStopBackendStatus = status;
         if (status !== null && status !== "IS_STREAMING") {
@@ -517,29 +522,15 @@
           return true;
         }
       }
-
-      const remaining = Math.max(0, deadline - Date.now());
-      if (!remaining) break;
-      await waitForCondition(
-        () => latestAssistantShowsStoppedState(key) ||
-          (!stopButton() && !originalTurnStillStreaming(key)) ||
-          (!!stopButton() !== stopPresent),
-        document.documentElement,
-        Math.min(STOP_BACKEND_POLL_MS, remaining)
-      );
+      await new Promise((resolve) => setTimeout(resolve, STOP_BACKEND_POLL_MS));
     }
 
-    // One final backend read closes the race where cancellation completed just
-    // as the two-minute recovery-operation ceiling expired.
-    if (!stopButton()) {
-      const status = await streamStatus(id);
-      lastStopBackendStatus = status;
-      if (status !== null && status !== "IS_STREAMING") {
-        lastStopSettlementSource = "backend-final";
-        return true;
-      }
+    const status = await streamStatus(id);
+    lastStopBackendStatus = status;
+    if (status !== null && status !== "IS_STREAMING") {
+      lastStopSettlementSource = "backend-deadline";
+      return true;
     }
-    lastStopSettlementSource = "timeout";
     return false;
   }
 
@@ -566,30 +557,29 @@
 
   function replaceComposerWithNudge(node) {
     if (!node || !node.isConnected || (node.textContent || "").trim()) return false;
-    lastNudgeStage = "insert-nudge";
-    lastNudgeInsertMethod = null;
-    lastNudgeInsertAccepted = false;
-    if (COMPOSER_INPUT && typeof COMPOSER_INPUT.insertText === "function") {
+    lastNudgeStage = "insert-start";
+    node.focus({ preventScroll: true });
+    if (COMPOSER_INPUT  && typeof COMPOSER_INPUT.insertText === "function") {
       try {
         if (COMPOSER_INPUT.insertText(node, ".")) {
-          lastNudgeInsertMethod = "native-editor";
-          lastNudgeInsertAccepted = true;
-          return true;
+          lastNudgeInsertMethod = "editing-command";
+          lastNudgeInsertAccepted = composerContainsOnlyNudge();
+          lastNudgeStage = lastNudgeInsertAccepted ? "inserted-editor" : "insert-editor-rejected";
+          return lastNudgeInsertAccepted;
         }
-      } catch { /* compatibility fallback below */ }
+      } catch (error) {
+        console.debug("[GPT AntiCurse] editor insert path failed", error);
+      }
     }
-    // Compatibility fallback for simple contenteditable implementations. Modern
-    // ChatGPT normally takes the native-editor path above so its controlled
-    // editor state, not only the DOM, receives the continuation nudge.
     lastNudgeInsertMethod = "dom-input-fallback";
-    node.focus({ preventScroll: true });
     const before = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: "." });
-    if (!node.dispatchEvent(before)) return false;
+    if (!node.dispatchEvent(before)) { lastNudgeStage = "insert-beforeinput-blocked"; return false; }
     const paragraph = document.createElement("p");
     paragraph.textContent = ".";
     node.replaceChildren(paragraph);
     node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "." }));
-    lastNudgeInsertAccepted = (node.textContent || "").trim() === ".";
+    lastNudgeInsertAccepted = composerContainsOnlyNudge();
+    lastNudgeStage = lastNudgeInsertAccepted ? "inserted-fallback" : "insert-fallback-rejected";
     return lastNudgeInsertAccepted;
   }
 
@@ -597,7 +587,11 @@
     const node = composer();
     if (!node || !node.isConnected || !composerContainsOnlyNudge()) return false;
     if (COMPOSER_INPUT && typeof COMPOSER_INPUT.clearExactText === "function") {
-      try { if (COMPOSER_INPUT.clearExactText(node, ".")) return true; } catch { /* fallback below */ }
+      try {
+        if (COMPOSER_INPUT.clearExactText(node, ".")) return true;
+      } catch (error) {
+        console.debug("[GPT AntiCurse] editor cleanup path failed", error);
+      }
     }
     const before = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "deleteContentBackward", data: null });
     if (!node.dispatchEvent(before)) return false;
@@ -607,14 +601,16 @@
   }
 
   async function sendNudge(originalKey) {
-    lastNudgeStage = "starting";
+    lastNudgeStage = "send-start";
+    lastNudgeInsertMethod = null;
+    lastNudgeInsertAccepted = null;
     lastNudgeSubmitReady = null;
     lastNudgeGuardArmed = null;
     lastNudgeClickBlocked = null;
     lastNudgeConfirmed = null;
     if (hasUserDraft()) { lastNudgeStage = "blocked-user-draft"; return false; }
     const input = composer();
-    if (!replaceComposerWithNudge(input)) { lastNudgeStage = "insert-rejected"; return false; }
+    if (!replaceComposerWithNudge(input)) { lastNudgeStage = "insert-failed"; return false; }
     // Yield out of the input event without relying on requestAnimationFrame:
     // rAF is suspended for background tabs, while a microtask still runs.
     await new Promise((resolve) => queueMicrotask(resolve));
@@ -633,11 +629,13 @@
     if (!submitReady || !composerContainsOnlyNudge()) { lastNudgeStage = "send-not-ready"; return false; }
 
     const submit = document.querySelector(SUBMIT_SELECTOR);
-    if (!submit || submit.disabled || submit.getAttribute("aria-disabled") === "true") { lastNudgeStage = "send-button-invalid"; return false; }
+    if (!submit || submit.disabled || submit.getAttribute("aria-disabled" === "true") { lastNudgeStage = "send-button-unavailable"; return false; }
     // Re-arm only the same-turn Stop handoff immediately before the synthetic
-    // Send. Current Pro evidence still wins inside the guard.
-    lastNudgeGuardArmed = armRecoveryNudge(originalKey).autoRecoveryAllowed === true;
-    if (!lastNudgeGuardArmed) { lastNudgeStage = "guard-not-armed"; return false; }
+     // Send. Current Pro evidence still wins inside the guard.
+    lastNudgeStage = "guard-arm";
+    const armedState = armRecoveryNudge(originalKey);
+    lastNudgeGuardArmed = armedState.autoRecoveryAllowed === true;
+    if (!lastNudgeGuardArmed) { lastNudgeStage = "guard-arm-rejected"; return false; }
     // At this point Stop has settled and is absent. A newly appearing Stop
     // button therefore belongs to the resumed request. Alternatively accept a
     // different streaming turn key. Do not accept the old turn's stale marker.
@@ -645,15 +643,14 @@
     const blockedBefore = recoveryGuardBlockedClicks();
     submit.click();
 
-    // The Pro/unknown click guard can synchronously cancel our synthetic Send.
-    // Detect that directly. A successful click may temporarily leave no live
+     // The Pro/unknown click guard can synchronously cancel our synthetic Send.
+     // Detect that directly. A successful click may temporarily leave no live
     // streaming marker, so an immediate "unknown" model state is not failure.
     const blockedAfter = recoveryGuardBlockedClicks();
     lastNudgeClickBlocked = blockedBefore !== null && blockedAfter !== null && blockedAfter > blockedBefore;
-    if (lastNudgeClickBlocked) { lastNudgeStage = "guard-blocked-click"; return false; }
-    if (recoveryModelState().decision === "pro") { lastNudgeStage = "pro-after-click"; return false; }
+    if (lastNudgeClickBlocked) { lastNudgeStage = "send-guard-blocked"; return false; }
+    if (recoveryModelState().decision === "pro") { lastNudgeStage = "send-pro-after-click"; return false; }
 
-    lastNudgeStage = "confirming-send";
     const confirmed = await waitForCondition(
       () => !!stopButton() || (() => {
         const live = findActiveTurn();
@@ -664,10 +661,9 @@
       SEND_CONFIRM_TIMEOUT_MS
     );
     lastNudgeConfirmed = confirmed;
-    lastNudgeStage = confirmed ? "confirmed" : "send-not-confirmed";
+    lastNudgeStage = confirmed ? "send-confirmed" : "send-not-confirmed";
     return confirmed;
   }
-
 
   function recoveryApprovalSnapshot(state, key) {
     return {
@@ -676,13 +672,13 @@
       selectedModelLabel: state?.selectedModelLabel || null,
       selectedModelLane: state?.selectedModelLane || null,
       decision: "non-pro",
-      detectionSource: state?.detectionSource || null
+      detectionSource: state?.detectionSource || "stall-recovery"
     };
   }
 
   function currentRecoveryMarker() {
     if (!RELOAD_STATE || typeof RELOAD_STATE.read !== "function") return null;
-    try { return RELOAD_STATE.read(conversationId()); } catch { return null; }
+    try { return RELOAD_STATE.read(); } catch { return null; }
   }
 
   function clearRecoveryMarker() {
@@ -691,259 +687,45 @@
   }
 
   function scheduleRecoveryReload(id, key, modelState, reason) {
-    if (!RELOAD_STATE || typeof RELOAD_STATE.save !== "function") {
-      lastRecoveryFailure = "reload-state-unavailable";
-      return false;
-    }
-    const existing = currentRecoveryMarker();
-    const reloadCount = existing && existing.conversationId === id ? Number(existing.reloadCount || 0) : 0;
-    if (reloadCount >= MAX_RECOVERY_RELOADS) {
+    if (recoveryReloadScheduled) return true;
+    if (!settings.stallRecoveryEnabled || !id || recoveryReloadCount >= MAX_RECOVERY_RELOADS) {
       lastRecoveryFailure = "reload-limit-reached";
       return false;
     }
-    const marker = {
-      conversationId: id,
-      turnKey: key || null,
-      reloadCount: reloadCount + 1,
-      reason,
-      createdAt: Date.now(),
-      approval: recoveryApprovalSnapshot(modelState, key)
-    };
-    if (!RELOAD_STATE.save(marker)) {
+    const state = modelState || recoveryModelState();
+    if (state.autoRecoveryAllowed !== true || state.decision !== "non-pro") {
+      lastRecoveryFailure = state.decision === "pro" ? "reload-pro-blocked" : "reload-model-unknown";
+      return false;
+    }
+    if (conversationId() !== id || hasUserDraft()) {
+      lastRecoveryFailure = "reload-invalidated";
+      return false;
+    }
+    if (!RELOAD_STATE || typeof RELOAD_STATE.write !== "function") {
+      lastRecoveryFailure = "reload-state-unavailable";
+      return false;
+    }
+    const nextReloadCount = recoveryReloadCount + 1;
+    const approval = recoveryApprovalSnapshot(state, key);
+    const written = RELOAD_STATE.write({
+      conversationId: id, turnKey: key || null, reason, reloadCount: nextReloadCount, approval
+    });
+    if (!written) {
       lastRecoveryFailure = "reload-state-write-failed";
       return false;
     }
-    recoveryReloadCount = marker.reloadCount;
-    lastRecoveryReloadReason = reason;
+    recoveryReloadCount = nextReloadCount;
+    lastRecoveryReloadReason = reason || "recovery-timeout";
     recoveryReloadScheduled = true;
     lastRecoveryResult = "reloading";
-    setRecoveryPhase("reloading");
-    if (typeof RELOAD_STATE.reload !== "function" || RELOAD_STATE.reload() !== true) {
-      recoveryReloadScheduled = false;
-      lastRecoveryFailure = "reload-call-failed";
-      return false;
-    }
+    lastRecoveryFailure = null;
+    setRecoveryPhase("reload");
+     queueMicrotask(() => location.reload());
     return true;
-  }
-
-  function restoreReloadHandoff(marker) {
-    const guard = globalThis.CGAntiCurseProRecoveryGuard;
-    if (!guard || typeof guard.restoreRecoveryHandoff !== "function") return { autoRecoveryAllowed: false, decision: "unknown" };
-    try {
-      const state = guard.restoreRecoveryHandoff(marker?.approval || null);
-      return state && typeof state === "object" ? state : { autoRecoveryAllowed: false, decision: "unknown" };
-    } catch {
-      return { autoRecoveryAllowed: false, decision: "unknown" };
-    }
-  }
-
-  async function classifyReloadRunState(id) {
-    // After reload, a stale streaming marker alone is not proof that the request
-    // is still running. Prefer Stop, then backend state, then the composer having
-    // returned to its ordinary non-Stop submit control.
-    if (stopButton()) return { running: true, source: "stop-button", backendStatus: null };
-
-    const backendStatus = await streamStatus(id);
-    if (backendStatus === "IS_STREAMING") {
-      const stopAppeared = await waitForCondition(() => !!stopButton(), document.documentElement, 10_000);
-      return { running: true, source: stopAppeared ? "backend+stop" : "backend-no-stop", backendStatus };
-    }
-    if (backendStatus !== null) return { running: false, source: "backend", backendStatus };
-
-    const submit = document.querySelector(SUBMIT_SELECTOR);
-    if (submit) return { running: false, source: "composer-send", backendStatus: null };
-    if (!findActiveTurn()) return { running: false, source: "no-live-turn", backendStatus: null };
-    return { running: null, source: "unknown", backendStatus: null };
   }
 
   async function resumeRecoveryAfterReload() {
-    const marker = currentRecoveryMarker();
-    if (!marker) return false;
-    recoveryReloadCount = Number(marker.reloadCount || 0);
-    lastRecoveryReloadReason = marker.reason || null;
-    if (!settings.stallRecoveryEnabled || marker.conversationId !== conversationId()) {
-      clearRecoveryMarker();
-      return false;
-    }
-
-    recoveryStartedAt = Number(marker.createdAt || 0) || Date.now();
-    lastRecoveryResult = "in-flight";
-    lastRecoveryFailure = null;
-    setRecoveryPhase("reloading");
-    const pageReady = await waitForCondition(
-      () => !!composer() && document.readyState !== "loading",
-      document.documentElement,
-      RECOVERY_RELOAD_READY_TIMEOUT_MS
-    );
-    if (!pageReady) {
-      lastRecoveryFailure = "reload-page-not-ready";
-      lastRecoveryResult = "failed";
-      lastRecoveryFinishedAt = Date.now();
-      clearRecoveryMarker();
-      setRecoveryPhase(null);
-      return false;
-    }
-    if (!settings.stallRecoveryEnabled || marker.conversationId !== conversationId()) {
-      lastRecoveryFailure = "reload-transaction-invalidated";
-      lastRecoveryResult = "failed";
-      lastRecoveryFinishedAt = Date.now();
-      clearRecoveryMarker();
-      setRecoveryPhase(null);
-      return false;
-    }
-    if (hasUserDraft()) {
-      lastRecoveryFailure = "user-draft-after-reload";
-      lastRecoveryResult = "failed";
-      lastRecoveryFinishedAt = Date.now();
-      clearRecoveryMarker();
-      setRecoveryPhase(null);
-      return false;
-    }
-
-    // Decide from real run state after reload. The old DOM streaming marker may
-    // survive cancellation, so it is never sufficient by itself.
-    const runState = await classifyReloadRunState(marker.conversationId);
-    let key = marker.turnKey || null;
-    const live = findActiveTurn();
-    if (runState.running === true) {
-      const state = recoveryModelState();
-      if (state.autoRecoveryAllowed !== true) {
-        lastRecoveryFailure = state.decision === "pro" ? "pro-after-reload" : "reload-running-model-unknown";
-        lastRecoveryResult = "failed";
-        lastRecoveryFinishedAt = Date.now();
-        clearRecoveryMarker();
-        setRecoveryPhase(null);
-        return false;
-      }
-      const stop = stopButton();
-      if (!stop) {
-        lastRecoveryFailure = "reload-running-no-stop";
-        lastRecoveryResult = "failed";
-        lastRecoveryFinishedAt = Date.now();
-        clearRecoveryMarker();
-        setRecoveryPhase(null);
-        return false;
-      }
-      key = turnKey(live) || state.turnKey || key;
-      attemptedTurnKey = key;
-      setRecoveryPhase("stopping");
-      stop.click();
-      if (!(await waitForStopSettlement(marker.conversationId, key))) {
-        lastRecoveryFailure = "reload-stop-not-settled";
-        lastRecoveryResult = "failed";
-        lastRecoveryFinishedAt = Date.now();
-        clearRecoveryMarker();
-        setRecoveryPhase(null);
-        return false;
-      }
-      if (hasUserDraft()) {
-        lastRecoveryFailure = "user-draft-after-reload-stop";
-        lastRecoveryResult = "failed";
-        lastRecoveryFinishedAt = Date.now();
-        clearRecoveryMarker();
-        setRecoveryPhase(null);
-        return false;
-      }
-      if (recoveryNudgeModelState(key).autoRecoveryAllowed !== true) {
-        lastRecoveryFailure = "model-blocked-after-reload-stop";
-        lastRecoveryResult = "failed";
-        lastRecoveryFinishedAt = Date.now();
-        clearRecoveryMarker();
-        setRecoveryPhase(null);
-        return false;
-      }
-    } else if (runState.running === false) {
-      const restored = restoreReloadHandoff(marker);
-      if (restored.autoRecoveryAllowed !== true) {
-        lastRecoveryFailure = restored.decision === "pro" ? "pro-after-reload" : "reload-handoff-rejected";
-        lastRecoveryResult = "failed";
-        lastRecoveryFinishedAt = Date.now();
-        clearRecoveryMarker();
-        setRecoveryPhase(null);
-        return false;
-      }
-    } else {
-      lastRecoveryFailure = "reload-run-state-unknown";
-      lastRecoveryResult = "failed";
-      lastRecoveryFinishedAt = Date.now();
-      clearRecoveryMarker();
-      setRecoveryPhase(null);
-      return false;
-    }
-
-    setRecoveryPhase("sending");
-    const sent = await sendNudge(key);
-    if (!sent) {
-      lastRecoveryFailure = `reload-${lastNudgeStage || "nudge-send-failed"}`;
-      clearSyntheticNudge();
-      lastRecoveryResult = "failed";
-      lastRecoveryFinishedAt = Date.now();
-      clearRecoveryMarker();
-      setRecoveryPhase(null);
-      return false;
-    }
-
-    lastRecoveryResult = "completed";
-    lastRecoveryFinishedAt = Date.now();
-    clearRecoveryMarker();
-    setRecoveryPhase(null);
-    syncActiveTurn();
-    return true;
-  }
-  async function recoverStall(id, key, generation) {
-    const identity = `${id || ""}\u001f${key || ""}`;
-    if (generation !== recoveryGeneration || key !== activeTurnKey || attemptedTurns.has(identity) || recoveringTurns.has(identity)) return;
-    if (hasUserDraft()) { scheduleStallCheck(30_000); return; }
-    const stop = stopButton();
-    if (!stop) return;
-    const approvedModelState = recoveryModelState();
-    recoveringTurns.add(identity);
-    attemptedTurnKey = key;
-    recoveryStartedAt = Date.now();
-    lastRecoveryResult = "in-flight";
-    lastRecoveryFailure = null;
-    setRecoveryPhase("stopping");
-    try {
-      stop.click();
-      if (!(await waitForStopSettlement(id, key))) {
-        lastRecoveryFailure = "stop-not-settled";
-        if (scheduleRecoveryReload(id, key, approvedModelState, "stop-still-loading")) return;
-        return;
-      }
-      if (!settings.stallRecoveryEnabled || conversationId() !== id || generation !== recoveryGeneration) {
-        lastRecoveryFailure = "transaction-invalidated";
-        return;
-      }
-      if (hasUserDraft()) { lastRecoveryFailure = "user-draft-during-stop"; return; }
-      if (recoveryNudgeModelState(key).autoRecoveryAllowed !== true) { lastRecoveryFailure = "model-blocked-after-stop"; return; }
-      setRecoveryPhase("sending");
-      if (!(await sendNudge(key))) {
-        lastRecoveryFailure = lastNudgeStage || "nudge-send-failed";
-        if ((lastNudgeStage === "send-not-ready" || lastNudgeStage === "send-not-confirmed" || lastNudgeStage === "insert-reverted") &&
-            scheduleRecoveryReload(id, key, approvedModelState, `resume-${lastNudgeStage}`)) return;
-        return;
-      }
-      attemptedTurns.add(identity);
-      lastRecoveryResult = "completed";
-      if (attemptedTurns.size > 256) attemptedTurns.delete(attemptedTurns.values().next().value);
-    } finally {
-      if (!recoveryReloadScheduled && lastRecoveryResult !== "completed") lastRecoveryResult = "failed";
-      if (!recoveryReloadScheduled) lastRecoveryFinishedAt = Date.now();
-      // Remove only AntiCurse's exact synthetic nudge after a failed Send. Never
-      // touch a composer that the user changed while recovery was in flight.
-      if (!recoveryReloadScheduled && lastRecoveryResult !== "completed") clearSyntheticNudge();
-      recoveringTurns.delete(identity);
-      if (!recoveryReloadScheduled) {
-        setRecoveryPhase(null);
-        // Reconcile whatever ChatGPT mounted while recovery owned the old turn.
-        syncActiveTurn();
-      }
-    }
-  }
-
-  async function checkForStall() {
-    stallTimer = null;
-    if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) return;
+    if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) { publishRecoveryStatus(); return; }
     const modelState = recoveryModelState();
     if (modelState.autoRecoveryAllowed !== true) { publishRecoveryStatus(); return; }
     const loading = shellLoading() || preOutputLoading(activeTurn);
@@ -987,7 +769,7 @@
       if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
       if (Date.now() - lastActivityAt < threshold || hasUserDraft() || !stopButton()) { setRecoveryPhase(null); return; }
       // Confirm the backend a second time immediately before intervention. There
-      // is deliberately no extra grace delay: the user-selected deadline is the
+      // is teliberately no extra grace delay: the user-selected deadline is the
       // actual deadline, subject only to the two network checks themselves.
       if (await streamStatus(id) !== "IS_STREAMING") { setRecoveryPhase(null); return; }
       if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }

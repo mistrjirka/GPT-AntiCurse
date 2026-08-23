@@ -2,6 +2,8 @@
 (function (global) {
   "use strict";
 
+  const AUTH_FETCH_TIMEOUT_MS = 5_000;
+
   function bootstrapAccessToken() {
     const node = document.getElementById("client-bootstrap");
     const text = node && typeof node.textContent === "string" ? node.textContent.trim() : "";
@@ -20,15 +22,25 @@
   async function fetchSessionAccessToken(isCurrent) {
     if (typeof isCurrent === "function" && !isCurrent()) return { ok: false, reason: "conversation-changed" };
     let response;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), AUTH_FETCH_TIMEOUT_MS);
     try {
       response = await fetch(`${location.origin}/api/auth/session`, {
         method: "GET",
         credentials: "same-origin",
         cache: "no-store",
-        headers: { accept: "application/json" }
+        headers: { accept: "application/json" },
+        signal: controller.signal
       });
     } catch (error) {
-      return { ok: false, reason: "auth-session-network-failed", error: String(error && error.message ? error.message : error) };
+      const timedOut = controller.signal.aborted;
+      return {
+        ok: false,
+        reason: timedOut ? "auth-session-timeout" : "auth-session-network-failed",
+        error: String(error && error.message ? error.message : error)
+      };
+    } finally {
+      clearTimeout(timeout);
     }
     if (!response.ok) return { ok: false, reason: "auth-session-http-status", status: response.status };
     try {
