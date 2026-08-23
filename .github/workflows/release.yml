@@ -37,6 +37,9 @@ jobs:
           cmp firefox/session-auth.js chrome/session-auth.js
           cmp firefox/pro-recovery-guard.js chrome/pro-recovery-guard.js
           cmp firefox/stall-recovery.js chrome/stall-recovery.js
+          cmp firefox/recovery-reload-state.js chrome/recovery-reload-state.js
+          cmp firefox/composer-native-input.js chrome/composer-native-input.js
+          cmp firefox/recovery-status-ui.js chrome/recovery-status-ui.js
           cmp firefox/archive.js chrome/archive.js
           cmp firefox/conversation-scope.js chrome/conversation-scope.js
           cmp firefox/archive-export.js chrome/archive-export.js
@@ -97,6 +100,7 @@ jobs:
             tests/test-conversation-endpoints.js
             tests/test-pro-recovery-guard.js
             tests/test-stall-recovery.js
+            tests/test-recovery-v076.js
           )
           for test in "${tests[@]}"; do
             echo "==> $test"
@@ -120,7 +124,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: gpt-anticurse-0.7.5-candidate
+          name: gpt-anticurse-0.7.6-candidate
           path: dist/*.zip
           if-no-files-found: error
       - name: Install browser E2E runtimes
