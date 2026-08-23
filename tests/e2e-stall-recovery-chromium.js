@@ -152,7 +152,7 @@ async function configure(worker, enabled = true) {
   await worker.evaluate(async ({ enabled }) => {
     await chrome.storage.local.set({
       enabled: false,
-      showGuardNotice: false,
+      showGuardNotice: true,
       stallRecoveryEnabled: enabled,
       stallRecoveryTimeoutSeconds: 0.20,
       stallRecoveryToolTimeoutSeconds: 0.55,
