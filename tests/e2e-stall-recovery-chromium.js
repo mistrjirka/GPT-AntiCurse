@@ -21,7 +21,7 @@ function fixtureHtml() {
   window.__fixtureStarted = true;
   window.__fixtureErrors = [];
   window.addEventListener('error', e => window.__fixtureErrors.push(String(e.error?.stack || e.message || 'fixture error')));
-  const id = location.pathname.split('/').pop();
+  const id = location.pathname.split('/').filter(Boolean).pop();
   const key = '__ac_fixture_state:' + id;
   const old = JSON.parse(sessionStorage.getItem(key) || '{}');
   const s = {loads:Number(old.loads||0)+1, stopClicks:Number(old.stopClicks||0), sends:Number(old.sends||0), sentText:old.sentText||'', trustedInputEvents:Number(old.trustedInputEvents||0)};
@@ -72,17 +72,20 @@ function fixtureHtml() {
 
 const isWorker=w=>/^chrome-extension:\/\//.test(w.url())&&/\/background-entry\.js(?:$|[?#])/.test(w.url());
 async function worker(context){return context.serviceWorkers().find(isWorker)||context.waitForEvent('serviceworker',isWorker);}
-async function configure(w){const end=Date.now()+10000;while(Date.now()<end){if(await w.evaluate(()=>!!chrome?.storage?.local).catch(()=>false)){await w.evaluate(()=>chrome.storage.local.set({enabled:false,showGuardNotice:true,stallRecoveryEnabled:true}));return;}await new Promise(r=>setTimeout(r,50));}throw new Error('storage API not ready');}
+async function configure(w){const end=Date.now()+10000;while(Date.now()<end){if(await w.evaluate(()=>!!(globalThis.chrome&&chrome.storage&&chrome.storage.local)).catch(()=>false)){await w.evaluate(()=>chrome.storage.local.set({enabled:false,showGuardNotice:true,stallRecoveryEnabled:true}));return;}await new Promise(r=>setTimeout(r,50));}throw new Error('storage API not ready');}
 async function openCase(context,id){
   console.log('CASE '+id);
   const page=await context.newPage();
   page.on('pageerror',e=>console.error('PAGEERROR '+id+':',e?.stack||e));
   page.on('console',m=>{if(m.type()==='error')console.error('CONSOLE '+id+':',m.text());});
-  // The synthetic page may deliberately reload itself 200 ms later. Waiting for
-  // the final browser load event makes Playwright treat that as one never-ending
-  // navigation. DOMContentLoaded + explicit fixture readiness is the real gate.
   await page.goto('https://chatgpt.com/c/'+id,{waitUntil:'domcontentloaded',timeout:5000});
-  await page.waitForFunction(()=>!!window.__state||!!window.__fixtureErrors?.length,null,{timeout:5000});
+  try{
+    await page.waitForFunction(()=>!!window.__state||!!window.__fixtureErrors?.length,null,{timeout:5000});
+  }catch(error){
+    const diag=await page.evaluate(()=>({url:location.href,title:document.title,ready:document.readyState,fixtureStarted:!!window.__fixtureStarted,state:window.__state||null,errors:window.__fixtureErrors||null,body:(document.body?.innerText||'').slice(0,500),csp:document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content||null})).catch(e=>({evalError:String(e)}));
+    console.error('FIXTURE DIAG '+id+': '+JSON.stringify(diag));
+    throw error;
+  }
   const errors=await page.evaluate(()=>window.__fixtureErrors||[]);if(errors.length)throw new Error('fixture '+id+': '+errors.join(' | '));
   return page;
 }
@@ -95,7 +98,9 @@ const state=p=>p.evaluate(()=>({...window.__state,draft:document.querySelector('
   const counts=new Map();
   const context=await chromium.launchPersistentContext(profile,{channel:'chromium',headless:true,args:[`--disable-extensions-except=${ext}`,`--load-extension=${ext}`]});
   try{
-    await context.route(/https:\/\/chatgpt\.com\/c\/[^/?#]+$/,r=>r.fulfill({status:200,contentType:'text/html',body:fixtureHtml()}));
+    // Use a glob rather than an exact RegExp: Chromium can normalize the initial
+    // conversation navigation (trailing slash/query) before Playwright routing.
+    await context.route('https://chatgpt.com/c/**',r=>{console.log('FIXTURE ROUTE '+r.request().url());return r.fulfill({status:200,contentType:'text/html',headers:{'cache-control':'no-store'},body:fixtureHtml()});});
     await context.route('https://chatgpt.com/api/auth/session',r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({accessToken:'stall-e2e-token'})}));
     await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversation\/[^/]+\/stream_status$/,async r=>{
       const id=decodeURIComponent(new URL(r.request().url()).pathname.match(/\/conversation\/([^/]+)\/stream_status$/)[1]);const n=(counts.get(id)||0)+1;counts.set(id,n);
