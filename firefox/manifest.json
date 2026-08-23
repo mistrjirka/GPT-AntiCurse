@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "GPT AntiCurse",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "Makes very long ChatGPT conversations responsive and automatically recovers stalled runs.",
   "icons": {
     "16": "icons/icon16.png",
@@ -26,6 +26,8 @@
       "trim-logical.js",
       "trim-pipeline.js",
       "pagination-firewall.js",
+      "conversation-rate-limit-guard.js",
+      "paginated-history-accumulator.js",
       "background.js"
     ]
   },
@@ -38,6 +40,8 @@
         "dom-ready.js",
         "diagnostics.js",
         "conversation-scope.js",
+        "delivery-timeout-reload.js",
+        "recovery-status-ui.js",
         "content.js",
         "history-markdown.js",
         "history-virtualized.js",

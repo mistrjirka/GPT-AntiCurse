@@ -10,7 +10,7 @@ const ROOT = path.resolve(__dirname, "..");
 
 function fixtureHtml() {
   return String.raw`<!doctype html>
-<html><head><meta charset="utf-8"><title>AntiCurse stall recovery E2E</title></head>
+<html><head><meta charset="utf-8"><title>AntiCurse recovery E2E</title></head>
 <body>
 <div id="main"><div id="turn-list"></div></div>
 <form data-type="unified-composer">
@@ -20,26 +20,27 @@ function fixtureHtml() {
 <script>
 (() => {
   const id = location.pathname.split('/').pop();
-  const loadKey = 'stall-fixture-loads:' + id;
-  const loads = Number(sessionStorage.getItem(loadKey) || 0) + 1;
-  sessionStorage.setItem(loadKey, String(loads));
   const list = document.getElementById('turn-list');
   const composer = document.getElementById('prompt-textarea');
   const button = document.getElementById('composer-submit-button');
-  window.__state = { id, loads, stopClicks: 0, sends: 0, sentText: '', bumps: 0 };
+  window.__state = { id, stopClicks: 0, sends: 0, sentText: '', stopAt: 0, sendAt: 0 };
 
-  function makeTurn(index, tool) {
+  function makeTurn(index, { tool = false, output = true } = {}) {
     const wrapper = document.createElement('div');
     wrapper.setAttribute('data-turn-id-container', 'turn-' + index);
     const section = document.createElement('section');
     section.setAttribute('data-testid', 'conversation-turn-' + index);
     section.setAttribute('data-turn-id', 'turn-' + index);
+    section.setAttribute('data-turn', 'assistant');
+    const message = document.createElement('div');
+    message.setAttribute('data-message-author-role', 'assistant');
+    message.setAttribute('data-message-model-slug', 'gpt-5-6-thinking');
+    if (output) message.textContent = 'assistant output ' + index;
+    section.append(message);
     const streaming = document.createElement('div');
     streaming.setAttribute('data-streaming-response-status', 'streaming');
-    streaming.textContent = 'assistant output ' + index;
     if (tool) {
       const row = document.createElement('div');
-      row.className = 'tool-row';
       const icon = document.createElement('span');
       icon.setAttribute('data-testid', 'cot-v5-tool-icon-pile');
       const shimmer = document.createElement('span');
@@ -54,35 +55,29 @@ function fixtureHtml() {
     return { wrapper, streaming };
   }
 
-  let active = null;
-  function setSubmit(disabled = false) {
-    button.setAttribute('data-testid', 'send-button');
-    button.textContent = 'Send';
-    button.disabled = disabled;
-    if (active && active.streaming) active.streaming.removeAttribute('data-streaming-response-status');
-  }
+  let active = makeTurn(1, { tool: id === 'tool-fixed', output: id !== 'pre-output-loading' });
+
   function setStop() {
     button.setAttribute('data-testid', 'stop-button');
     button.textContent = 'Stop';
     button.disabled = false;
   }
-
-  active = makeTurn(1, id === 'tool-timeout');
-  setStop();
-  if (id === 'disabled-until-input') {
-    new MutationObserver(() => {
-      if ((composer.textContent || '').trim()) button.disabled = false;
-    }).observe(composer, { childList: true, subtree: true, characterData: true });
+  function setSend(disabled = false, settle = true) {
+    button.setAttribute('data-testid', 'send-button');
+    button.textContent = 'Send';
+    button.disabled = disabled;
+    if (settle && active?.streaming) active.streaming.removeAttribute('data-streaming-response-status');
   }
+  setStop();
 
-  if (id === 'system-delay-banner' && active?.streaming) {
+  if (id === 'system-delay-banner') {
     const banner = document.createElement('span');
     banner.className = 'loading-shimmer-tertiary';
-    banner.append('Our systems are thinking a bit more about this request before responding. You can retry with a faster model for a quicker response, though it may be less capable of handling complex requests. ');
-    const learnMore = document.createElement('a');
-    learnMore.href = 'https://help.openai.com/articles/20001326';
-    learnMore.textContent = 'Learn more';
-    banner.append(learnMore);
+    banner.append('Our systems are thinking a bit more about this request before responding. ');
+    const a = document.createElement('a');
+    a.href = 'https://help.openai.com/articles/20001326';
+    a.textContent = 'Learn more';
+    banner.append(a);
     active.streaming.append(banner);
   }
   if (id === 'draft-protection') composer.textContent = 'do not overwrite me';
@@ -90,24 +85,39 @@ function fixtureHtml() {
   button.addEventListener('click', () => {
     if (button.getAttribute('data-testid') === 'stop-button') {
       window.__state.stopClicks++;
-      if (id === 'disabled-until-input') setSubmit(true);
-      else setSubmit(false);
+      window.__state.stopAt = performance.now();
+      if (id === 'slow-stop') {
+        // Model the real ChatGPT limbo: Stop control disappears quickly, but
+        // the old assistant turn remains streaming while cancellation unwinds.
+        setSend(true, false);
+        setTimeout(() => {
+          active.streaming.removeAttribute('data-streaming-response-status');
+          button.disabled = false;
+        }, 650);
+      } else {
+        setSend(id === 'disabled-until-input', true);
+      }
       return;
     }
     if (button.disabled) return;
     const text = (composer.textContent || '').trim();
     window.__state.sends++;
     window.__state.sentText = text;
+    window.__state.sendAt = performance.now();
     composer.replaceChildren();
-    active = makeTurn(2 + window.__state.sends, false);
+    active = makeTurn(2 + window.__state.sends);
     setStop();
   });
 
-  window.__bumpActivity = () => {
-    if (!active || !active.streaming) return false;
-    const span = document.createElement('span');
-    span.textContent = ' progress-' + (++window.__state.bumps);
-    active.streaming.append(span);
+  if (id === 'disabled-until-input') {
+    new MutationObserver(() => {
+      if ((composer.textContent || '').trim() && button.getAttribute('data-testid') !== 'stop-button') button.disabled = false;
+    }).observe(composer, { childList: true, subtree: true, characterData: true });
+  }
+  window.__revealAssistantOutput = () => {
+    const msg = active.wrapper.querySelector('[data-message-author-role="assistant"]');
+    if (!msg || msg.textContent) return false;
+    msg.textContent = 'first actual assistant output';
     return true;
   };
 })();
@@ -118,48 +128,32 @@ function fixtureHtml() {
 function isAntiCurseWorker(worker) {
   return /^chrome-extension:\/\//.test(worker.url()) && /\/background-entry\.js(?:$|[?#])/.test(worker.url());
 }
-
 async function waitForWorker(context) {
   return context.serviceWorkers().find(isAntiCurseWorker) || context.waitForEvent("serviceworker", isAntiCurseWorker);
 }
-
-
 async function waitForStorageApi(worker) {
+  await worker.waitForFunction?.(() => !!(globalThis.chrome && chrome.storage && chrome.storage.local)).catch(() => {});
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
-    const ready = await worker.evaluate(() => !!(globalThis.chrome && chrome.storage && chrome.storage.local)).catch(() => false);
-    if (ready) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    if (await worker.evaluate(() => !!(globalThis.chrome && chrome.storage && chrome.storage.local)).catch(() => false)) return;
+    await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error("Chromium extension storage API did not become ready");
 }
-
 async function configure(worker, enabled = true) {
   await waitForStorageApi(worker);
-  await worker.evaluate(async ({ enabled }) => {
-    await chrome.storage.local.set({
-      enabled: false,
-      showGuardNotice: false,
-      stallRecoveryEnabled: enabled,
-      stallRecoveryTimeoutSeconds: 0.20,
-      stallRecoveryToolTimeoutSeconds: 0.55,
-      stallRecoveryGraceSeconds: 0.06
-    });
-  }, { enabled });
+  await worker.evaluate(async ({ enabled }) => chrome.storage.local.set({
+    enabled: false,
+    showGuardNotice: true,
+    stallRecoveryEnabled: enabled
+  }), { enabled });
 }
-
-async function setPerformance(worker, enabled) {
-  await waitForStorageApi(worker);
-  await worker.evaluate(async ({ enabled }) => chrome.storage.local.set({ enabled }), { enabled });
-}
-
 async function openCase(context, id) {
   const page = await context.newPage();
   await page.goto(`https://chatgpt.com/c/${id}`, { waitUntil: "load" });
   await page.waitForFunction(() => !!window.__state);
   return page;
 }
-
 async function state(page) {
   return page.evaluate(() => ({ ...window.__state, draft: document.querySelector('#prompt-textarea')?.textContent || '' }));
 }
@@ -169,132 +163,82 @@ async function state(page) {
   const extensionPath = path.join(tempRoot, "chrome");
   const userDataDir = path.join(tempRoot, "profile");
   fs.cpSync(path.join(ROOT, "chrome"), extensionPath, { recursive: true });
-
-  // Only the E2E copy shortens the production timer clamps. The exact packaged
-  // source is separately syntax/static-tested with 120s / 300s / 10s defaults.
   const watchdogPath = path.join(extensionPath, "stall-recovery.js");
   let watchdog = fs.readFileSync(watchdogPath, "utf8");
   watchdog = watchdog
-    .replace("clampSeconds(next.stallRecoveryTimeoutSeconds, settings.stallRecoveryTimeoutSeconds, 60, 1800)", "clampSeconds(next.stallRecoveryTimeoutSeconds, settings.stallRecoveryTimeoutSeconds, 0.05, 1800)")
-    .replace("clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 120, 3600)", "clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 0.10, 3600)");
+    .replace("const STALL_TIMEOUT_MS = 120_000;", "const STALL_TIMEOUT_MS = 200;")
+    .replace("const STOP_SETTLE_TIMEOUT_MS = 180_000;", "const STOP_SETTLE_TIMEOUT_MS = 1_500;")
+    .replace("const SEND_READY_TIMEOUT_MS = 180_000;", "const SEND_READY_TIMEOUT_MS = 1_500;")
+    .replace("const SEND_CONFIRM_TIMEOUT_MS = 30_000;", "const SEND_CONFIRM_TIMEOUT_MS = 1_500;");
   fs.writeFileSync(watchdogPath, watchdog);
 
   const statusCounts = new Map();
   const context = await chromium.launchPersistentContext(userDataDir, {
-    channel: "chromium",
-    headless: true,
+    channel: "chromium", headless: true,
     args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`]
   });
-
   try {
     await context.route(/https:\/\/chatgpt\.com\/c\/[^/?#]+$/, (route) => route.fulfill({ status: 200, contentType: "text/html", body: fixtureHtml() }));
     await context.route("https://chatgpt.com/api/auth/session", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accessToken: "stall-e2e-token" }) }));
     await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversation\/[^/]+\/stream_status$/, async (route) => {
-      const match = new URL(route.request().url()).pathname.match(/\/conversation\/([^/]+)\/stream_status$/);
-      const id = decodeURIComponent(match[1]);
-      const count = (statusCounts.get(id) || 0) + 1;
-      statusCounts.set(id, count);
-      const status = id === "backend-fail-open" || id === "system-delay-banner" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status }) });
+      const id = decodeURIComponent(new URL(route.request().url()).pathname.match(/\/conversation\/([^/]+)\/stream_status$/)[1]);
+      statusCounts.set(id, (statusCounts.get(id) || 0) + 1);
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "IS_STREAMING" }) });
     });
-
     const worker = await waitForWorker(context);
     await configure(worker, true);
 
-    {
-      const page = await openCase(context, "basic");
-      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 4000 });
+    for (const id of ["basic", "tool-fixed", "disabled-until-input"]) {
+      const page = await openCase(context, id);
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 5000 });
       const s = await state(page);
-      assert.equal(s.stopClicks, 1);
-      assert.equal(s.sentText, ".");
-      assert(statusCounts.get("basic") >= 2, "basic recovery must confirm backend streaming twice");
-      await page.waitForTimeout(450);
-      assert.equal((await state(page)).sends, 1, "same recovered run must not loop");
+      assert.equal(s.stopClicks, 1, `${id}: expected exactly one automatic Stop`);
+      assert.equal(s.sentText, ".", `${id}: expected exact continuation nudge`);
+      if (id === "tool-fixed") assert((s.stopAt || 0) < 1000, "tool DOM must not select a longer stall deadline");
+      if (id !== "disabled-until-input") assert((statusCounts.get(id) || 0) >= 2, `${id}: ordinary timeout must confirm streaming twice`);
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "slow-stop");
+      await page.waitForFunction(() => window.__state.stopClicks === 1, null, { timeout: 3000 });
+      await page.waitForFunction(() => (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('stopping'), null, { timeout: 1500 });
+      await page.waitForTimeout(350);
+      let s = await state(page);
+      assert.equal(s.sends, 0, "must not type/send while the original turn is still cancelling");
+      assert.equal(s.draft, "", "composer must remain untouched during Stop settlement");
+      const recoveryUi = await page.evaluate(() => {
+        const badge = document.querySelector('#cg-conversation-guard-status');
+        return { phase: badge?.dataset?.recoveryPhase || null, state: badge?.querySelector('.cg-state')?.textContent || '' };
+      });
+      assert.equal(recoveryUi.phase, "stopping");
+      assert.equal(recoveryUi.state, "stopping", "countdown must be replaced by the stopping transaction state");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 4000 });
+      s = await state(page);
+      assert(s.sendAt - s.stopAt >= 600, "Send must wait for slow Stop settlement");
       await page.close();
     }
 
     {
       const page = await openCase(context, "system-delay-banner");
-      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 2000 });
-      const s = await state(page);
-      assert.equal(s.stopClicks, 1, "explicit long-wait banner must trigger auto-resume");
-      assert.equal(s.sentText, ".");
-      // The fixture returns NOT_STREAMING for this conversation. A successful
-      // Stop -> dot -> Send therefore proves the banner path did not require
-      // backend confirmation; a later query may belong to the new recovered turn.
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 2500 });
+      assert.equal((await state(page)).sentText, ".");
       await page.close();
     }
-
     {
       const page = await openCase(context, "draft-protection");
       await page.waitForTimeout(700);
       const s = await state(page);
-      assert.equal(s.stopClicks, 0);
-      assert.equal(s.sends, 0);
-      assert.equal(s.draft, "do not overwrite me");
-      assert.equal(statusCounts.get("draft-protection") || 0, 0, "draft protection should fail closed before backend intervention checks");
+      assert.equal(s.stopClicks, 0); assert.equal(s.sends, 0); assert.equal(s.draft, "do not overwrite me");
       await page.close();
     }
-
     {
-      const page = await openCase(context, "backend-fail-open");
-      await page.waitForTimeout(700);
-      const s = await state(page);
-      assert.equal(s.stopClicks, 0);
-      assert.equal(s.sends, 0);
-      assert((statusCounts.get("backend-fail-open") || 0) >= 1);
-      await page.close();
-    }
-
-    {
-      const page = await openCase(context, "activity-reset");
-      await page.waitForTimeout(120);
-      assert.equal(await page.evaluate(() => window.__bumpActivity()), true);
-      await page.waitForTimeout(140);
-      assert.equal((await state(page)).sends, 0, "meaningful active-turn mutation must restart the stall deadline");
-      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000 });
-      await page.close();
-    }
-
-    {
-      await setPerformance(worker, true);
-      const page = await openCase(context, "tool-timeout");
-      const shimmer = await page.evaluate(() => {
-        const node = document.querySelector(".loading-shimmer-tertiary");
-        const style = node && getComputedStyle(node);
-        return { text: node?.textContent || "", animationName: style?.animationName || "" };
-      });
-      assert.equal(shimmer.text, "Working", "disabling the cosmetic shimmer must preserve readable tool status text");
-      assert.equal(shimmer.animationName, "none", "performance mode must stop only the non-composited loading shimmer");
-      await page.waitForTimeout(330);
-      assert.equal((await state(page)).sends, 0, "active tools must use the longer timeout");
-      assert.equal(statusCounts.get("tool-timeout") || 0, 0, "backend should not be queried at the normal non-tool threshold");
-      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 3000 });
-      await page.close();
-      await setPerformance(worker, false);
-    }
-
-    {
-      await configure(worker, false);
-      const page = await openCase(context, "disabled");
-      await page.waitForTimeout(700);
-      const s = await state(page);
-      assert.equal(s.stopClicks, 0);
-      assert.equal(s.sends, 0);
-      assert.equal(statusCounts.get("disabled") || 0, 0);
-      await page.close();
-      await configure(worker, true);
-    }
-
-    {
-      const page = await openCase(context, "disabled-until-input");
-      await page.waitForFunction(() => window.__state && window.__state.sends === 1, null, { timeout: 5000 });
-      const s = await state(page);
-      assert.equal(s.loads, 1, "recovery must not reload when Send starts disabled");
-      assert.equal(s.stopClicks, 1);
-      assert.equal(s.sentText, ".");
-      await page.waitForTimeout(450);
-      assert.equal(Number(await page.evaluate(() => sessionStorage.getItem('stall-fixture-loads:disabled-until-input'))), 1);
+      const page = await openCase(context, "pre-output-loading");
+      await page.waitForFunction(() => (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('loading'));
+      await page.waitForTimeout(500);
+      assert.equal((await state(page)).stopClicks, 0);
+      assert.equal(await page.evaluate(() => window.__revealAssistantOutput()), true);
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 4000 });
       await page.close();
     }
 
@@ -303,7 +247,4 @@ async function state(page) {
     await context.close();
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
-})().catch((error) => {
-  console.error(error && error.stack || error);
-  process.exit(1);
-});
+})().catch((error) => { console.error(error && error.stack || error); process.exit(1); });

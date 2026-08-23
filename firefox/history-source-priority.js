@@ -18,7 +18,7 @@
   let rateLimitedSkips = 0;
 
   function archiveFromCapturedHistory(history, id) {
-    if (!history || history.ok === false || !Array.isArray(history.messages)) return null;
+    if (!history || history.ok === false || history.complete === false || !Array.isArray(history.messages)) return null;
     if (history.conversationId && history.conversationId !== id) return null;
     return {
       schemaVersion: 1,

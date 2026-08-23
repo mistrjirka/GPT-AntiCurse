@@ -163,7 +163,7 @@ function createCertificate(dir) {
   return { key: fs.readFileSync(key), cert: fs.readFileSync(cert) };
 }
 
-function createServer(tls, fullConversation) {
+function createServer(tls, fullConversation, counters) {
   const pages = paginatedConversationPages(fullConversation);
   return https.createServer(tls, (req, res) => {
     const url = new URL(req.url, "https://chatgpt.com:8443");
@@ -178,13 +178,19 @@ function createServer(tls, fullConversation) {
       return;
     }
     if (url.pathname === "/backend-api/conversation/e2e-firefox") {
-      if (req.headers.authorization) assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
+      if (req.headers.authorization) {
+        counters.authoritativeHistoryRequests++;
+        assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
+      }
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "singular endpoint retired" }));
       return;
     }
     if (url.pathname === "/backend-api/conversations/e2e-firefox") {
-      if (req.headers.authorization) assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
+      if (req.headers.authorization) {
+        counters.authoritativeHistoryRequests++;
+        assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
+      }
       assert.equal(url.searchParams.get("include_has_versions"), "true");
       assert.equal(url.searchParams.get("num_turns"), "10");
       res.writeHead(200, { "content-type": "application/json" });
@@ -192,7 +198,12 @@ function createServer(tls, fullConversation) {
       return;
     }
     if (url.pathname === "/backend-api/conversations/e2e-firefox/messages") {
-      assert.equal(req.headers.authorization || "", "Bearer firefox-e2e-token");
+      // Native ChatGPT pagination is intentionally allowed one request and has
+      // no Authorization header. AntiCurse's isolated authoritative fetch does.
+      if (req.headers.authorization) {
+        counters.authoritativeHistoryRequests++;
+        assert.equal(req.headers.authorization, "Bearer firefox-e2e-token");
+      }
       assert.equal(url.searchParams.get("include_has_versions"), "true");
       assert.equal(url.searchParams.get("num_turns"), "10");
       assert.equal(url.searchParams.get("before"), "older-firefox-page");
@@ -218,7 +229,8 @@ async function waitForValue(driver, script, timeout = 12000) {
   execFileSync("zip", ["-qr", xpi, "."], { cwd: extensionDir });
 
   const fullConversation = conversation();
-  const server = createServer(createCertificate(temp), fullConversation);
+  const counters = { authoritativeHistoryRequests: 0 };
+  const server = createServer(createCertificate(temp), fullConversation, counters);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(8443, "0.0.0.0", resolve);
@@ -266,8 +278,8 @@ async function waitForValue(driver, script, timeout = 12000) {
     assert.equal(state.hasCutoffUser, true, "logical cutoff must retain first recent Firefox exchange");
     assert.equal(state.hasRecentTool, true, "recent Firefox technical nodes must survive");
     assert.equal(state.hasRecentHidden, true, "recent Firefox hidden nodes must survive");
-    assert.equal(state.cursor, null, "Firefox pagination firewall must terminate the native cursor before page code sees it");
-    assert.equal(state.nativePaginationRequests, 0, "Firefox page code must not fetch raw older cursor pages");
+    assert.equal(state.cursor, "older-firefox-page", "Firefox newest page must preserve ChatGPT's real pagination cursor");
+    assert.equal(state.nativePaginationRequests, 1, "Firefox native pagination may request one older page, which AntiCurse terminates before its records enter React");
 
     const button = await driver.wait(until.elementLocated(By.css("#cg-window-history-host .cg-history-previous")), 10000);
     assert.equal(await button.isDisplayed(), false, "fresh installs should default to Auto window without a manual history button");
@@ -287,8 +299,9 @@ async function waitForValue(driver, script, timeout = 12000) {
     assert(loaded.pages >= 1 && loaded.pages <= 3);
     assert(loaded.turns > 0, "Auto window must render older archived turns after reaching the top");
     assert.equal(loaded.nativeSyntheticAttrs, 0);
+    assert.equal(counters.authoritativeHistoryRequests, 0, "automatic Firefox Markdown history must use captured native pages, never an authenticated full-history refetch");
 
-    console.log("Firefox extension E2E: PASS", JSON.stringify({ addonId, ...state, ...loaded }));
+    console.log("Firefox extension E2E: PASS", JSON.stringify({ addonId, ...state, ...loaded, ...counters }));
   } finally {
     await driver.quit().catch(() => {});
     await new Promise((resolve) => server.close(resolve));

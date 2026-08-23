@@ -28,6 +28,9 @@ const LIMITED_MODES = new Set(["recent", "windowed-visible"]);
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const PAGINATION = globalThis.CGPaginationFirewall;
 const ENDPOINT = globalThis.CGConversationEndpoint;
+const PAGINATED_HISTORY = globalThis.CGPaginatedHistoryAccumulator
+  ? globalThis.CGPaginatedHistoryAccumulator.create({ maxPages: 100 })
+  : null;
 const STATS_KEY_PREFIX = "cg-tab-stats:";
 const HISTORY_KEY_PREFIX = "cg-tab-history:";
 const BACKGROUND_STARTED_AT = new Date().toISOString();
@@ -105,8 +108,12 @@ const settingsReady = browser.storage.local.get({ ...DEFAULT_SETTINGS, cgTotals:
 });
 
 function conversationIdFromEndpoint(urlString) {
-  if (!ENDPOINT || typeof ENDPOINT.conversationId !== "function") return null;
-  return ENDPOINT.conversationId(urlString);
+  if (!ENDPOINT) return null;
+  const documentId = typeof ENDPOINT.conversationId === "function" ? ENDPOINT.conversationId(urlString) : null;
+  if (documentId) return documentId;
+  return typeof ENDPOINT.messagesPageConversationId === "function"
+    ? ENDPOINT.messagesPageConversationId(urlString)
+    : null;
 }
 
 function isConversationDocument(urlString) {
@@ -432,17 +439,16 @@ function transformPaginatedConversation(parsed, conversationId, mode, limit) {
     : { changed: false, data: graph, reason: "below-limit", stats: {} };
   const keptMessages = activeMessagesFromGraph(trimmed.data);
   const rawMessagesChanged = keptMessages.length !== parsed.messages.length || !!trimmed.changed;
-  const changed = hadOlderPages || rawMessagesChanged;
+  // Preserve ChatGPT's real pagination metadata on the newest page. Hiding the
+  // cursor made the native data cache see an internally inconsistent snapshot.
+  // The actual older-page response is terminated separately below, so old
+  // messages still never accumulate in the React-owned graph.
+  const changed = rawMessagesChanged;
   const data = changed
     ? {
         ...parsed,
         messages: keptMessages,
-        current_node: trimmed.data.current_node || parsed.current_node,
-        page_info: {
-          ...pageInfo,
-          has_previous_page: false,
-          start_cursor: null
-        }
+        current_node: trimmed.data.current_node || parsed.current_node
       }
     : parsed;
   const renderedBefore = paginatedVisibleHistory(parsed).length;
@@ -460,7 +466,8 @@ function transformPaginatedConversation(parsed, conversationId, mode, limit) {
       : renderedAfter,
     currentNodePreserved: (trimmed.data.current_node || parsed.current_node) === parsed.current_node,
     paginationFirewall: true,
-    paginationCursorSuppressed: hadOlderPages,
+    paginationCursorSuppressed: false,
+    paginationCursorPreserved: hadOlderPages,
     paginatedConversationEnvelope: true,
     paginatedMessages: parsed.messages.length,
     paginatedMessagesAfter: keptMessages.length
@@ -496,7 +503,7 @@ function buildHistoryArchive(parsed, transformed, mode, limit, conversationId) {
   };
 }
 
-function transformConversation(parsed, conversationId, cursorRequest = false) {
+function transformConversation(parsed, conversationId, cursorRequest = false, continueNativePagination = false) {
   const mode = resolveMode(settings.mode);
   const limit = normalizeMessageLimit(settings.maxDisplayMessages);
 
@@ -506,6 +513,42 @@ function transformConversation(parsed, conversationId, cursorRequest = false) {
   // and only terminate native older-page pagination; AntiCurse owns older history
   // through its isolated authenticated path.
   if (paginatedConversationEnvelope(parsed)) {
+    if (cursorRequest) {
+      const pageInfo = parsed.page_info || {};
+      return {
+        mode,
+        transformed: {
+          changed: true,
+          data: {
+            ...parsed,
+            messages: [],
+            page_info: continueNativePagination
+              ? pageInfo
+              : { ...pageInfo, has_previous_page: false, start_cursor: null }
+          },
+          reason: "trimmed",
+          stats: {
+            trimMode: mode,
+            mappingNodesBefore: parsed.messages.length,
+            mappingNodesAfter: 0,
+            discardedNodes: parsed.messages.length,
+            displayBefore: paginatedVisibleHistory(parsed).length,
+            displayAfter: 0,
+            logicalDisplayAfter: 0,
+            currentNodePreserved: true,
+            paginationFirewall: true,
+            paginationOlderPageBlocked: true,
+            paginationCursorSuppressed: !continueNativePagination,
+            paginationCursorPreserved: continueNativePagination,
+            paginationBlockedNodes: parsed.messages.length,
+            paginatedConversationEnvelope: true,
+            paginatedMessages: parsed.messages.length,
+            paginatedMessagesAfter: 0
+          }
+        },
+        history: null
+      };
+    }
     return transformPaginatedConversation(parsed, conversationId, mode, limit);
   }
 
@@ -687,6 +730,7 @@ function stripExportRequestMarker(details) {
 function confirmExportBypassResponse(details) {
   cleanupExportBypassTokens();
   const state = responseFilterStates.get(details && details.requestId);
+  if (state) state.statusCode = Number(details && details.statusCode) || 0;
   const standalone = standaloneExportBypassRequests.get(details && details.requestId);
   if (standalone) standaloneExportBypassRequests.delete(details.requestId);
   const headers = Array.isArray(details && details.responseHeaders) ? details.responseHeaders : [];
@@ -698,12 +742,40 @@ function confirmExportBypassResponse(details) {
   return { responseHeaders };
 }
 
-async function processResponse(filter, chunks, totalBytes, details, exportBypass = false) {
+async function processResponse(filter, chunks, totalBytes, details, filterState = null) {
   const started = performance.now();
   const endpointConversationId = conversationIdFromEndpoint(details.url);
+  const exportBypass = !!(filterState && filterState.exportBypass);
+  const responseStatus = Number(filterState && filterState.statusCode) || 0;
   try {
     if (exportBypass) {
       writeOriginal(filter, chunks);
+      return;
+    }
+    // A 429/error body is not a conversation schema. Preserve native HTTP
+    // semantics and never turn it into an unsupported-shape warning.
+    if (responseStatus && (responseStatus < 200 || responseStatus >= 300)) {
+      writeOriginal(filter, chunks);
+      publishStats(details.tabId, statsForRequest(details, {
+        mode: "passthrough",
+        transport: "firefox-stream-filter",
+        reason: "http-status",
+        responseStatus,
+        originalBytes: totalBytes,
+        processingMs: +(performance.now() - started).toFixed(2)
+      }, endpointConversationId), details.timeStamp);
+      return;
+    }
+    if (totalBytes <= 0) {
+      writeOriginal(filter, chunks);
+      publishStats(details.tabId, statsForRequest(details, {
+        mode: "passthrough",
+        transport: "firefox-stream-filter",
+        reason: "empty-body",
+        responseStatus,
+        originalBytes: 0,
+        processingMs: +(performance.now() - started).toFixed(2)
+      }, endpointConversationId), details.timeStamp);
       return;
     }
     const initialized = await settingsReady;
@@ -750,8 +822,51 @@ async function processResponse(filter, chunks, totalBytes, details, exportBypass
     }
 
     const cursorRequest = !!(PAGINATION && typeof PAGINATION.isCursorRequest === "function" && PAGINATION.isCursorRequest(details.url));
-    const result = transformConversation(parsed, conversationId, cursorRequest);
-    publishHistory(details.tabId, result.history, details.timeStamp);
+    const isPaginated = paginatedConversationEnvelope(parsed);
+    let historyObservation = null;
+    let continueNativePagination = false;
+    let result;
+
+    if (isPaginated && PAGINATED_HISTORY) {
+      if (cursorRequest) {
+        const requestPage = ENDPOINT && typeof ENDPOINT.parseMessagesPage === "function"
+          ? ENDPOINT.parseMessagesPage(details.url)
+          : null;
+        historyObservation = PAGINATED_HISTORY.observe({
+          tabId: details.tabId,
+          conversationId,
+          cursorRequest: true,
+          requestCursor: requestPage && requestPage.before,
+          nextCursor: paginatedCursor(parsed),
+          messages: paginatedVisibleHistory(parsed),
+          pageSize: normalizeMessageLimit(settings.maxDisplayMessages),
+          nativeVisibleCount: 0
+        });
+        continueNativePagination = historyObservation.continueNativePagination === true;
+        result = transformConversation(parsed, conversationId, true, continueNativePagination);
+      } else {
+        result = transformConversation(parsed, conversationId, false, false);
+        historyObservation = PAGINATED_HISTORY.observe({
+          tabId: details.tabId,
+          conversationId,
+          cursorRequest: false,
+          requestCursor: null,
+          nextCursor: paginatedCursor(parsed),
+          messages: paginatedVisibleHistory(parsed),
+          pageSize: normalizeMessageLimit(settings.maxDisplayMessages),
+          nativeVisibleCount: Math.max(0, Number(result.transformed?.stats?.displayAfter) || 0)
+        });
+      }
+      if (historyObservation && historyObservation.history) result.history = historyObservation.history;
+    } else {
+      result = transformConversation(parsed, conversationId, cursorRequest, false);
+    }
+
+    // An incomplete native pagination chain is not "no history". Publish each
+    // accumulated partial snapshot, and never delete an existing archive merely
+    // because one intermediate response has not reached the oldest page yet.
+    if (result.history) publishHistory(details.tabId, result.history, details.timeStamp);
+    else if (!isPaginated && !cursorRequest) publishHistory(details.tabId, null, details.timeStamp);
     if (!result.transformed.changed) {
       writeOriginal(filter, chunks);
       publishPassthroughStats(details, result.transformed, totalBytes, started, conversationId);
@@ -788,7 +903,7 @@ function interceptConversation(details) {
   const chunks = [];
   let totalBytes = 0;
   let finished = false;
-  const filterState = { exportBypass: false };
+  const filterState = { exportBypass: false, statusCode: 0 };
   responseFilterStates.set(details.requestId, filterState);
 
   filter.ondata = (event) => {
@@ -811,7 +926,7 @@ function interceptConversation(details) {
     if (finished) return;
     finished = true;
     responseFilterStates.delete(details.requestId);
-    processResponse(filter, chunks, totalBytes, details, filterState.exportBypass).catch((error) => {
+    processResponse(filter, chunks, totalBytes, details, filterState).catch((error) => {
       recordIssue("interceptor", "firefox-response-handler-failed", error);
       try {
         writeOriginal(filter, chunks);
@@ -892,7 +1007,11 @@ browser.runtime.onMessage.addListener((message, sender) => {
       pendingExportBypasses: exportBypassTokens.size,
       pendingStandaloneExportBypasses: standaloneExportBypassRequests.size,
       exportBypassDisconnects,
-      invalidExportBypassMarkers
+      invalidExportBypassMarkers,
+      paginatedHistory: PAGINATED_HISTORY && typeof PAGINATED_HISTORY.debug === "function" ? PAGINATED_HISTORY.debug() : null,
+      rateLimitGuard: globalThis.CGAntiCurseConversationRateLimitGuard && typeof globalThis.CGAntiCurseConversationRateLimitGuard.debug === "function"
+        ? globalThis.CGAntiCurseConversationRateLimitGuard.debug()
+        : null
     });
   }
   if (message.type === "cg-create-export-bypass") {
@@ -953,6 +1072,7 @@ browser.tabs.onRemoved.addListener((tabId) => {
   for (const [token, grant] of exportBypassTokens) if (grant && grant.tabId === tabId) exportBypassTokens.delete(token);
   for (const [requestId, grant] of standaloneExportBypassRequests) if (grant && grant.tabId === tabId) standaloneExportBypassRequests.delete(requestId);
   historyByTab.delete(tabId);
+  if (PAGINATED_HISTORY) PAGINATED_HISTORY.clear(tabId);
   sessionWriteQueues.delete(sessionKey(STATS_KEY_PREFIX, tabId));
   sessionWriteQueues.delete(sessionKey(HISTORY_KEY_PREFIX, tabId));
   if (browser.storage.session) {

@@ -9,6 +9,10 @@ assert.equal(endpoint.conversationId(pluralLive), "123e4567-e89b-12d3-a456-42661
 assert.equal(endpoint.parse(pluralLive).family, "conversations");
 assert.equal(endpoint.conversationId("https://chatgpt.com/backend-api/conversation/legacy-id"), "legacy-id");
 assert.equal(endpoint.parse("/backend-api/conversations/current-id/?cursor=older", "https://chatgpt.com/c/current-id").id, "current-id");
+assert.equal(endpoint.messagesPageConversationId("/backend-api/conversations/current-id/messages?before=older", "https://chatgpt.com/c/current-id"), "current-id");
+assert.equal(endpoint.parseMessagesPage("/backend-api/conversations/current-id/messages?before=older", "https://chatgpt.com/c/current-id").before, "older");
+assert.equal(endpoint.isConversationDocument("/backend-api/conversations/current-id/messages?before=older", "https://chatgpt.com/c/current-id"), false);
+assert.equal(endpoint.isConversationMessagesPage("/backend-api/conversations/current-id/messages?before=older", "https://chatgpt.com/c/current-id"), true);
 
 for (const url of [
   "https://chatgpt.com/backend-api/conversations",
