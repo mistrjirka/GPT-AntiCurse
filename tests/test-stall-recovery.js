@@ -22,25 +22,25 @@ assert.equal(chromeReload, firefoxReload, "reload state helper must stay byte-id
 assert.equal(statusUi, firefoxStatusUi, "recovery status UI must stay byte-identical");
 
 assert(chromeSource.includes("const STALL_TIMEOUT_MS = 120_000;"));
-assert(chromeSource.includes("const PHASE_TIMEOUT_MS = 120_000;"), "loading, Stop settlement and Send readiness must share the fixed two-minute ceiling");
+assert(chromeSource.includes("const PHASE_TIMEOUT_MS = 120_000;"));
 assert(!chromeSource.includes("300_000"));
 assert(!chromeSource.includes("stallRecoveryToolTimeoutSeconds"));
 assert(!chromeSource.includes("stallRecoveryGraceSeconds"));
 assert(!chromeSource.includes("runningTool("));
-assert(!chromeSource.includes("requestAnimationFrame("), "hidden-tab recovery must not depend on rAF");
-assert(!chromeSource.includes("setInterval("), "recovery remains deadline/event driven");
+assert(!chromeSource.includes("requestAnimationFrame("));
+assert(!chromeSource.includes("setInterval("));
 assert(chromeSource.includes("queueMicrotask("));
 assert(chromeSource.includes("function newestAssistantTurn"));
 assert(chromeSource.includes("function newestAssistantStreaming"));
-assert(chromeSource.includes("return !stopButton() && !newestAssistantStreaming() && composerIdle();"), "stale historical streaming markers must not hold Stop open");
-assert(chromeSource.includes("const status = await streamStatus(id);"), "DOM Stop settlement must be confirmed by backend state");
-assert(chromeSource.includes("status !== null && status !== \"IS_STREAMING\""));
+assert(chromeSource.includes("return !stopButton() && !newestAssistantStreaming() && composerIdle();"));
+assert(chromeSource.includes("const status = await streamStatus(id);"));
+assert(chromeSource.includes('status !== null && status !== "IS_STREAMING"'));
 assert(chromeSource.includes("function restoreReloadTransaction"));
-assert(chromeSource.includes("guardedReload(\"loading-timeout\""), "pre-output/shell loading must reload after two minutes");
-assert(chromeSource.includes("guardedReload(\"stop-timeout\""), "stuck Stop cancellation must use the one guarded reload");
-assert(chromeSource.includes("guardedReload(\"send-readiness-timeout\""), "stuck Send readiness must use the one guarded reload");
-assert(chromeSource.includes("performStopAndResume({ id: marker.conversationId, key, allowReload: false })"), "post-reload running state must Stop once more without another reload");
-assert(chromeSource.includes("const sent = await sendNudge(marker.turnKey)"), "post-reload stopped state must resume directly");
+assert(chromeSource.includes('guardedReload("loading-timeout"'));
+assert(chromeSource.includes('guardedReload("stop-timeout"'));
+assert(chromeSource.includes('guardedReload("send-readiness-timeout"'));
+assert(chromeSource.includes("performStopAndResume({ id: marker.conversationId, key, allowReload: false })"));
+assert(chromeSource.includes("const sent = await sendNudge(marker.turnKey)"));
 assert(chromeSource.includes("attemptedTurns"));
 assert(chromeSource.includes("lastRecoveryFailure"));
 assert(chromeSource.includes("transitions: transitionLog.slice()"));
@@ -48,16 +48,16 @@ assert(chromeSource.includes("COMPOSER_INPUT.insertNudge"));
 assert(chromeSource.includes("COMPOSER_INPUT.clearNudge"));
 assert(chromeSource.includes("armNudge(originalKey)"));
 assert(chromeSource.includes("blockedClickCount"));
-assert(chromeSource.includes("modelState().decision === \"pro\""));
-assert(chromeSource.includes("if (state.autoRecoveryAllowed !== true)"), "unknown and Pro states must fail closed");
+assert(chromeSource.includes('modelState().decision === "pro"'));
+assert(chromeSource.includes("if (state.autoRecoveryAllowed !== true)"));
 assert(chromeSource.includes("if (hasUserDraft())"));
 
-assert(chromeInput.includes('document.execCommand("insertText"'), "controlled editor input must prefer the browser editing path");
-assert(chromeInput.includes("input-event-fallback"), "DOM/InputEvent fallback remains available for compatible editors");
-assert(chromeInput.includes("function clearNudge"), "rollback must use the editor-aware helper too");
+assert(chromeInput.includes('document.execCommand("insertText"'));
+assert(chromeInput.includes("input-event-fallback"));
+assert(chromeInput.includes("function clearNudge"));
 assert(!chromeInput.includes("innerHTML"));
 
-assert(chromeReload.includes("const MAX_RELOADS = 1;"), "one recovery transaction may reload at most once");
+assert(chromeReload.includes("const MAX_RELOADS = 1;"));
 assert(chromeReload.includes("reload-already-used"));
 assert(chromeReload.includes("sessionStorage.setItem"));
 assert(chromeReload.includes("sessionStorage.removeItem"));
@@ -65,7 +65,7 @@ assert(chromeReload.includes("sessionStorage.removeItem"));
 for (const expected of ['return "Pro off"', 'return "model ?"', 'return "stopping"', 'return "sending"', 'return "sent…"', 'return "reload"', 'return "resume"']) {
   assert(statusUi.includes(expected), `compact recovery UI missing ${expected}`);
 }
-assert(statusUi.includes("load ${countdown(value.remainingMs)}"));
+assert(statusUi.includes('`load ${countdown(value.remainingMs)}`'));
 
 for (const [browser, manifest] of [["chrome", chromeManifest], ["firefox", firefoxManifest]]) {
   assert.equal(manifest.version, "0.7.6", `${browser} manifest must identify the 0.7.6 candidate`);
