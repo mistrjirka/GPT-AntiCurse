@@ -26,7 +26,7 @@
     return Number.isFinite(at) && at > 0 && Date.now() - at <= TTL_MS;
   }
 
-  function read(id = conversationId()) {
+  function readRaw(id = conversationId()) {
     if (!id) return null;
     try {
       const parsed = JSON.parse(sessionStorage.getItem(key(id)) || "null");
@@ -38,10 +38,12 @@
     return null;
   }
 
-  function pending(id = conversationId()) {
-    const marker = read(id);
+  function read(id = conversationId()) {
+    const marker = readRaw(id);
     return marker && !terminal(marker) ? marker : null;
   }
+
+  function pending(id = conversationId()) { return read(id); }
 
   function write(marker) {
     if (!marker || !marker.conversationId) return false;
@@ -55,14 +57,15 @@
     }
   }
 
-  function sameTurn(a, b) {
-    if (!a || !b) return true;
-    return a === b;
+  function sameTurn(existingKey, nextKey) {
+    if (existingKey && nextKey) return existingKey === nextKey;
+    if (!existingKey && nextKey) return false;
+    return true;
   }
 
   function armReload({ conversationId: id = conversationId(), turnKey = null, reason = "unknown", modelSlug = null } = {}) {
     if (!id) return { ok: false, reason: "no-conversation", marker: null };
-    const existing = read(id);
+    const existing = readRaw(id);
     if (existing && Number(existing.reloadCount || 0) >= MAX_RELOADS && sameTurn(existing.turnKey, turnKey)) {
       rejectedReloads++;
       return { ok: false, reason: "reload-already-used", marker: existing };
@@ -85,7 +88,7 @@
 
   function updateStage(stage, extra = {}) {
     const id = conversationId();
-    const marker = read(id);
+    const marker = readRaw(id);
     if (!marker) return null;
     const next = {
       ...marker,
@@ -103,14 +106,16 @@
 
   function clear(id = conversationId()) {
     if (!id) return false;
-    try {
-      sessionStorage.removeItem(key(id));
-      clears++;
-      return true;
-    } catch (error) {
-      lastError = String(error && error.message ? error.message : error);
-      return false;
-    }
+    const marker = readRaw(id);
+    if (!marker) return false;
+    const done = {
+      ...marker,
+      stage: terminal(marker) ? marker.stage : "finished-cleared",
+      updatedAt: Date.now()
+    };
+    if (!write(done)) return false;
+    clears++;
+    return true;
   }
 
   globalThis.CGAntiCurseRecoveryReloadState = {
@@ -124,7 +129,7 @@
       return {
         present: true,
         conversationId: conversationId(),
-        marker: read(),
+        marker: readRaw(),
         pending: pending(),
         ttlSeconds: TTL_MS / 1000,
         maxReloads: MAX_RELOADS,
