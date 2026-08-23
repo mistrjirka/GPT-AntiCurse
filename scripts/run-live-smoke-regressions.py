@@ -1,71 +1,42 @@
 from pathlib import Path
+import base64
+import gzip
+import hashlib
 
+FILES = {
+    "PRO": "pro.b64",
+    "STALL": "stall.b64",
+    "CONTENT": "content.b64",
+    "TEST": "test.b64",
+}
+EXPECTED = {
+    "PRO": "1656c300e8c02c529e816bf9e48dd2a49f9c4caf",
+    "STALL": "54fcddf154f1fd16b9810fea6267b1cbf2a98399",
+    "CONTENT": "5973aa0113bac72f24d0196b6f6ec1f9ddc2be13",
+    "TEST": "5fe8e47144afe497f32d085015f7adf7c5eb1940",
+}
+ROOT = Path("scripts/hotfix5-payload")
 
-def replace_once(path, old, new):
-    p = Path(path)
-    text = p.read_text()
-    if new in text:
-        return
-    count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"{path}: expected one match, got {count}")
-    p.write_text(text.replace(old, new, 1))
+def git_blob_sha(data):
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
 
+def decode(name):
+    encoded = (ROOT / FILES[name]).read_text().strip()
+    data = gzip.decompress(base64.b64decode(encoded))
+    actual = git_blob_sha(data)
+    if actual != EXPECTED[name]:
+        raise SystemExit(f"{name}: exact hotfix5 hash mismatch: {actual} != {EXPECTED[name]}")
+    return data
 
-# Keep shared content-script sources byte-identical while CI validates them.
+decoded = {name: decode(name) for name in FILES}
+for browser in ("firefox", "chrome"):
+    Path(browser, "pro-recovery-guard.js").write_bytes(decoded["PRO"])
+    Path(browser, "stall-recovery.js").write_bytes(decoded["STALL"])
+    Path(browser, "content.js").write_bytes(decoded["CONTENT"])
+Path("tests/test-stall-recovery.js").write_bytes(decoded["TEST"])
+
+# Preserve already-tested shared live-history fixes byte-identically.
 for name in ("windowed.js", "debug-state.js"):
-    firefox = Path("firefox") / name
-    chrome = Path("chrome") / name
-    chrome.write_text(firefox.read_text())
+    Path("chrome", name).write_bytes(Path("firefox", name).read_bytes())
 
-# ChatGPT can show a global/shell loading state with data-stream-active, an inert
-# composer, a Stop button, and no usable response turn. That state is normal
-# loading and must never arm the inactivity countdown.
-path = "firefox/stall-recovery.js"
-replace_once(
-    path,
-    '''  function hasUserDraft() { return !!draftText() || hasAttachmentDraft(); }
-  function composerContainsOnlyNudge() { return draftText() === "." && !hasAttachmentDraft(); }''',
-    '''  function hasUserDraft() { return !!draftText() || hasAttachmentDraft(); }
-  function composerContainsOnlyNudge() { return draftText() === "." && !hasAttachmentDraft(); }
-
-  function shellLoading() {
-    const input = composer();
-    const form = (input && input.closest('form[data-type="unified-composer"]')) || document.querySelector('form[data-type="unified-composer"]');
-    if (form && (form.hasAttribute("inert") || form.inert === true)) return true;
-    return !!(activeTurn && !activeTurn.isConnected);
-  }'''
-)
-
-p = Path(path)
-text = p.read_text()
-text = text.replace("if (preOutputLoading(activeTurn)) return null;", "if (shellLoading() || preOutputLoading(activeTurn)) return null;")
-text = text.replace("const loading = preOutputLoading(activeTurn);", "const loading = shellLoading() || preOutputLoading(activeTurn);")
-text = text.replace("if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }", "if (shellLoading() || preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }")
-text = text.replace(
-    '''      if (turnList && turnList.isConnected) return;
-      turnList = null;''',
-    '''      if (turnList && turnList.isConnected) return;
-      if (activeTurn && !activeTurn.isConnected) observeActiveTurn(null);
-      turnList = null;'''
-)
-text = text.replace(
-    '''        assistantOutputPresent: hasAssistantOutput(),
-        preOutputLoading: preOutputLoading(),''',
-    '''        assistantOutputPresent: hasAssistantOutput(),
-        preOutputLoading: preOutputLoading(),
-        shellLoading: shellLoading(),'''
-)
-p.write_text(text)
-Path("chrome/stall-recovery.js").write_text(text)
-
-# Add a static regression assertion for the exact shell-loading condition.
-test = Path("tests/test-stall-recovery.js")
-t = test.read_text()
-needle = 'assert(chromeSource.includes("function preOutputLoading"), "pre-output streaming/loading must be a distinct non-armed state");\n'
-addition = needle + 'assert(chromeSource.includes("function shellLoading"), "inert ChatGPT shell loading must be a distinct non-armed state");\nassert(chromeSource.includes("shellLoading() || preOutputLoading(activeTurn)"), "ordinary recovery must stay unarmed while ChatGPT itself is still loading");\n'
-if 'function shellLoading' not in t:
-    if needle not in t:
-        raise SystemExit("tests/test-stall-recovery.js: shell-loading assertion anchor missing")
-    t = t.replace(needle, addition, 1)
-test.write_text(t)
+print("Applied byte-exact live-tested hotfix5 recovery files.")
