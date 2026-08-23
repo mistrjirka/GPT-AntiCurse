@@ -11,8 +11,6 @@
   const BLOCK_EVENT = '__gpt_anticurse_pro_recovery_blocked__';
   const CONFIRMED_NON_PRO_LABELS = new Set([
     "instant", "thinking",
-    // Capture-backed fallbacks only. Primary classification resolves the
-    // localized displayed preset through ChatGPT's own preset -> lane mapping.
     "medium", "high", "extra high",
     "okamžitá", "střední", "vysoká", "velmi vysoká"
   ]);
@@ -48,7 +46,6 @@
   function streamingLabelIsPro(value) {
     const label = normalize(value);
     if (!label) return false;
-    // Arbitrary translated status prose must never count as model evidence.
     return label === "pro" || label === "pro thinking" || label.startsWith("pro thinking ") || /^model\s+pro(?:\s|$)/.test(label);
   }
 
@@ -75,8 +72,6 @@
 
   function requestModelSlugForTurn(turn) {
     if (!turn) return null;
-    // The request model belongs to the immediately preceding rendered user turn.
-    // Skip virtualization placeholders, but never reuse an arbitrary older turn.
     let container = turn;
     while (container.parentElement?.matches?.(TURN_CONTAINER_SELECTOR)) container = container.parentElement;
     let node = container.previousElementSibling;
@@ -126,9 +121,7 @@
   function buildPresetLaneMap() {
     const scripts = document.scripts || [];
     if (presetLaneCacheBuilt && presetLaneCacheScriptCount === scripts.length) return presetLaneCache;
-
     const next = new Map();
-    // Resolve translated visible preset labels through ChatGPT's own canonical lane data.
     const pattern = /selected_display_title:"((?:\\.|[^"\\])*)"[^{}]{0,700}?lane:"(instant|thinking|pro)"/g;
     for (const script of scripts) {
       const text = String(script.textContent || "");
@@ -149,7 +142,6 @@
     const map = buildPresetLaneMap();
     const exact = map.get(key);
     if (PRESET_LANES.has(exact)) return exact;
-
     let resolved = null;
     let bestLength = -1;
     for (const [candidate, lane] of map) {
@@ -188,9 +180,6 @@
     let detectionSource = null;
     const source = (name) => sourcePrefix ? `${sourcePrefix}${name}` : name;
 
-    // The request/message slug is strongest. Current explicit Pro picker evidence
-    // also overrides a completed non-Pro request because the user may switch to Pro
-    // while recovery is between Stop/reload and Send.
     if (modelSlugIsPro(modelSlug)) {
       decision = "pro";
       detectionSource = source(directModelSlug ? "message-model-slug" : "request-model-slug");
@@ -230,14 +219,11 @@
     };
   }
 
-  function activeRecoveryState() {
-    return classifyTurn(activeStreamingTurn(), { allowStreamingStatus: true });
-  }
-
   function completedRecoveryState(expectedTurnKey = null) {
     const turn = newestAssistantTurn();
     const key = turnKey(turn);
     if (!turn || (expectedTurnKey && key !== expectedTurnKey)) {
+      const label = selectedComposerModelLabel();
       return {
         turn,
         turnKey: key,
@@ -245,8 +231,8 @@
         directModelSlug: null,
         requestModelSlug: null,
         proStatusLabel: null,
-        selectedModelLabel: selectedComposerModelLabel(),
-        selectedModelLane: selectedComposerModelLane(selectedComposerModelLabel()),
+        selectedModelLabel: label,
+        selectedModelLane: selectedComposerModelLane(label),
         decision: "unknown",
         detectionSource: expectedTurnKey && key ? "completed-turn-mismatch" : "completed-turn-unavailable",
         pro: false,
@@ -254,6 +240,19 @@
       };
     }
     return classifyTurn(turn, { allowStreamingStatus: false, sourcePrefix: "completed-" });
+  }
+
+  function activeRecoveryState() {
+    const active = activeStreamingTurn();
+    if (active) return classifyTurn(active, { allowStreamingStatus: true });
+    // Only a pending AntiCurse reload transaction may use a stopped/completed turn
+    // as the current model identity. Normal idle pages remain classified from the
+    // composer alone, so this does not create a general synthetic-Send exemption.
+    const reload = globalThis.CGAntiCurseRecoveryReloadState;
+    let marker = null;
+    try { marker = reload && typeof reload.read === "function" ? reload.read() : null; } catch { marker = null; }
+    if (marker && marker.turnKey) return completedRecoveryState(marker.turnKey);
+    return classifyTurn(null, { allowStreamingStatus: false });
   }
 
   function composerContainsOnlyNudge() {
@@ -287,11 +286,8 @@
   function recoveryNudgeState(expectedTurnKey = null) {
     const state = activeRecoveryState();
     if (state.decision === "pro" || state.autoRecoveryAllowed) return state;
-
     const handoff = clearExpiredAllowedNudge();
     if (handoff && handoff.decision === "non-pro" && (!expectedTurnKey || handoff.turnKey === expectedTurnKey)) {
-      // Missing composer evidence is allowed during cancellation. Any explicit model
-      // change invalidates the handoff, while current Pro was already returned above.
       if (!(state.selectedModelLabel && handoff.selectedModelLabel &&
           normalize(state.selectedModelLabel) !== normalize(handoff.selectedModelLabel))) {
         return {
@@ -305,11 +301,6 @@
         };
       }
     }
-
-    // After the one guarded reload the original request may already be stopped, so
-    // there is no active streaming turn to classify. Reuse only the exact newest
-    // completed assistant turn and its immediately preceding request. A mismatch
-    // fails closed; current composer Pro evidence still wins in classifyTurn().
     const completed = completedRecoveryState(expectedTurnKey);
     if (completed.decision === "pro" || completed.autoRecoveryAllowed) return completed;
     return state;
@@ -353,7 +344,6 @@
     if (!(target instanceof Element)) return;
     const button = target.closest(SUBMIT_SELECTOR);
     if (!button) return;
-
     if (event.isTrusted) {
       allowedRecoveryNudge = null;
       return;
@@ -361,7 +351,6 @@
 
     const state = activeRecoveryState();
     const stop = button.getAttribute("data-testid") === "stop-button";
-
     if (stop) {
       if (!state.autoRecoveryAllowed) {
         block(event, state, "stop");
@@ -372,7 +361,6 @@
     }
 
     if (!composerContainsOnlyNudge()) return;
-
     const allowedNudge = clearExpiredAllowedNudge();
     if (state.autoRecoveryAllowed) {
       allowedRecoveryNudge = null;
@@ -397,9 +385,7 @@
     completedRecoveryState,
     recoveryNudgeState,
     armRecoveryNudge,
-    autoRecoveryAllowed() {
-      return activeRecoveryState().autoRecoveryAllowed;
-    },
+    autoRecoveryAllowed() { return activeRecoveryState().autoRecoveryAllowed; },
     debug() {
       const state = activeRecoveryState();
       const completed = completedRecoveryState();
