@@ -2,10 +2,13 @@
 (() => {
   "use strict";
 
+  const ext = typeof browser !== "undefined" ? browser : chrome;
   const EVENT = "__gpt_anticurse_stall_status__";
   const BADGE_ID = "cg-conversation-guard-status";
   let status = null;
   let queued = false;
+  let recoveryWasActive = false;
+  let showGuardNotice = true;
 
   function countdown(value) {
     const seconds = Math.max(0, Math.ceil((Number(value) || 0) / 1000));
@@ -30,11 +33,22 @@
     }
   }
 
+  function ensureBadge() {
+    let badge = document.getElementById(BADGE_ID);
+    if (badge || !showGuardNotice) return badge;
+    badge = document.createElement("div");
+    badge.id = BADGE_ID;
+    badge.title = "GPT AntiCurse";
+    (document.body || document.documentElement).appendChild(badge);
+    return badge;
+  }
+
   function render() {
     queued = false;
     const text = label(status);
-    const badge = document.getElementById(BADGE_ID);
-    if (!text || !badge) return;
+    if (!text) return;
+    const badge = ensureBadge();
+    if (!badge) return;
     const phase = status.phase || (status.longWaitBanner ? "now" : "countdown");
     const currentState = badge.querySelector(".cg-state");
     if (badge.dataset.recoveryPhase === phase && currentState && currentState.textContent === text) return;
@@ -58,8 +72,30 @@
   }
 
   window.addEventListener(EVENT, (event) => {
-    status = event && event.detail && event.detail.active === true ? { ...event.detail } : null;
-    scheduleRender();
+    const detail = event && event.detail;
+    const active = !!(detail && detail.active === true);
+    status = active ? { ...detail } : null;
+
+    if (active) {
+      recoveryWasActive = true;
+      // recovery-status-ui is intentionally loaded before legacy content.js.
+      // While recovery is active, this compact renderer exclusively owns the
+      // badge so the old wide renderer cannot mutate it and feed the watchdog's
+      // global MutationObserver back into another status publication.
+      event.stopImmediatePropagation();
+      scheduleRender();
+      return;
+    }
+
+    if (recoveryWasActive) {
+      // Let exactly one inactive transition reach content.js so the normal trim
+      // badge can be restored. The DOM mutation caused by that restoration can
+      // provoke another inactive status event; subsequent ones are suppressed.
+      recoveryWasActive = false;
+      return;
+    }
+
+    event.stopImmediatePropagation();
   }, true);
 
   const observer = new MutationObserver(() => {
@@ -68,4 +104,14 @@
   const start = () => observer.observe(document.body || document.documentElement, { childList: true, subtree: false });
   if (document.body) start();
   else document.addEventListener("DOMContentLoaded", start, { once: true });
+
+  ext.storage?.local?.get({ showGuardNotice: true }).then((saved) => {
+    showGuardNotice = saved.showGuardNotice !== false;
+    if (status && showGuardNotice) scheduleRender();
+  }).catch(() => {});
+  ext.storage?.onChanged?.addListener((changes, area) => {
+    if (area !== "local" || !changes.showGuardNotice) return;
+    showGuardNotice = changes.showGuardNotice.newValue !== false;
+    if (status && showGuardNotice) scheduleRender();
+  });
 })();
