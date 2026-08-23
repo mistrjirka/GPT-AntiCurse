@@ -101,7 +101,10 @@ function fixtureHtml() {
     setStop();
   }
 
-  if (id === 'stale-stop') makeTurn(-1, { output: true, streaming: true });
+  if (id === 'stale-stop' && active) {
+    const stale = makeTurn(-1, { output: true, streaming: true });
+    list.insertBefore(stale.wrapper, active.wrapper);
+  }
   if (id === 'system-delay-banner' && active) {
     const banner = document.createElement('span');
     banner.className = 'loading-shimmer-tertiary';
