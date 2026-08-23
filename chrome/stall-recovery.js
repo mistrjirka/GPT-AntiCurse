@@ -34,6 +34,7 @@
   let monitorGeneration = 0;
   let transaction = null;
   const attemptedTurns = new Set();
+  const backendSettledTurns = new Set();
   let attemptedTurnKey = null;
   let recoveryStartedAt = 0;
   let lastRecoveryFinishedAt = 0;
@@ -100,6 +101,12 @@
     return (section && (section.getAttribute("data-turn-id") || section.getAttribute("data-testid"))) || turn.getAttribute?.("data-turn-id-container") || null;
   }
 
+  function rememberBackendSettled(key) {
+    if (!key) return;
+    backendSettledTurns.add(key);
+    if (backendSettledTurns.size > 256) backendSettledTurns.delete(backendSettledTurns.values().next().value);
+  }
+
   function newestAssistantTurn() {
     const turns = document.querySelectorAll(TURN_CONTAINER_SELECTOR);
     for (let index = turns.length - 1; index >= 0; index--) {
@@ -111,7 +118,8 @@
 
   function findActiveTurn() {
     const newest = newestAssistantTurn();
-    return newest && newest.querySelector(STREAMING_SELECTOR) ? newest : null;
+    if (!newest || !newest.querySelector(STREAMING_SELECTOR)) return null;
+    return backendSettledTurns.has(turnKey(newest)) ? null : newest;
   }
 
   function newestAssistantStreaming() {
@@ -186,7 +194,7 @@
   function publishStatus() {
     clearCountdownTimer();
     const state = modelState();
-    const running = !!activeTurn || !!stopButton() || shellRunLoading();
+    const running = !!activeTurn || shellRunLoading();
     const active = settings.stallRecoveryEnabled && (!!transaction || running);
     if (!active) {
       window.dispatchEvent(new CustomEvent(STATUS_EVENT, { detail: { active: false, conversationId: conversationId() } }));
@@ -518,9 +526,19 @@
     const key = activeTurnKey;
     const generation = monitorGeneration;
     if (!longWait) {
-      if (await streamStatus(id) !== "IS_STREAMING") { scheduleSync(); return; }
+      if (await streamStatus(id) !== "IS_STREAMING") {
+        rememberBackendSettled(key);
+        observeTurn(null);
+        publishStatus();
+        return;
+      }
       if (generation !== monitorGeneration || key !== activeTurnKey || hasUserDraft() || !stopButton()) return;
-      if (await streamStatus(id) !== "IS_STREAMING") { scheduleSync(); return; }
+      if (await streamStatus(id) !== "IS_STREAMING") {
+        rememberBackendSettled(key);
+        observeTurn(null);
+        publishStatus();
+        return;
+      }
       if (generation !== monitorGeneration || key !== activeTurnKey) return;
     } else if (!hasLongWaitBanner(activeTurn) || !stopButton()) return;
     if (modelState().autoRecoveryAllowed !== true) return;
@@ -667,6 +685,7 @@
         shellLoadingStartedAt,
         attemptedTurnKey,
         attemptedTurnCount: attemptedTurns.size,
+        backendSettledTurnCount: backendSettledTurns.size,
         timeoutSeconds: STALL_TIMEOUT_MS / 1000,
         phaseTimeoutSeconds: PHASE_TIMEOUT_MS / 1000,
         sendConfirmTimeoutSeconds: SEND_CONFIRM_TIMEOUT_MS / 1000,
