@@ -30,16 +30,17 @@ function fixtureHtml(id, loadNumber) {
 <script>
 (() => {
   const id=${JSON.stringify(id)};
+  const sendKey='fixture-sends:'+id;
   const button=document.getElementById('composer-submit-button');
   const composer=document.getElementById('prompt-textarea');
   const streamingNode=document.querySelector('[data-streaming-response-status]');
-  const state=window.__state={id,loadNumber:${loadNumber},stopClicks:0,sends:Number(sessionStorage.getItem('fixture-sends')||0),sentText:''};
+  const state=window.__state={id,loadNumber:${loadNumber},stopClicks:0,sends:Number(sessionStorage.getItem(sendKey)||0),sentText:''};
   function setSend(){ button.setAttribute('data-testid','send-button'); button.textContent='Send'; button.disabled=false; streamingNode?.removeAttribute('data-streaming-response-status'); return true; }
   button.addEventListener('click',()=>{
     if(button.getAttribute('data-testid')==='stop-button') { state.stopClicks++; setSend(); return; }
     if(button.disabled) return;
     const text=(composer.textContent||'').trim();
-    state.sends++; state.sentText=text; sessionStorage.setItem('fixture-sends',String(state.sends));
+    state.sends++; state.sentText=text; sessionStorage.setItem(sendKey,String(state.sends));
     composer.replaceChildren(); button.setAttribute('data-testid','stop-button'); button.textContent='Stop';
   });
   window.__finishRun=setSend;
@@ -100,10 +101,10 @@ async function debugFor(worker, suffix) {
     {
       const page = await context.newPage();
       await page.goto("https://chatgpt.com/c/tool-ended", { waitUntil: "load" });
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(1100);
       assert.equal(await page.evaluate(() => window.__finishRun()), true);
       try {
-        await page.waitForFunction(() => Number(sessionStorage.getItem('fixture-sends') || 0) === 1, null, { timeout: 5000 });
+        await page.waitForFunction(() => Number(sessionStorage.getItem('fixture-sends:tool-ended') || 0) === 1, null, { timeout: 5000 });
       } catch (error) {
         console.error("tool-ended debug", JSON.stringify(await debugFor(worker, "tool-ended")));
         throw error;
@@ -118,17 +119,17 @@ async function debugFor(worker, suffix) {
     {
       const page = await context.newPage();
       await page.goto("https://chatgpt.com/c/useful-answer", { waitUntil: "load" });
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(1100);
       assert.equal(await page.evaluate(() => window.__finishRun()), true);
       await page.waitForTimeout(1400);
-      assert.equal(await page.evaluate(() => Number(sessionStorage.getItem('fixture-sends') || 0)), 0, "useful Markdown answer must not auto-continue");
+      assert.equal(await page.evaluate(() => Number(sessionStorage.getItem('fixture-sends:useful-answer') || 0)), 0, "useful Markdown answer must not auto-continue");
       await page.close();
     }
 
     {
       const page = await context.newPage();
       await page.goto("https://chatgpt.com/c/manual-stop", { waitUntil: "load" });
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(1100);
       await page.locator('#composer-submit-button[data-testid="stop-button"]').click();
       await page.waitForTimeout(1400);
       const state = await page.evaluate(() => window.__state);
@@ -141,7 +142,7 @@ async function debugFor(worker, suffix) {
       const page = await context.newPage();
       await page.goto("https://chatgpt.com/c/network-reload", { waitUntil: "domcontentloaded" });
       try {
-        await page.waitForFunction(() => Number(sessionStorage.getItem('fixture-sends') || 0) === 1, null, { timeout: 7000 });
+        await page.waitForFunction(() => Number(sessionStorage.getItem('fixture-sends:network-reload') || 0) === 1, null, { timeout: 7000 });
       } catch (error) {
         console.error("network-reload debug", JSON.stringify(await debugFor(worker, "network-reload")));
         throw error;
