@@ -30,11 +30,7 @@
   async function backendHistory(id, limit) {
     if (!id) return { ok: false, reason: "not-a-conversation" };
     try {
-      const value = await ext.runtime.sendMessage({
-        type: "cg-get-window-history",
-        conversationId: id,
-        maxDisplayMessages: limit
-      });
+      const value = await ext.runtime.sendMessage({ type: "cg-get-window-history", conversationId: id, maxDisplayMessages: limit });
       return summarizeHistoryResult(value);
     } catch (error) {
       return { ok: false, reason: "runtime-message-failed", error: String(error && error.message ? error.message : error) };
@@ -44,11 +40,14 @@
   function historyControllerState() {
     const controller = globalThis.CGAntiCurseHistoryDebug;
     if (!controller || typeof controller.debug !== "function") return { present: !!controller };
-    try {
-      return { present: true, ...controller.debug() };
-    } catch (error) {
-      return { present: true, debugError: String(error && error.message ? error.message : error) };
-    }
+    try { return { present: true, ...controller.debug() }; }
+    catch (error) { return { present: true, debugError: String(error && error.message ? error.message : error) }; }
+  }
+
+  function debugOf(name) {
+    const value = globalThis[name];
+    try { return value && typeof value.debug === "function" ? { present: true, ...value.debug() } : { present: !!value }; }
+    catch (error) { return { present: !!value, debugError: String(error && error.message ? error.message : error) }; }
   }
 
   async function snapshot() {
@@ -70,11 +69,8 @@
     const marker = host && host.querySelector(".cg-history-marker");
     const bridge = globalThis.CGAntiCurseArchiveBridge;
     let bridgeState = null;
-    try {
-      bridgeState = bridge && typeof bridge.debug === "function" ? bridge.debug() : { present: !!bridge };
-    } catch (error) {
-      bridgeState = { present: !!bridge, debugError: String(error && error.message ? error.message : error) };
-    }
+    try { bridgeState = bridge && typeof bridge.debug === "function" ? bridge.debug() : { present: !!bridge }; }
+    catch (error) { bridgeState = { present: !!bridge, debugError: String(error && error.message ? error.message : error) }; }
 
     return {
       version: ext.runtime.getManifest().version,
@@ -111,21 +107,11 @@
         syntheticTurns: host ? host.querySelectorAll(".cg-history-turn").length : 0
       },
       historyController: historyControllerState(),
-      proRecoveryGuard: (() => {
-        const guard = globalThis.CGAntiCurseProRecoveryGuard;
-        try { return guard && typeof guard.debug === "function" ? { present: true, ...guard.debug() } : { present: !!guard }; }
-        catch (error) { return { present: !!guard, debugError: String(error && error.message ? error.message : error) }; }
-      })(),
-      stallRecovery: (() => {
-        const recovery = globalThis.CGAntiCurseStallRecovery;
-        try { return recovery && typeof recovery.debug === "function" ? { present: true, ...recovery.debug() } : { present: !!recovery }; }
-        catch (error) { return { present: !!recovery, debugError: String(error && error.message ? error.message : error) }; }
-      })(),
-      deliveryTimeoutReload: (() => {
-        const recovery = globalThis.CGAntiCurseDeliveryTimeoutReload;
-        try { return recovery && typeof recovery.debug === "function" ? { present: true, ...recovery.debug() } : { present: !!recovery }; }
-        catch (error) { return { present: !!recovery, debugError: String(error && error.message ? error.message : error) }; }
-      })(),
+      proRecoveryGuard: debugOf("CGAntiCurseProRecoveryGuard"),
+      stallRecovery: debugOf("CGAntiCurseStallRecovery"),
+      recoveryComposerInput: debugOf("CGAntiCurseComposerInput"),
+      recoveryReloadState: debugOf("CGAntiCurseRecoveryReloadState"),
+      deliveryTimeoutReload: debugOf("CGAntiCurseDeliveryTimeoutReload"),
       archiveBridge: bridgeState,
       backendHistory: await backendHistory(id, Number(saved.maxDisplayMessages) || 64),
       lastIssue: saved.cgLastIssue || null

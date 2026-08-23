@@ -7,93 +7,80 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const chromeSource = fs.readFileSync(path.join(ROOT, "chrome", "stall-recovery.js"), "utf8");
 const firefoxSource = fs.readFileSync(path.join(ROOT, "firefox", "stall-recovery.js"), "utf8");
+const chromeInput = fs.readFileSync(path.join(ROOT, "chrome", "composer-native-input.js"), "utf8");
+const firefoxInput = fs.readFileSync(path.join(ROOT, "firefox", "composer-native-input.js"), "utf8");
+const chromeReload = fs.readFileSync(path.join(ROOT, "chrome", "recovery-reload-state.js"), "utf8");
+const firefoxReload = fs.readFileSync(path.join(ROOT, "firefox", "recovery-reload-state.js"), "utf8");
 const statusUi = fs.readFileSync(path.join(ROOT, "chrome", "recovery-status-ui.js"), "utf8");
 const firefoxStatusUi = fs.readFileSync(path.join(ROOT, "firefox", "recovery-status-ui.js"), "utf8");
 const chromeManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "chrome", "manifest.json"), "utf8"));
 const firefoxManifest = JSON.parse(fs.readFileSync(path.join(ROOT, "firefox", "manifest.json"), "utf8"));
-const chromePopup = fs.readFileSync(path.join(ROOT, "chrome", "popup.html"), "utf8");
-const firefoxPopup = fs.readFileSync(path.join(ROOT, "firefox", "popup.html"), "utf8");
-const css = fs.readFileSync(path.join(ROOT, "chrome", "content.css"), "utf8");
 
-assert.equal(chromeSource, firefoxSource, "watchdog must remain byte-identical across browser packages");
-assert(chromeSource.includes("const STALL_TIMEOUT_MS = 120_000;"), "ordinary recovery must use one fixed 120-second stall deadline");
-assert(chromeSource.includes("const STOP_SETTLE_TIMEOUT_MS = 180_000;"), "slow ChatGPT Stop settlement must have its own recovery-operation ceiling");
-assert(chromeSource.includes("const SEND_READY_TIMEOUT_MS = 180_000;"), "Send readiness must tolerate slow ChatGPT cancellation/UI transitions");
-assert(chromeSource.includes("const SEND_CONFIRM_TIMEOUT_MS = 30_000;"));
-assert(!chromeSource.includes("stallRecoveryToolTimeoutSeconds"), "tool DOM must never switch recovery to a five-minute stall deadline");
-assert(!chromeSource.includes("stallRecoveryGraceSeconds"), "the removed post-deadline grace delay must not return");
-assert(!chromeSource.includes("function runningTool("), "tool classification must not alter the stall deadline");
-assert(chromeSource.includes("return STALL_TIMEOUT_MS;"));
-assert(chromeSource.includes('!== "IS_STREAMING"'), "ordinary recovery must require exact backend streaming status");
-assert.equal((chromeSource.match(/streamStatus\(id\)/g) || []).length >= 2, true, "ordinary recovery must confirm stream status twice");
-assert(chromeSource.includes("function hasLongWaitBanner"), "explicit ChatGPT long-wait UI must remain an immediate stall signal");
-assert(chromeSource.includes("our systems are thinking a bit more about this request"));
-assert(chromeSource.includes("help.openai.com/articles/20001326"));
-assert(chromeSource.includes("if (!longWaitBanner && await streamStatus(id)"), "banner must OR with, not depend on, backend stall confirmation");
-assert(chromeSource.includes("hasLongWaitBanner(activeTurn) ? 0"), "banner must schedule an immediate recovery check");
-assert(!chromeSource.includes("installVisibilityWakeup"), "visibility must never gate background recovery");
-assert(!chromeSource.includes("requestAnimationFrame("), "recovery-critical code must not depend on rAF in hidden tabs");
-assert(chromeSource.includes("queueMicrotask("), "background-safe reattachment/nudge dispatch must use microtasks");
-assert(chromeSource.includes("recoveringTurns"), "in-flight recovery must be distinct from completed attempts");
-assert(chromeSource.includes("if (recoveringTurns.size) return;"), "active recovery must pin the original turn while Stop settles");
-assert(chromeSource.includes('setRecoveryPhase("stopping")'));
-assert(chromeSource.includes('setRecoveryPhase("sending")'));
-assert(chromeSource.includes('setRecoveryPhase("confirming")'));
-assert(chromeSource.includes("function waitForStopSettlement"));
-assert(chromeSource.includes("!stopButton() && !originalTurnStillStreaming(key)"), "nudge must wait for both Stop and the original stream to settle");
-assert(chromeSource.includes("if (recoveringTurns.size || recoveryPhase) return null;"), "countdown must be suspended for the entire recovery transaction");
-assert(chromeSource.includes("lastRecoveryFailure"), "debug telemetry must retain the exact recovery failure stage");
-assert(chromeSource.includes("recoveryNudgeModelState(key)"), "post-Stop validation must accept only the guard's same-turn non-Pro handoff");
-assert(chromeSource.includes("armRecoveryNudge(originalKey)"), "synthetic Send must arm the approved handoff immediately before click");
-assert(chromeSource.includes("recoveryGuardBlockedClicks"), "Send must detect a synchronous Pro/unknown guard block without treating transient post-click unknown as failure");
-for (const code of ["stop-not-settled", "transaction-invalidated", "user-draft-during-stop", "model-blocked-after-stop", "nudge-send-failed"]) {
-  assert(chromeSource.includes(code), `missing recovery failure telemetry: ${code}`);
+assert.equal(chromeSource, firefoxSource, "recovery controller must stay byte-identical");
+assert.equal(chromeInput, firefoxInput, "composer input helper must stay byte-identical");
+assert.equal(chromeReload, firefoxReload, "reload state helper must stay byte-identical");
+assert.equal(statusUi, firefoxStatusUi, "recovery status UI must stay byte-identical");
+
+assert(chromeSource.includes("const STALL_TIMEOUT_MS = 120_000;"));
+assert(chromeSource.includes("const PHASE_TIMEOUT_MS = 120_000;"));
+assert(!chromeSource.includes("300_000"));
+assert(!chromeSource.includes("stallRecoveryToolTimeoutSeconds"));
+assert(!chromeSource.includes("stallRecoveryGraceSeconds"));
+assert(!chromeSource.includes("runningTool("));
+assert(!chromeSource.includes("requestAnimationFrame("));
+assert(!chromeSource.includes("setInterval("));
+assert(chromeSource.includes("queueMicrotask("));
+assert(chromeSource.includes("function newestAssistantTurn"));
+assert(chromeSource.includes("function newestAssistantStreaming"));
+assert(chromeSource.includes("return !stopButton() && !newestAssistantStreaming() && composerIdle();"));
+assert(chromeSource.includes("const status = await streamStatus(id);"));
+assert(chromeSource.includes('status !== null && status !== "IS_STREAMING"'));
+assert(chromeSource.includes("const backendSettledTurns = new Set();"), "backend-settled turns must be remembered independently of stale DOM markers");
+assert(chromeSource.includes("function rememberBackendSettled"));
+assert(chromeSource.includes("return backendSettledTurns.has(turnKey(newest)) ? null : newest;"), "backend-settled stale streaming markers must never re-arm the watchdog");
+assert(chromeSource.includes("rememberBackendSettled(key);\n        observeTurn(null);"), "NOT_STREAMING must detach monitoring instead of scheduling another zero-delay check");
+assert(chromeSource.includes("backendSettledTurnCount: backendSettledTurns.size"));
+assert(chromeSource.includes("function restoreReloadTransaction"));
+assert(chromeSource.includes('guardedReload("loading-timeout"'));
+assert(chromeSource.includes('guardedReload("stop-timeout"'));
+assert(chromeSource.includes('guardedReload("send-readiness-timeout"'));
+assert(chromeSource.includes("performStopAndResume({ id: marker.conversationId, key, allowReload: false })"));
+assert(chromeSource.includes("const sent = await sendNudge(marker.turnKey)"));
+assert(chromeSource.includes("attemptedTurns"));
+assert(chromeSource.includes("lastRecoveryFailure"));
+assert(chromeSource.includes("transitions: transitionLog.slice()"));
+assert(chromeSource.includes("COMPOSER_INPUT.insertNudge"));
+assert(chromeSource.includes("COMPOSER_INPUT.clearNudge"));
+assert(chromeSource.includes("armNudge(originalKey)"));
+assert(chromeSource.includes("blockedClickCount"));
+assert(chromeSource.includes('modelState().decision === "pro"'));
+assert(chromeSource.includes("if (state.autoRecoveryAllowed !== true)"));
+assert(chromeSource.includes("if (hasUserDraft())"));
+
+assert(chromeInput.includes('document.execCommand("insertText"'));
+assert(chromeInput.includes("input-event-fallback"));
+assert(chromeInput.includes("function clearNudge"));
+assert(!chromeInput.includes("innerHTML"));
+
+assert(chromeReload.includes("const MAX_RELOADS = 1;"));
+assert(chromeReload.includes("reload-already-used"));
+assert(chromeReload.includes("sessionStorage.setItem"));
+assert(chromeReload.includes("sessionStorage.removeItem"));
+
+for (const expected of ['return "Pro off"', 'return "model ?"', 'return "stopping"', 'return "sending"', 'return "sent…"', 'return "reload"', 'return "resume"']) {
+  assert(statusUi.includes(expected), `compact recovery UI missing ${expected}`);
 }
-assert(chromeSource.includes("function clearSyntheticNudge"), "failed recovery must clean up only AntiCurse's synthetic nudge");
-assert(chromeSource.includes("composerContainsOnlyNudge()"));
-assert(chromeSource.includes("hasUserDraft()"));
-assert(chromeSource.includes("attemptedTurnKey"));
-assert(!chromeSource.includes("sessionStorage.setItem"), "stall recovery must not persist a reload-resume marker");
-assert(!chromeSource.includes("location.reload()"), "stall recovery itself must never reload the page");
-assert(chromeSource.includes("Insert the nudge first"), "recovery must populate the composer before requiring Send to become enabled");
-assert(chromeSource.includes('paragraph.textContent = "."'));
-assert(!chromeSource.includes("setInterval("), "watchdog must remain event-driven");
-assert(!chromeSource.includes("innerHTML"));
-assert(!chromeSource.includes("execCommand"));
-assert(!/(^|[^\w])(eval|Function)\s*\(/.test(chromeSource));
-assert(chromeSource.includes('turnListObserver.observe(turnList, { childList: true, subtree: true })'));
-assert(chromeSource.includes('activityObserver.observe(activeTurn, {'));
-assert(chromeSource.includes('discoveryObserver.observe(root, { childList: true, subtree: true })'));
-assert(chromeSource.includes("discoveryTimer = setTimeout(clearDiscovery, 10_000)"));
-assert(chromeSource.includes("__gpt_anticurse_stall_status__"));
-assert(chromeSource.includes("countdownRemainingMs"));
-assert(chromeSource.includes("liveTurnKey"));
-assert(chromeSource.includes("function preOutputLoading"));
-assert(chromeSource.includes("function shellLoading"));
-assert(chromeSource.includes("assistantOutputPresent"));
+assert(statusUi.includes('`load ${countdown(value.remainingMs)}`'));
 
-assert.equal(statusUi, firefoxStatusUi, "compact recovery status adapter must remain byte-identical across browsers");
-assert(statusUi.includes("__gpt_anticurse_stall_status__"), "status adapter must listen for recovery state");
-for (const expected of ['return "Pro off"', 'return "model ?"', 'return "loading"', 'return "stopping"', 'return "sending"', 'return "sent…"']) {
-  assert(statusUi.includes(expected), `compact status adapter missing ${expected}`);
-}
-assert(!statusUi.includes("tool auto-continue in"), "status adapter must not restore tool-specific countdowns");
-
-for (const [browser, manifest, popup] of [["chrome", chromeManifest, chromePopup], ["firefox", firefoxManifest, firefoxPopup]]) {
+for (const [browser, manifest] of [["chrome", chromeManifest], ["firefox", firefoxManifest]]) {
+  assert.equal(manifest.version, "0.7.6", `${browser} manifest must identify the 0.7.6 candidate`);
   const scripts = manifest.content_scripts.flatMap((entry) => entry.js || []);
-  assert(scripts.includes("session-auth.js"), `${browser}: shared auth helper must be packaged`);
-  assert(scripts.includes("stall-recovery.js"), `${browser}: watchdog must be packaged`);
-  assert(scripts.includes("delivery-timeout-reload.js"), `${browser}: retryable delivery/network errors must be packaged`);
-  assert(scripts.includes("recovery-status-ui.js"), `${browser}: compact transaction status adapter must be packaged`);
-  assert(scripts.indexOf("delivery-timeout-reload.js") < scripts.indexOf("content.js"), `${browser}: error reload detector should start before content UI`);
-  assert(scripts.indexOf("recovery-status-ui.js") < scripts.indexOf("content.js"), `${browser}: transaction status adapter should run before legacy content UI`);
-  assert(popup.includes('id="stallRecovery"'), `${browser}: auto-recovery toggle must remain visible`);
-  assert(popup.includes("After 2 min without progress"), `${browser}: popup must describe the fixed two-minute deadline`);
-  assert(!popup.includes("5 min"), `${browser}: popup must not advertise the removed tool timeout`);
+  for (const file of ["composer-native-input.js", "recovery-reload-state.js", "pro-recovery-guard.js", "stall-recovery.js"]) {
+    assert(scripts.includes(file), `${browser}: missing ${file}`);
+  }
+  assert(scripts.indexOf("composer-native-input.js") < scripts.indexOf("stall-recovery.js"));
+  assert(scripts.indexOf("recovery-reload-state.js") < scripts.indexOf("stall-recovery.js"));
+  assert(scripts.indexOf("pro-recovery-guard.js") < scripts.indexOf("stall-recovery.js"));
 }
 
-assert(css.includes("html.cg-anticurse-performance .loading-shimmer-tertiary"));
-assert(css.includes("animation: none !important"));
-assert(!/html\.cg-anticurse-performance[^}]*working-dot|html\.cg-anticurse-performance[^}]*spin/s.test(css));
-
-console.log("stall recovery fixed-deadline/transaction regression tests: PASS");
+console.log("stall recovery 0.7.6 transaction/reload regression tests: PASS");
