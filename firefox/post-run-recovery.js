@@ -155,14 +155,14 @@
   function waitForCondition(test, timeoutMs) {
     return new Promise((resolve) => {
       let done = false, timer = null;
-      const local = new MutationObserver(() => { try { if (test()) finish(true); } catch {} });
+      const local = new MutationObserver(() => { try { if (test()) finish(true); } catch { /* Mutation may be mid-transition; a later mutation/poll retries. */ } });
       const finish = (value) => {
         if (done) return;
         done = true; local.disconnect();
         if (timer !== null) clearTimeout(timer);
         resolve(value);
       };
-      try { if (test()) { finish(true); return; } } catch {}
+      try { if (test()) { finish(true); return; } } catch { /* Initial DOM may be incomplete; observer/poll retries. */ }
       local.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
       timer = setTimeout(() => finish(false), timeoutMs);
     });
@@ -181,7 +181,7 @@
     const input = composer();
     if (!input || !composerContainsOnlyNudge()) return false;
     if (COMPOSER_INPUT && typeof COMPOSER_INPUT.clearExactText === "function") {
-      try { if (COMPOSER_INPUT.clearExactText(input, ".")) return true; } catch {}
+      try { if (COMPOSER_INPUT.clearExactText(input, ".")) return true; } catch { /* Fall back to DOM/InputEvent cleanup below. */ }
     }
     input.replaceChildren();
     input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward", data: null }));
