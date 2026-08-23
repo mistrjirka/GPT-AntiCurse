@@ -207,7 +207,7 @@ async function state(page) {
       let s = await state(page);
       assert.equal(s.sends, 0, "must not type/send while the original turn is still cancelling");
       assert.equal(s.draft, "", "composer must remain untouched during Stop settlement");
-      const dbg = await page.evaluate(() => globalThis.CGAntiCurseStallRecovery?.debugState?.());
+      const dbg = await page.evaluate(() => globalThis.CGAntiCurseStallRecovery?.debug?.());
       assert.equal(dbg?.recoveryPhase, "stopping");
       assert.equal(dbg?.countdownRemainingMs, null, "countdown must be suspended during slow Stop");
       await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 4000 });
