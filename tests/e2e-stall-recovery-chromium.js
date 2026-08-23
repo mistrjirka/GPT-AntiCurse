@@ -223,14 +223,19 @@ async function state(page) {
       const id = decodeURIComponent(new URL(route.request().url()).pathname.match(/\/conversation\/([^/]+)\/stream_status$/)[1]);
       const count = (statusCounts.get(id) || 0) + 1;
       statusCounts.set(id, count);
-      if (id === "reload-stopped-stale") {
+
+      if (id === "reload-stopped-stale" && count >= 4) {
         await route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
         return;
       }
+
       let streaming;
-      if (["pre-output-reload", "shell-loading-reload", "reload-pro", "reload-send-not-ready"].includes(id)) streaming = false;
-      else if (id === "reload-running") streaming = count === 1;
+      if (["pre-output-reload", "shell-loading-reload"].includes(id)) streaming = false;
+      else if (id === "reload-stopped-stale") streaming = count <= 3;
+      else if (id === "reload-running") streaming = count <= 4;
+      else if (id === "reload-pro") streaming = count <= 3;
       else if (id === "reload-loop") streaming = true;
+      else if (id === "reload-send-not-ready") streaming = count <= 2;
       else if (id === "system-delay-banner") streaming = false;
       else streaming = count <= 2;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: streaming ? "IS_STREAMING" : "NOT_STREAMING" }) });
@@ -290,9 +295,11 @@ async function state(page) {
     {
       const page = await openCase(context, "reload-running");
       await page.waitForFunction(() => window.__state.loads >= 2, null, { timeout: 5000 });
-      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 6000 });
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 7000 });
       const s = await state(page);
-      assert.equal(s.loads, 2); assert.equal(s.stopClicks, 1); assert.equal(s.sentText, ".");
+      assert.equal(s.loads, 2);
+      assert.equal(s.stopClicks, 2, "still-running page must be stopped once again after reload");
+      assert.equal(s.sentText, ".");
       await page.close();
     }
 
@@ -302,6 +309,17 @@ async function state(page) {
       await page.waitForTimeout(1200);
       const s = await state(page);
       assert.equal(s.loads, 2); assert.equal(s.sends, 0, "Pro after reload must never receive a synthetic nudge");
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "reload-send-not-ready");
+      await page.waitForFunction(() => window.__state.loads >= 2, null, { timeout: 6000 });
+      await page.waitForTimeout(2200);
+      const s = await state(page);
+      assert.equal(s.loads, 2, "send-readiness failure may reload only once");
+      assert.equal(s.sends, 0);
+      assert.equal(s.draft, "", "failed post-reload Send must roll back AntiCurse's dot");
       await page.close();
     }
 
