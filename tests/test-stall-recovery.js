@@ -43,6 +43,9 @@ assert(chromeSource.includes("function waitForStopSettlement"));
 assert(chromeSource.includes("!stopButton() && !originalTurnStillStreaming(key)"), "nudge must wait for both Stop and the original stream to settle");
 assert(chromeSource.includes("if (recoveringTurns.size || recoveryPhase) return null;"), "countdown must be suspended for the entire recovery transaction");
 assert(chromeSource.includes("lastRecoveryFailure"), "debug telemetry must retain the exact recovery failure stage");
+assert(chromeSource.includes("recoveryNudgeModelState(key)"), "post-Stop validation must accept only the guard's same-turn non-Pro handoff");
+assert(chromeSource.includes("armRecoveryNudge(originalKey)"), "synthetic Send must arm the approved handoff immediately before click");
+assert(chromeSource.includes("recoveryGuardBlockedClicks"), "Send must detect a synchronous Pro/unknown guard block without treating transient post-click unknown as failure");
 for (const code of ["stop-not-settled", "transaction-invalidated", "user-draft-during-stop", "model-blocked-after-stop", "nudge-send-failed"]) {
   assert(chromeSource.includes(code), `missing recovery failure telemetry: ${code}`);
 }

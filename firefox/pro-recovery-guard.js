@@ -17,7 +17,8 @@
     "okamžitá", "střední", "vysoká", "velmi vysoká"
   ]);
   const PRESET_LANES = new Set(["instant", "thinking", "pro"]);
-  const ALLOWED_NUDGE_WINDOW_MS = 20_000;
+  const STOP_HANDOFF_WINDOW_MS = 420_000;
+  const NUDGE_ARM_WINDOW_MS = 5_000;
   let presetLaneCache = new Map();
   let presetLaneCacheScriptCount = -1;
   let presetLaneCacheBuilt = false;
@@ -245,7 +246,10 @@
 
   function clearExpiredAllowedNudge() {
     if (!allowedRecoveryNudge) return null;
-    if (Date.now() - allowedRecoveryNudge.at <= ALLOWED_NUDGE_WINDOW_MS) return allowedRecoveryNudge;
+    if (Date.now() - allowedRecoveryNudge.at <= STOP_HANDOFF_WINDOW_MS) {
+      if (allowedRecoveryNudge.armedAt && Date.now() - allowedRecoveryNudge.armedAt > NUDGE_ARM_WINDOW_MS) allowedRecoveryNudge.armedAt = null;
+      return allowedRecoveryNudge;
+    }
     allowedRecoveryNudge = null;
     return null;
   }
@@ -253,11 +257,45 @@
   function rememberAllowedStop(state) {
     allowedRecoveryNudge = {
       at: Date.now(),
+      armedAt: null,
       turnKey: state.turnKey || null,
       modelSlug: state.modelSlug || null,
+      selectedModelLabel: state.selectedModelLabel || null,
+      selectedModelLane: state.selectedModelLane || null,
       decision: state.decision,
       detectionSource: state.detectionSource
     };
+  }
+
+  function recoveryNudgeState(expectedTurnKey = null) {
+    const state = activeRecoveryState();
+    if (state.decision === "pro" || state.autoRecoveryAllowed) return state;
+    const handoff = clearExpiredAllowedNudge();
+    if (!handoff || handoff.decision !== "non-pro") return state;
+    if (expectedTurnKey && handoff.turnKey !== expectedTurnKey) return state;
+    // A model-picker change during a slow Stop invalidates the handoff unless the
+    // current UI still positively identifies the model above. Missing composer
+    // evidence is allowed because ChatGPT often temporarily unmounts it while
+    // cancelling the old request.
+    if (state.selectedModelLabel && handoff.selectedModelLabel &&
+        normalize(state.selectedModelLabel) !== normalize(handoff.selectedModelLabel)) return state;
+    return {
+      ...state,
+      turnKey: handoff.turnKey || state.turnKey,
+      modelSlug: handoff.modelSlug || state.modelSlug,
+      decision: "non-pro",
+      detectionSource: "approved-stop-handoff",
+      pro: false,
+      autoRecoveryAllowed: true
+    };
+  }
+
+  function armRecoveryNudge(expectedTurnKey = null) {
+    const state = recoveryNudgeState(expectedTurnKey);
+    if (!state.autoRecoveryAllowed) return state;
+    const handoff = clearExpiredAllowedNudge();
+    if (handoff && (!expectedTurnKey || handoff.turnKey === expectedTurnKey)) handoff.armedAt = Date.now();
+    return state;
   }
 
   function block(event, state, phase) {
@@ -326,9 +364,10 @@
       block(event, state, "send-nudge");
       return;
     }
-    if (allowedNudge) {
-      // One-shot authorization: consume it before the Send handler runs so it
-      // cannot be reused by a later turn or another synthetic click.
+    if (allowedNudge && allowedNudge.armedAt && Date.now() - allowedNudge.armedAt <= NUDGE_ARM_WINDOW_MS) {
+      // One-shot authorization: the watchdog must arm the previously approved
+      // Stop handoff immediately before Send. Consume it before page handlers
+      // run so it cannot be reused by a later synthetic click.
       allowedRecoveryNudge = null;
       return;
     }
@@ -340,6 +379,8 @@
     labelIsPro,
     activeProRun: activeRecoveryState,
     activeRecoveryState,
+    recoveryNudgeState,
+    armRecoveryNudge,
     autoRecoveryAllowed() {
       return activeRecoveryState().autoRecoveryAllowed;
     },
@@ -370,7 +411,9 @@
           modelSlug: allowedNudge.modelSlug,
           decision: allowedNudge.decision,
           detectionSource: allowedNudge.detectionSource,
-          remainingMs: Math.max(0, ALLOWED_NUDGE_WINDOW_MS - (Date.now() - allowedNudge.at))
+          armed: !!allowedNudge.armedAt,
+          handoffRemainingMs: Math.max(0, STOP_HANDOFF_WINDOW_MS - (Date.now() - allowedNudge.at)),
+          armRemainingMs: allowedNudge.armedAt ? Math.max(0, NUDGE_ARM_WINDOW_MS - (Date.now() - allowedNudge.armedAt)) : 0
         } : null
       };
     }

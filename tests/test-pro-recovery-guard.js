@@ -24,6 +24,10 @@ assert(chrome.includes("Never treat an arbitrary standalone \"pro\" token as mod
 assert(chrome.includes('decision = "unknown"'), "missing model evidence must fail closed");
 assert(chrome.includes('if (!state.autoRecoveryAllowed)'), "synthetic actions must fail closed unless non-Pro is proven");
 assert(chrome.includes("rememberAllowedStop(state)"), "a proven non-Pro Stop must authorize only its immediate nudge");
+assert(chrome.includes("recoveryNudgeState"), "slow Stop must retain only the same-turn approved non-Pro handoff");
+assert(chrome.includes("armRecoveryNudge"), "the handoff must be armed only immediately before the synthetic Send");
+assert(chrome.includes("STOP_HANDOFF_WINDOW_MS = 420_000"), "the approved Stop handoff must outlive slow ChatGPT cancellation");
+assert(chrome.includes("NUDGE_ARM_WINDOW_MS = 5_000"), "actual synthetic Send authorization must remain short-lived");
 assert(chrome.includes("if (event.isTrusted)"), "human Stop/Send clicks must never be blocked");
 assert(chrome.includes('button.getAttribute("data-testid") === "stop-button"'));
 assert(chrome.includes("composerContainsOnlyNudge()"));

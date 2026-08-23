@@ -71,6 +71,39 @@
     }
   }
 
+  function recoveryNudgeModelState(turnKey) {
+    const guard = globalThis.CGAntiCurseProRecoveryGuard;
+    if (!guard || typeof guard.recoveryNudgeState !== "function") return recoveryModelState();
+    try {
+      const state = guard.recoveryNudgeState(turnKey);
+      return state && typeof state === "object" ? state : recoveryModelState();
+    } catch {
+      return recoveryModelState();
+    }
+  }
+
+  function armRecoveryNudge(turnKey) {
+    const guard = globalThis.CGAntiCurseProRecoveryGuard;
+    if (!guard || typeof guard.armRecoveryNudge !== "function") return { autoRecoveryAllowed: false, decision: "unknown" };
+    try {
+      const state = guard.armRecoveryNudge(turnKey);
+      return state && typeof state === "object" ? state : { autoRecoveryAllowed: false, decision: "unknown" };
+    } catch {
+      return { autoRecoveryAllowed: false, decision: "unknown" };
+    }
+  }
+
+  function recoveryGuardBlockedClicks() {
+    const guard = globalThis.CGAntiCurseProRecoveryGuard;
+    if (!guard || typeof guard.debug !== "function") return null;
+    try {
+      const value = Number(guard.debug()?.blockedClicks);
+      return Number.isFinite(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
   function recoveryRemainingMs() {
     if (recoveringTurns.size || recoveryPhase) return null;
     if (!activeTurn || !stopButton()) return null;
@@ -480,17 +513,22 @@
 
     const submit = document.querySelector(SUBMIT_SELECTOR);
     if (!submit || submit.disabled || submit.getAttribute("aria-disabled") === "true") return false;
+    // Re-arm only the same-turn Stop handoff immediately before the synthetic
+    // Send. Current Pro evidence still wins inside the guard.
+    if (armRecoveryNudge(originalKey).autoRecoveryAllowed !== true) return false;
     // At this point Stop has settled and is absent. A newly appearing Stop
     // button therefore belongs to the resumed request. Alternatively accept a
     // different streaming turn key. Do not accept the old turn's stale marker.
     setRecoveryPhase("confirming");
+    const blockedBefore = recoveryGuardBlockedClicks();
     submit.click();
 
     // The Pro/unknown click guard can synchronously cancel our synthetic Send.
-    // If it did, fail immediately instead of holding a synthetic dot for the
-    // whole confirmation timeout.
-    const postClickModel = recoveryModelState();
-    if (composerContainsOnlyNudge() && postClickModel.autoRecoveryAllowed !== true) return false;
+    // Detect that directly. A successful click may temporarily leave no live
+    // streaming marker, so an immediate "unknown" model state is not failure.
+    const blockedAfter = recoveryGuardBlockedClicks();
+    if (blockedBefore !== null && blockedAfter !== null && blockedAfter > blockedBefore) return false;
+    if (recoveryModelState().decision === "pro") return false;
 
     return waitForCondition(
       () => !!stopButton() || (() => {
@@ -523,7 +561,7 @@
         return;
       }
       if (hasUserDraft()) { lastRecoveryFailure = "user-draft-during-stop"; return; }
-      if (recoveryModelState().autoRecoveryAllowed !== true) { lastRecoveryFailure = "model-blocked-after-stop"; return; }
+      if (recoveryNudgeModelState(key).autoRecoveryAllowed !== true) { lastRecoveryFailure = "model-blocked-after-stop"; return; }
       setRecoveryPhase("sending");
       if (!(await sendNudge(key))) { lastRecoveryFailure = "nudge-send-failed"; return; }
       attemptedTurns.add(identity);
