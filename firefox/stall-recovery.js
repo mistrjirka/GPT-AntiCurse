@@ -199,7 +199,7 @@
        hasUserDraft() ? "paused-draft" :
        hasLongWaitBanner(activeTurn) ? "checking" :
        loading ? "loading" : "countdown");
-    const detail = {
+    window.dispatchEvent(new CustomEvent(STATUS_EVENT, { detail: {
       active: true,
       conversationId: conversationId(),
       phase,
@@ -208,8 +208,7 @@
       draftBlocked: hasUserDraft(),
       recoveryDecision: state.decision || "unknown",
       recoveryDetectionSource: state.detectionSource || null
-    };
-    window.dispatchEvent(new CustomEvent(STATUS_EVENT, { detail }));
+    } }));
     if (!transaction && state.autoRecoveryAllowed === true && !hasUserDraft()) countdownUiTimer = setTimeout(publishStatus, 1000);
   }
 
@@ -249,9 +248,7 @@
         lastOutputSignature = signature;
         lastProgressAt = Date.now();
         scheduleDeadline();
-      } else {
-        publishStatus();
-      }
+      } else publishStatus();
     });
     activityObserver.observe(activeTurn, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["data-streaming-response-status"] });
   }
@@ -318,19 +315,18 @@
   }
 
   function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
-
-  function domStopSettled() {
-    return !stopButton() && !newestAssistantStreaming() && composerIdle();
-  }
+  function domStopSettled() { return !stopButton() && !newestAssistantStreaming() && composerIdle(); }
 
   async function waitForStopSettlement(id) {
     const deadline = Date.now() + PHASE_TIMEOUT_MS;
+    let nextBackendCheckAt = 0;
     while (Date.now() < deadline) {
-      if (domStopSettled()) {
+      if (domStopSettled() && Date.now() >= nextBackendCheckAt) {
         const status = await streamStatus(id);
         if (status !== null && status !== "IS_STREAMING") return true;
+        nextBackendCheckAt = Date.now() + 10_000;
       }
-      await sleep(Math.min(5000, Math.max(250, deadline - Date.now())));
+      await sleep(Math.min(1000, Math.max(100, deadline - Date.now())));
     }
     return false;
   }
@@ -448,7 +444,7 @@
   async function recoverCurrentStall(id, key, generation) {
     const attemptId = identity(id, key);
     if (transaction || attemptedTurns.has(attemptId) || generation !== monitorGeneration || key !== activeTurnKey) return;
-    transaction = { phase: "checking", id, key, reloadUsed: false };
+    transaction = { phase: "checking", id, key };
     recoveryStartedAt = Date.now();
     lastRecoveryResult = "in-flight";
     lastRecoveryFailure = null;
@@ -458,14 +454,9 @@
     let completed = false;
     try {
       completed = await performStopAndResume({ id, key, allowReload: true });
-      if (completed && transaction?.phase === "reloading") return;
-      if (completed) {
-        attemptedTurns.add(attemptId);
-        lastRecoveryResult = "completed";
-      } else if (transaction?.phase !== "reloading") {
-        attemptedTurns.add(attemptId);
-        lastRecoveryResult = "failed";
-      }
+      if (transaction?.phase === "reloading") return;
+      attemptedTurns.add(attemptId);
+      lastRecoveryResult = completed ? "completed" : "failed";
     } finally {
       if (transaction?.phase !== "reloading") {
         if (!completed && composerContainsOnlyNudge()) clearNudge();
@@ -517,9 +508,7 @@
       if (generation !== monitorGeneration || key !== activeTurnKey || hasUserDraft() || !stopButton()) return;
       if (await streamStatus(id) !== "IS_STREAMING") { scheduleSync(); return; }
       if (generation !== monitorGeneration || key !== activeTurnKey) return;
-    } else if (!hasLongWaitBanner(activeTurn) || !stopButton()) {
-      return;
-    }
+    } else if (!hasLongWaitBanner(activeTurn) || !stopButton()) return;
     if (modelState().autoRecoveryAllowed !== true) return;
     await recoverCurrentStall(id, key, generation);
   }
@@ -599,6 +588,15 @@
     publishStatus();
   }
 
+  function startObservers() {
+    if (!document.documentElement) return;
+    if (!rootObserver) {
+      rootObserver = new MutationObserver(scheduleSync);
+      rootObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["inert", "data-stream-active", "data-streaming-response-status"] });
+    }
+    scheduleSync();
+  }
+
   async function start() {
     let stored = {};
     try { stored = await ext.storage.local.get(DEFAULTS); } catch { /* defaults */ }
@@ -612,15 +610,6 @@
     if (!settings.stallRecoveryEnabled) return;
     startObservers();
     await restoreReloadTransaction();
-  }
-
-  function startObservers() {
-    if (!document.documentElement) return;
-    if (!rootObserver) {
-      rootObserver = new MutationObserver(scheduleSync);
-      rootObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["inert", "data-stream-active", "data-streaming-response-status"] });
-    }
-    scheduleSync();
   }
 
   globalThis.CGAntiCurseStallRecovery = {
