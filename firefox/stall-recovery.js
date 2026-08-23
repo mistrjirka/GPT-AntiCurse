@@ -110,9 +110,6 @@
   }
 
   function findActiveTurn() {
-    // Old assistant turns can retain stale streaming markers after ChatGPT has
-    // already stopped the newest request. Only the newest assistant turn can be
-    // the recovery target; this is also the source used for Stop settlement.
     const newest = newestAssistantTurn();
     return newest && newest.querySelector(STREAMING_SELECTOR) ? newest : null;
   }
@@ -370,12 +367,13 @@
     if (!composerContainsOnlyNudge()) return { ok: false, failure: "nudge-not-retained", submitted: false };
 
     setPhase("sending");
-    const ready = await waitForCondition(() => {
-      if (!composerContainsOnlyNudge()) return false;
+    const readyOrChanged = await waitForCondition(() => {
+      if (!composerContainsOnlyNudge()) return true;
       const button = document.querySelector(SUBMIT_SELECTOR);
       return !!button && !button.disabled && button.getAttribute("aria-disabled") !== "true";
     }, input?.closest("form") || document.documentElement, PHASE_TIMEOUT_MS);
-    if (!ready || !composerContainsOnlyNudge()) return { ok: false, failure: "send-not-ready", submitted: false };
+    if (!composerContainsOnlyNudge()) return { ok: false, failure: "user-draft-during-send", submitted: false };
+    if (!readyOrChanged) return { ok: false, failure: "send-not-ready", submitted: false };
 
     const safety = armNudge(originalKey);
     if (safety.autoRecoveryAllowed !== true) return { ok: false, failure: safety.decision === "pro" ? "send-blocked-pro" : "send-blocked-unknown", submitted: false };
@@ -399,6 +397,20 @@
   }
 
   function identity(id, key) { return `${id || ""}\u001f${key || ""}`; }
+
+  function rememberAttempt(id, key) {
+    if (!key) return;
+    attemptedTurnKey = key;
+    attemptedTurns.add(identity(id, key));
+    if (attemptedTurns.size > 256) attemptedTurns.delete(attemptedTurns.values().next().value);
+  }
+
+  function finishReloadMarker(ok) {
+    if (!RELOAD_STATE) return;
+    const outcome = ok ? "completed" : "failed";
+    if (typeof RELOAD_STATE.finish === "function") RELOAD_STATE.finish(outcome, { failure: ok ? null : lastRecoveryFailure });
+    else if (typeof RELOAD_STATE.clear === "function") RELOAD_STATE.clear();
+  }
 
   async function performStopAndResume({ id, key, allowReload }) {
     const state = modelState();
@@ -457,7 +469,7 @@
     try {
       completed = await performStopAndResume({ id, key, allowReload: true });
       if (transaction?.phase === "reloading") return;
-      attemptedTurns.add(attemptId);
+      rememberAttempt(id, key);
       lastRecoveryResult = completed ? "completed" : "failed";
     } finally {
       if (transaction?.phase !== "reloading") {
@@ -523,43 +535,50 @@
     recoveryStartedAt = marker.createdAt || Date.now();
     lastRecoveryResult = "in-flight";
     lastRecoveryFailure = null;
+    attemptedTurnKey = marker.turnKey || null;
     recordTransition("restoring", marker.reason || null);
     publishStatus();
 
-    const ready = await waitForCondition(() => !!composer() && document.readyState !== "loading", document.documentElement, PHASE_TIMEOUT_MS);
-    if (!ready || conversationId() !== marker.conversationId) {
-      lastRecoveryFailure = "reload-page-not-ready";
+    const finishEarly = (failure) => {
+      lastRecoveryFailure = failure;
       lastRecoveryResult = "failed";
-      RELOAD_STATE.clear();
+      rememberAttempt(marker.conversationId, marker.turnKey);
+      finishReloadMarker(false);
       lastRecoveryFinishedAt = Date.now();
       clearTransaction();
+    };
+
+    const ready = await waitForCondition(() => !!composer() && document.readyState !== "loading", document.documentElement, PHASE_TIMEOUT_MS);
+    if (!ready || conversationId() !== marker.conversationId) {
+      finishEarly("reload-page-not-ready");
+      return;
+    }
+    if (!settings.stallRecoveryEnabled) {
+      finishEarly("recovery-disabled-after-reload");
       return;
     }
     if (hasUserDraft()) {
-      lastRecoveryFailure = "user-draft-after-reload";
-      lastRecoveryResult = "failed";
-      RELOAD_STATE.clear();
-      lastRecoveryFinishedAt = Date.now();
-      clearTransaction();
+      finishEarly("user-draft-after-reload");
       return;
     }
 
     const state = modelState();
     if (state.autoRecoveryAllowed !== true) {
-      lastRecoveryFailure = state.decision === "pro" ? "model-pro-after-reload" : "model-unknown-after-reload";
-      lastRecoveryResult = "failed";
-      RELOAD_STATE.clear();
-      lastRecoveryFinishedAt = Date.now();
-      clearTransaction();
+      finishEarly(state.decision === "pro" ? "model-pro-after-reload" : "model-unknown-after-reload");
       return;
     }
 
     const status = await streamStatus(marker.conversationId);
     const live = findActiveTurn();
-    const running = status === "IS_STREAMING" || (status === null && (!!stopButton() || !!live || shellRunLoading()));
+    const liveKey = turnKey(live);
+    const liveMatchesMarker = !!live && (!marker.turnKey || liveKey === marker.turnKey);
+    const running = status === "IS_STREAMING" ||
+      (status === null && (shellRunLoading() || !!stopButton() || liveMatchesMarker));
     let ok = false;
+    let finalKey = marker.turnKey || liveKey;
     if (running) {
-      const key = turnKey(live) || marker.turnKey;
+      const key = liveKey || marker.turnKey;
+      finalKey = key || finalKey;
       RELOAD_STATE.updateStage?.("stop-after-reload", { turnKey: key });
       ok = await performStopAndResume({ id: marker.conversationId, key, allowReload: false });
     } else {
@@ -569,7 +588,9 @@
       if (!ok) lastRecoveryFailure = sent.failure;
     }
 
-    RELOAD_STATE.clear();
+    if (!ok && composerContainsOnlyNudge()) clearNudge();
+    rememberAttempt(marker.conversationId, finalKey);
+    finishReloadMarker(ok);
     lastRecoveryResult = ok ? "completed" : "failed";
     lastRecoveryFinishedAt = Date.now();
     clearTransaction();
