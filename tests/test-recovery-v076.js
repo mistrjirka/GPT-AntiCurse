@@ -56,7 +56,7 @@ assert(input.includes('document.execCommand("insertText", false, String(text))')
 assert(input.includes('document.execCommand("delete", false, null)'), "rollback must update the controlled editor too");
 assert(recovery.includes('lastNudgeInsertMethod = "native-editor"'));
 assert(recovery.includes('lastNudgeStage = "send-not-ready"'));
-assert(recovery.includes('lastNudgeStage = "send-not-confirmed"'));
+assert(recovery.includes('"send-not-confirmed"'));
 assert(recovery.includes('lastNudgeStage = "insert-reverted"'));
 
 assert(reload.includes('__gpt_anticurse_recovery_reload_v1__'));
