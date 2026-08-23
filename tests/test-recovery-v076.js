@@ -10,6 +10,7 @@ const chrome = (name) => fs.readFileSync(path.join(ROOT, "chrome", name), "utf8"
 const ffManifest = JSON.parse(ff("manifest.json"));
 const chromeManifest = JSON.parse(chrome("manifest.json"));
 const recovery = ff("stall-recovery.js");
+const postRun = ff("post-run-recovery.js");
 const guard = ff("pro-recovery-guard.js");
 const input = ff("composer-native-input.js");
 const reload = ff("recovery-reload-state.js");
@@ -18,17 +19,19 @@ const debugState = ff("debug-state.js");
 
 assert.equal(ffManifest.version, "0.7.6");
 assert.equal(chromeManifest.version, "0.7.6");
-for (const name of ["stall-recovery.js", "pro-recovery-guard.js", "composer-native-input.js", "recovery-reload-state.js", "recovery-status-ui.js", "debug-state.js"]) {
+for (const name of ["stall-recovery.js", "post-run-recovery.js", "pro-recovery-guard.js", "composer-native-input.js", "recovery-reload-state.js", "recovery-status-ui.js", "debug-state.js"]) {
   assert.equal(ff(name), chrome(name), `${name} must remain byte-identical across browser packages`);
 }
 
 for (const manifest of [ffManifest, chromeManifest]) {
   const scripts = manifest.content_scripts.flatMap((entry) => entry.js || []);
-  for (const name of ["recovery-reload-state.js", "composer-native-input.js", "pro-recovery-guard.js", "stall-recovery.js"]) {
+  for (const name of ["recovery-reload-state.js", "composer-native-input.js", "pro-recovery-guard.js", "post-run-recovery.js", "stall-recovery.js"]) {
     assert(scripts.includes(name), `${name} must be packaged`);
   }
   assert(scripts.indexOf("recovery-reload-state.js") < scripts.indexOf("pro-recovery-guard.js"));
-  assert(scripts.indexOf("composer-native-input.js") < scripts.indexOf("stall-recovery.js"));
+  assert(scripts.indexOf("composer-native-input.js") < scripts.indexOf("post-run-recovery.js"));
+  assert(scripts.indexOf("pro-recovery-guard.js") < scripts.indexOf("post-run-recovery.js"));
+  assert(scripts.indexOf("post-run-recovery.js") < scripts.indexOf("stall-recovery.js"));
 }
 
 assert(recovery.includes("const STALL_TIMEOUT_MS = 120_000;"));
@@ -66,12 +69,31 @@ assert(guard.includes("function restoreRecoveryHandoff"));
 assert(guard.includes('snapshot.decision !== "non-pro"'));
 assert(guard.includes('state.decision === "pro"'), "current Pro evidence must still win after reload");
 
+// Terminal/incomplete-run recovery: only real answer bodies count as useful.
+assert(postRun.includes("function hasUsefulAssistantAnswer"));
+assert(postRun.includes('[data-message-author-role="assistant"] .markdown.prose'), "thinking/tool wrapper text must not count as a useful answer");
+assert(postRun.includes('[id^="textdoc-message-"] .ProseMirror'), "canvas/document output remains useful");
+assert(postRun.includes('lastReason = "ended-without-useful-answer"'));
+assert(postRun.includes('lastReason = "retryable-network-error"'));
+assert(postRun.includes("function deliveryIntent"), "retryable-error reload latch must become a continuation intent on the reloaded page");
+assert(postRun.includes("performance.timeOrigin"), "delivery follow-up must only consume a latch written before the current navigation");
+assert(postRun.includes("DELIVERY_INTENT_TTL_MS = 10 * 60_000"));
+assert(postRun.includes("consumeDeliveryIntent(intent)"));
+assert(postRun.includes("await stopIfStillRunning(intent.id, approval)"), "network-error recovery must Stop again if the reloaded request is still running");
+assert(postRun.includes("await sendNudge(approval)"), "network-error and incomplete-terminal paths must resume with the fixed nudge");
+assert(postRun.includes("if (!event.isTrusted) return;"), "manual Stop must be detected from a trusted click");
+assert(postRun.includes("manualStopSuppressions++"), "manual Stop must suppress automatic post-run continuation");
+assert(postRun.includes("stallTransactionActive()"), "post-run recovery must not race the existing stall transaction");
+assert(postRun.includes("modelState().decision === \"pro\""), "current Pro evidence must block post-run Send");
+assert(postRun.includes("COMPOSER_INPUT.insertText(input, \".\")"), "post-run continuation must use the controlled-editor helper");
+
 assert(statusUi.includes('case "reloading": return "reload"'));
 assert(statusUi.includes('`loading ${countdown(value.remainingMs)}`'));
 assert(debugState.includes("recoveryReloadState"));
 assert(debugState.includes("composerNativeInput"));
+assert(debugState.includes("postRunRecovery"));
 assert(recovery.includes("lastNudgeStage"));
 assert(recovery.includes("lastStopSettlementSource"));
 assert(recovery.includes("lastStopBackendStatus"));
 
-console.log("0.7.6 bounded reload/editor/stale-stop recovery checks: PASS");
+console.log("0.7.6 bounded reload/editor/stale-stop/post-run recovery checks: PASS");
