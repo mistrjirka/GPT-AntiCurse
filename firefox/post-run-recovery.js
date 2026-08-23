@@ -185,9 +185,8 @@
   function clearNudge() {
     const input = composer();
     if (!input || !composerContainsOnlyNudge()) return false;
-    if (COMPOSER_INPUT  && typeof COMPOSER_INPUT.clearExactText === "function") {
-      try { if (COMPOSER_INPUT.clearExactText(input, ".")) return true; }
-      catch { /* Fall back to DOM/InputEvent cleanup below. */ }
+    if (COMPOSER_INPUT && typeof COMPOSER_INPUT.clearExactText === "function") {
+      try { if (COMPOSER_INPUT.clearExactText(input, ".")) return true; } catch { /* Fall back to DOM/InputEvent cleanup below. */ }
     }
     input.replaceChildren();
     input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward", data: null }));
@@ -201,7 +200,7 @@
     if (!input || !input.isConnected || draftText()) { lastFailure = "composer-not-empty"; return false; }
 
     let inserted = false;
-    if (COMPOSER_INPUT  && typeof COMPOSER_INPUT.insertText === "function") {
+    if (COMPOSER_INPUT && typeof COMPOSER_INPUT.insertText === "function") {
       try { inserted = COMPOSER_INPUT.insertText(input, "."); } catch { inserted = false; }
     }
     if (!inserted) {
@@ -215,14 +214,14 @@
     if (!composerContainsOnlyNudge()) { lastFailure = "insert-reverted"; return false; }
 
     const ready = await waitForCondition(() => {
-      const button = document.querySelector(SUBMIT_SELECTOR);
-      return composerContainsOnlyNudge() && !!button && !button.disabled && button.getAttribute("aria-disabled" !== "true";
+      const submit = document.querySelector(SUBMIT_SELECTOR);
+      return composerContainsOnlyNudge() && !!submit && !submit.disabled && submit.getAttribute("aria-disabled") !== "true";
     }, SEND_READY_TIMEOUT_MS);
     if (!ready || !composerContainsOnlyNudge()) { lastFailure = "send-not-ready"; clearNudge(); return false; }
     if (!armNudge(approval.turnKey || null)) { lastFailure = "guard-not-armed"; clearNudge(); return false; }
-    const button = document.querySelector(SUBMIT_SELECTOR);
-    if (!button) { lastFailure = "send-button-missing"; clearNudge(); return false; }
-    button.click();
+    const submit = document.querySelector(SUBMIT_SELECTOR);
+    if (!submit) { lastFailure = "send-button-missing"; clearNudge(); return false; }
+    submit.click();
     const confirmed = await waitForCondition(() => !!stopButton() || (() => {
       const key = turnKey(activeStreamingTurn());
       return !!key && key !== approval.turnKey;
@@ -232,7 +231,7 @@
   }
 
   async function stopIfStillRunning(id, approval) {
-    const status = await streamStatus();
+    const status = await streamStatus(id);
     if (!stopButton() && status !== "IS_STREAMING") return true;
     const state = modelState();
     if (state.autoRecoveryAllowed !== true) {
@@ -242,7 +241,7 @@
     if (!stopButton() && !(await waitForCondition(() => !!stopButton(), 10_000))) { lastFailure = "running-without-stop"; return false; }
     const liveApproval = snapshotApproval(modelState(), turnKey(activeStreamingTurn()) || approval.turnKey);
     const button = stopButton();
-    if (!Button) { lastFailure = "stop-missing"; return false; }
+    if (!button) { lastFailure = "stop-missing"; return false; }
     button.click();
     const deadline = Date.now() + STOP_SETTLE_TIMEOUT_MS;
     while (Date.now() < deadline) {
@@ -277,7 +276,7 @@
 
   async function handleDeliveryIntent(intent) {
     if (!intent || handling || !settings.stallRecoveryEnabled) return;
-    handling = true; lastReason = "retryable-network-error"; lastAction = "delivery-folloup"; lastFailure = null;
+    handling = true; lastReason = "retryable-network-error"; lastAction = "delivery-followup"; lastFailure = null;
     lastDeliveryLatchAt = intent.at; resumeAttempts++;
     try {
       const ready = await waitForCondition(() => !!composer() && document.readyState !== "loading", 30_000);
@@ -305,7 +304,7 @@
       const deadline = Date.now() + 30_000;
       while (status === "IS_STREAMING" && Date.now() < deadline && !stopButton()) {
         await new Promise((resolve) => setTimeout(resolve, BACKEND_POLL_MS));
-        status = await streamStatus();
+        status = await streamStatus(id);
       }
       if (status === "IS_STREAMING" || stopButton()) return;
       if (hasUsefulAssistantAnswer(latestAssistantTurn())) return;
