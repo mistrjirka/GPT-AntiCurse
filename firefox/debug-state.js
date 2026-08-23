@@ -126,6 +126,16 @@
         try { return recovery && typeof recovery.debug === "function" ? { present: true, ...recovery.debug() } : { present: !!recovery }; }
         catch (error) { return { present: !!recovery, debugError: String(error && error.message ? error.message : error) }; }
       })(),
+      recoveryReloadState: (() => {
+        const helper = globalThis.CGAntiCurseRecoveryReloadState;
+        try { return helper && typeof helper.debug === "function" ? { present: true, ...helper.debug() } : { present: !!helper }; }
+        catch (error) { return { present: !!helper, debugError: String(error && error.message ? error.message : error) }; }
+      })(),
+      composerNativeInput: (() => {
+        const helper = globalThis.CGAntiCurseComposerInput;
+        try { return helper && typeof helper.debug === "function" ? { present: true, ...helper.debug() } : { present: !!helper }; }
+        catch (error) { return { present: !!helper, debugError: String(error && error.message ? error.message : error) }; }
+      })(),
       archiveBridge: bridgeState,
       backendHistory: await backendHistory(id, Number(saved.maxDisplayMessages) || 64),
       lastIssue: saved.cgLastIssue || null
