@@ -37,6 +37,7 @@ jobs:
           cmp firefox/session-auth.js chrome/session-auth.js
           cmp firefox/pro-recovery-guard.js chrome/pro-recovery-guard.js
           cmp firefox/stall-recovery.js chrome/stall-recovery.js
+          cmp firefox/post-run-recovery.js chrome/post-run-recovery.js
           cmp firefox/recovery-reload-state.js chrome/recovery-reload-state.js
           cmp firefox/composer-native-input.js chrome/composer-native-input.js
           cmp firefox/recovery-status-ui.js chrome/recovery-status-ui.js
@@ -140,6 +141,8 @@ jobs:
         run: node tests/e2e-chromium.js
       - name: Run Chromium stall-recovery E2E
         run: node tests/e2e-stall-recovery-chromium.js
+      - name: Run Chromium post-run recovery E2E
+        run: node tests/e2e-post-run-chromium.js
       - name: Run Chromium hydration-boundary E2E
         run: node tests/e2e-hydration-chromium.js
       - name: Run Chromium native-fidelity E2E
@@ -148,6 +151,8 @@ jobs:
         run: node tests/e2e-firefox.js
       - name: Run Firefox stall-recovery E2E
         run: node tests/e2e-stall-recovery-firefox.js
+      - name: Run Firefox post-run recovery E2E
+        run: node tests/e2e-post-run-firefox.js
       - name: Run Firefox native-fidelity E2E
         run: node tests/e2e-fidelity-firefox.js
       - name: Create GitHub Release if missing
