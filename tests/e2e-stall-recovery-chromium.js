@@ -23,14 +23,15 @@ function fixtureHtml() {
   const list = document.getElementById('turn-list');
   const composer = document.getElementById('prompt-textarea');
   const button = document.getElementById('composer-submit-button');
-  window.__state = { id, stopClicks: 0, sends: 0, sentText: '', stopAt: 0, sendAt: 0 };
+  window.__state = { id, stopClicks: 0, sends: 0, sentText: '', stopAt: 0, sendAt: 0, staleMarkersAtStop: 0 };
 
-  function makeTurn(index, { tool = false, output = true } = {}) {
+  function makeTurn(index, { tool = false, output = true, key = null } = {}) {
+    const turnKey = key || ('turn-' + index);
     const wrapper = document.createElement('div');
-    wrapper.setAttribute('data-turn-id-container', 'turn-' + index);
+    wrapper.setAttribute('data-turn-id-container', turnKey);
     const section = document.createElement('section');
     section.setAttribute('data-testid', 'conversation-turn-' + index);
-    section.setAttribute('data-turn-id', 'turn-' + index);
+    section.setAttribute('data-turn-id', turnKey);
     section.setAttribute('data-turn', 'assistant');
     const message = document.createElement('div');
     message.setAttribute('data-message-author-role', 'assistant');
@@ -94,6 +95,14 @@ function fixtureHtml() {
           active.streaming.removeAttribute('data-streaming-response-status');
           button.disabled = false;
         }, 650);
+      } else if (id === 'stale-stopped-dom') {
+        // Captured live failure: ChatGPT has already stopped and remounted the
+        // newest assistant request as idle, while an older copy still retains a
+        // stale data-streaming-response-status marker. v0.7.5 stayed "stopping".
+        setSend(false, false);
+        const stoppedCopy = makeTurn(99, { output: false, key: 'turn-1' });
+        stoppedCopy.streaming.removeAttribute('data-streaming-response-status');
+        window.__state.staleMarkersAtStop = document.querySelectorAll('[data-streaming-response-status]').length;
       } else {
         setSend(id === 'disabled-until-input', true);
       }
@@ -216,6 +225,16 @@ async function state(page) {
       await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 4000 });
       s = await state(page);
       assert(s.sendAt - s.stopAt >= 600, "Send must wait for slow Stop settlement");
+      await page.close();
+    }
+
+    {
+      const page = await openCase(context, "stale-stopped-dom");
+      await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 4000 });
+      const s = await state(page);
+      assert.equal(s.stopClicks, 1, "captured stale-DOM case must Stop exactly once");
+      assert.equal(s.staleMarkersAtStop, 1, "fixture must preserve the stale historical streaming marker after Stop");
+      assert.equal(s.sentText, ".", "stale historical streaming DOM must not pin recovery in stopping");
       await page.close();
     }
 

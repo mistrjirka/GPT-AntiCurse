@@ -21,10 +21,11 @@ function fixtureHtml() {
   const list = document.getElementById('turn-list');
   const composer = document.getElementById('prompt-textarea');
   const button = document.getElementById('composer-submit-button');
-  window.__state = { id, stopClicks: 0, sends: 0, sentText: '', stopAt: 0, sendAt: 0 };
-  function makeTurn(index, { tool = false, output = true } = {}) {
-    const wrapper = document.createElement('div'); wrapper.setAttribute('data-turn-id-container', 'turn-' + index);
-    const section = document.createElement('section'); section.setAttribute('data-testid', 'conversation-turn-' + index); section.setAttribute('data-turn-id', 'turn-' + index); section.setAttribute('data-turn', 'assistant');
+  window.__state = { id, stopClicks: 0, sends: 0, sentText: '', stopAt: 0, sendAt: 0, staleMarkersAtStop: 0 };
+  function makeTurn(index, { tool = false, output = true, key = null } = {}) {
+    const turnKey = key || ('turn-' + index);
+    const wrapper = document.createElement('div'); wrapper.setAttribute('data-turn-id-container', turnKey);
+    const section = document.createElement('section'); section.setAttribute('data-testid', 'conversation-turn-' + index); section.setAttribute('data-turn-id', turnKey); section.setAttribute('data-turn', 'assistant');
     const message = document.createElement('div'); message.setAttribute('data-message-author-role', 'assistant'); message.setAttribute('data-message-model-slug', 'gpt-5-6-thinking'); if (output) message.textContent = 'assistant output ' + index; section.append(message);
     const streaming = document.createElement('div'); streaming.setAttribute('data-streaming-response-status', 'streaming');
     if (tool) { const row = document.createElement('div'); const icon = document.createElement('span'); icon.setAttribute('data-testid','cot-v5-tool-icon-pile'); const shimmer = document.createElement('span'); shimmer.className='loading-shimmer-tertiary'; shimmer.textContent='Working'; row.append(icon, shimmer); streaming.append(row); }
@@ -40,6 +41,14 @@ function fixtureHtml() {
     if (button.getAttribute('data-testid') === 'stop-button') {
       window.__state.stopClicks++; window.__state.stopAt=performance.now();
       if (id === 'slow-stop') { setSend(true, false); setTimeout(() => { active.streaming.removeAttribute('data-streaming-response-status'); button.disabled=false; }, 650); }
+      else if (id === 'stale-stopped-dom') {
+        // Captured live failure: the newest stopped request is idle, but an old
+        // duplicate/history node still has data-streaming-response-status.
+        setSend(false, false);
+        const stoppedCopy=makeTurn(99,{output:false,key:'turn-1'});
+        stoppedCopy.streaming.removeAttribute('data-streaming-response-status');
+        window.__state.staleMarkersAtStop=document.querySelectorAll('[data-streaming-response-status]').length;
+      }
       else setSend(id === 'disabled-until-input', true);
       return;
     }
@@ -98,6 +107,7 @@ async function openCase(driver,id){ await driver.get(`https://chatgpt.com:8443/c
     }
     await openCase(driver,"slow-stop"); await waitFor(driver,"return window.__state.stopClicks===1",3000); await waitFor(driver,"return (document.querySelector('#cg-conversation-guard-status')?.textContent||'').includes('stopping')",1500); await driver.sleep(350);
     let s=await state(driver); assert.equal(s.sends,0); assert.equal(s.draft,""); let recoveryUi=await driver.executeScript("const b=document.querySelector('#cg-conversation-guard-status'); return {phase:b?.dataset?.recoveryPhase||null,state:b?.querySelector('.cg-state')?.textContent||''}"); assert.equal(recoveryUi?.phase,"stopping"); assert.equal(recoveryUi?.state,"stopping"); await waitFor(driver,"return window.__state.sends===1",5000); s=await state(driver); assert(s.sendAt-s.stopAt>=600);
+    await openCase(driver,"stale-stopped-dom"); await waitFor(driver,"return window.__state.sends===1",5000); s=await state(driver); assert.equal(s.stopClicks,1,"captured stale-DOM case must Stop exactly once"); assert.equal(s.staleMarkersAtStop,1,"fixture must preserve the stale historical streaming marker after Stop"); assert.equal(s.sentText,".","stale historical streaming DOM must not pin recovery in stopping");
     await openCase(driver,"system-delay-banner"); await waitFor(driver,"return window.__state.sends===1",2500); assert.equal((await state(driver)).sentText,".");
     await openCase(driver,"draft-protection"); await driver.sleep(700); s=await state(driver); assert.equal(s.stopClicks,0); assert.equal(s.sends,0); assert.equal(s.draft,"do not overwrite me");
     await openCase(driver,"pre-output-loading"); await waitFor(driver,"return (document.querySelector('#cg-conversation-guard-status')?.textContent||'').includes('loading')",1500); await driver.sleep(500); assert.equal((await state(driver)).stopClicks,0); assert.equal(await driver.executeScript("return window.__revealAssistantOutput()"),true); await waitFor(driver,"return window.__state.sends===1",5000);
