@@ -18,10 +18,11 @@
     switch (value.phase) {
       case "blocked-pro": return "Pro off";
       case "blocked-unknown": return "model ?";
-      case "loading": return "loading";
+      case "loading": return Number.isFinite(Number(value.remainingMs)) ? `loading ${countdown(value.remainingMs)}` : "loading";
       case "paused-draft": return "draft";
       case "checking": return "check";
       case "stopping": return "stopping";
+      case "reloading": return "reload";
       case "sending": return "sending";
       case "confirming": return "sent…";
       default: return value.longWaitBanner ? "resume now" : countdown(value.remainingMs);
