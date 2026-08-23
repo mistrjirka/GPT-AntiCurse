@@ -26,7 +26,11 @@ assert(chromeSource.includes("our systems are thinking a bit more about this req
 assert(chromeSource.includes("help.openai.com/articles/20001326"));
 assert(chromeSource.includes("if (!longWaitBanner && await streamStatus(id)"), "banner must OR with, not depend on, backend stall confirmation");
 assert(chromeSource.includes("hasLongWaitBanner(activeTurn) ? 0"), "banner must schedule an immediate recovery check");
-assert(chromeSource.includes("document.visibilityState !== \"visible\""));
+assert(!chromeSource.includes('if (document.visibilityState !== "visible") { installVisibilityWakeup(); return; }'), "hidden tabs must not pause recovery");
+assert(!chromeSource.includes("installVisibilityWakeup"), "visibility must be diagnostic only, never a recovery gate");
+assert(!chromeSource.includes("requestAnimationFrame("), "recovery-critical code must not depend on animation frames that stop in hidden tabs");
+assert(chromeSource.includes("queueMicrotask("), "background-safe turn reattachment and nudge dispatch must use microtasks");
+assert(chromeSource.includes("recoveringTurns"), "in-flight recovery must be distinct from successfully attempted turns");
 assert(chromeSource.includes("hasUserDraft()"));
 assert(chromeSource.includes("attemptedTurnKey"));
 assert(!chromeSource.includes("sessionStorage.setItem"), "stall recovery must not persist a reload-resume marker");
@@ -43,16 +47,19 @@ assert(chromeSource.includes('discoveryObserver.observe(root, { childList: true,
 assert(chromeSource.includes("discoveryTimer = setTimeout(clearDiscovery, 10_000)"), "broad discovery must self-expire");
 assert(chromeSource.includes("__gpt_anticurse_stall_status__"), "watchdog must publish live recovery state");
 assert(chromeSource.includes("countdownRemainingMs"), "watchdog debug state must expose the live countdown");
+assert(chromeSource.includes("liveTurnKey"), "debug state must expose global live-turn discovery for virtualization regressions");
 assert(chromeSource.includes("function preOutputLoading"), "pre-output streaming/loading must be a distinct non-armed state");
 assert(chromeSource.includes("function shellLoading"), "inert ChatGPT shell loading must be a distinct non-armed state");
 assert(chromeSource.includes("shellLoading() || preOutputLoading(activeTurn)"), "ordinary recovery must stay unarmed while ChatGPT itself is still loading");
-assert(chromeSource.includes("if (preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }"), "ordinary stall timer must not arm before assistant output exists");
+assert(chromeSource.includes("if (shellLoading() || preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }"), "ordinary stall timer must not arm before assistant output exists");
 assert(chromeSource.includes("assistantOutputPresent"), "debug state must expose whether actual assistant output has begun");
 for (const [browser, content] of [["chrome", chromeContent], ["firefox", firefoxContent]]) {
   assert(content.includes("__gpt_anticurse_stall_status__"), `${browser}: on-page status must listen for recovery countdowns`);
   assert(content.includes("auto-continue in"), `${browser}: bottom-right status must render the countdown`);
   assert(content.includes("auto-continue resuming"), `${browser}: status must show active recovery phase`);
   assert(content.includes("response loading · recovery not armed"), `${browser}: pre-output loading must not display a retry countdown`);
+  assert(content.includes("Pro model · auto-continue disabled"), `${browser}: Pro safety state must be visible`);
+  assert(content.includes("model not confirmed · auto-continue disabled"), `${browser}: unknown model safety state must be visible`);
 }
 
 for (const [browser, manifest, popup] of [["chrome", chromeManifest, chromePopup], ["firefox", firefoxManifest, firefoxPopup]]) {

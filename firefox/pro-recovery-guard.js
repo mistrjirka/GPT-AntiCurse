@@ -9,7 +9,13 @@
   const SUBMIT_SELECTOR = '#composer-submit-button';
   const COMPOSER_SELECTOR = '#prompt-textarea[contenteditable="true"]';
   const BLOCK_EVENT = '__gpt_anticurse_pro_recovery_blocked__';
-  const CONFIRMED_NON_PRO_LABELS = new Set(["instant", "thinking"]);
+  const CONFIRMED_NON_PRO_LABELS = new Set([
+    "instant", "thinking",
+    // Current intelligence-preset labels observed in live ChatGPT. These map
+    // to the Thinking/Instant lanes; Pro is a separate exact preset.
+    "medium", "high", "extra high",
+    "okamžitá", "střední", "vysoká", "velmi vysoká"
+  ]);
   const ALLOWED_NUDGE_WINDOW_MS = 20_000;
   let blockedClicks = 0;
   let blockedUnknownClicks = 0;
@@ -31,6 +37,16 @@
   function labelIsPro(value) {
     const label = normalize(value);
     return label === "pro" || label.startsWith("pro thinking") || label.startsWith("pro ");
+  }
+
+  function streamingLabelIsPro(value) {
+    const label = normalize(value);
+    if (!label) return false;
+    if (labelIsPro(label)) return true;
+    // Current localized ChatGPT status can be e.g. "Model Pro přemýšlí".
+    // This is scoped to the active streaming-status node, so a standalone "Pro"
+    // token here is model evidence rather than the account-plan label elsewhere.
+    return /(^|\s)pro(?=\s|$|[.,:;!?()[\]{}-])/.test(label);
   }
 
   function turnKey(turn) {
@@ -58,7 +74,7 @@
     if (!turn) return null;
     for (const node of turn.querySelectorAll(`${STREAMING_SELECTOR} .loading-shimmer-tertiary`)) {
       const label = String(node.textContent || "").replace(/\s+/g, " ").trim();
-      if (labelIsPro(label)) return label;
+      if (streamingLabelIsPro(label)) return label;
     }
     return null;
   }
@@ -82,13 +98,15 @@
 
   function activeRecoveryState() {
     const turn = activeStreamingTurn();
-    const modelSlug = modelSlugForTurn(turn);
+    const directModelSlug = modelSlugForTurn(turn);
     const proStatusLabel = proStatusLabelForTurn(turn);
     const selectedModelLabel = selectedComposerModelLabel();
+    const modelSlug = directModelSlug;
     let decision = "unknown";
     let detectionSource = null;
 
-    if (modelSlugIsPro(modelSlug)) {
+    // Current Pro evidence always wins over historical/fallback evidence.
+    if (modelSlugIsPro(directModelSlug)) {
       decision = "pro";
       detectionSource = "message-model-slug";
     } else if (proStatusLabel) {
@@ -97,10 +115,13 @@
     } else if (labelIsPro(selectedModelLabel)) {
       decision = "pro";
       detectionSource = "composer-model-label";
-    } else if (modelSlug) {
+    } else if (directModelSlug) {
       decision = "non-pro";
       detectionSource = "message-model-slug";
     } else if (CONFIRMED_NON_PRO_LABELS.has(normalize(selectedModelLabel))) {
+      // Current ChatGPT exposes the selected intelligence preset in the composer.
+      // These exact labels are capture-backed Thinking/Instant presets; "Pro" is
+      // matched above and therefore can never be authorized through this branch.
       decision = "non-pro";
       detectionSource = "composer-model-label";
     }
@@ -109,6 +130,7 @@
       turn,
       turnKey: turnKey(turn),
       modelSlug,
+      directModelSlug,
       proStatusLabel,
       selectedModelLabel,
       decision,
@@ -199,6 +221,13 @@
       allowedRecoveryNudge = null;
       return;
     }
+    // An explicit current Pro signal always wins. The one-shot authorization is
+    // only for the brief state where Stop removed the streaming marker; it must
+    // never authorize a nudge after the user switches the composer to Pro.
+    if (state.decision === "pro") {
+      block(event, state, "send-nudge");
+      return;
+    }
     if (allowedNudge) {
       // One-shot authorization: consume it before the Send handler runs so it
       // cannot be reused by a later turn or another synthetic click.
@@ -222,6 +251,7 @@
       return {
         activeProRun: state.pro,
         activeModelSlug: state.modelSlug,
+        directModelSlug: state.directModelSlug,
         activeTurnKey: state.turnKey,
         recoveryDecision: state.decision,
         detectionSource: state.detectionSource,

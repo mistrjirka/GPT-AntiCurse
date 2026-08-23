@@ -1,27 +1,20 @@
 "use strict";
 
-const CHANNEL = "__gpt_anticurse_v1__";
+const DOM_GATE = globalThis.CGAntiCurseDomReady;
+const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const STATS_EVENT = "__gpt_anticurse_stats_ready__";
 const STALL_STATUS_EVENT = "__gpt_anticurse_stall_status__";
 const STATUS_BADGE_ID = "cg-conversation-guard-status";
 const STATUS_BADGE_SELECTOR = `[id="${STATUS_BADGE_ID}"]`;
-const DEFAULT_SETTINGS = { enabled: true, mode: "windowed-visible", maxDisplayMessages: 64, showGuardNotice: true };
-const RECOVERABLE_MAIN_CODES = new Set([
-  "unsupported-conversation-shape",
-  "conversation-transform-failed",
-  "conversation-json-parse-failed"
-]);
-const DOM_GATE = globalThis.CGAntiCurseDomReady;
-const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const conversationScope = globalThis.CGConversationScope.create();
-let currentSettings = { ...DEFAULT_SETTINGS };
-let settingsReady = false;
-let lastStats = null;
-let lastIssue = null;
-let stallStatus = null;
 let badge;
 let badgeObserver;
 let hideTimer;
+let lastStats = null;
+let lastIssue = null;
+let stallStatus = null;
+let showGuardNotice = true;
+let performanceEnabled = true;
 let renderQueuedForDomReady = false;
 
 function belongsToCurrentConversation(conversationId) {
@@ -37,13 +30,24 @@ function issueBelongsToCurrentConversation(issue) {
   return !issue || !issue.extra || belongsToCurrentConversation(issue.extra.conversationId);
 }
 
+function syncPerformanceClass() {
+  if (performanceEnabled === true) document.documentElement.classList.add("cg-anticurse-performance");
+  else document.documentElement.classList.remove("cg-anticurse-performance");
+}
+
+function recordIssue(scope, code, error, extra) {
+  if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record(scope, code, error, extra);
+  console.warn(`[GPT AntiCurse] ${scope}/${code}`, error, extra || "");
+  return Promise.resolve(null);
+}
+
 function statusBadges() {
   return Array.from(document.querySelectorAll(STATUS_BADGE_SELECTOR));
 }
 
 function reconcileBadges() {
   const elements = statusBadges();
-  if (!currentSettings.showGuardNotice) {
+  if (!showGuardNotice) {
     for (const element of elements) element.remove();
     badge = null;
     return null;
@@ -63,8 +67,6 @@ function installBadgeObserver() {
     ));
     if (badgeAdded) reconcileBadges();
   });
-  // AntiCurse status badges are direct body children. Keep this observer narrow
-  // so ordinary ChatGPT subtree mutations never reach it.
   badgeObserver.observe(document.body, { childList: true });
 }
 
@@ -155,6 +157,8 @@ function formatRecoveryCountdown(value) {
 
 function recoveryStatusText(status) {
   if (!status) return "";
+  if (status.phase === "blocked-pro") return "Pro model · auto-continue disabled";
+  if (status.phase === "blocked-unknown") return "model not confirmed · auto-continue disabled";
   if (status.phase === "loading") return "response loading · recovery not armed";
   if (status.phase === "paused-hidden") return "auto-continue paused · tab hidden";
   if (status.phase === "paused-draft") return "auto-continue paused · draft present";
@@ -172,18 +176,9 @@ function appendRecoveryStatus(element) {
   return true;
 }
 
-function queueRenderAfterDomReady() {
-  if (!DOM_GATE || renderQueuedForDomReady) return;
-  renderQueuedForDomReady = true;
-  DOM_GATE.whenReady(() => {
-    renderQueuedForDomReady = false;
-    render(lastStats);
-  });
-}
-
 function renderIssueIfNeeded() {
-  if (!currentSettings.showGuardNotice || !lastIssue || !issueIsRecent(lastIssue) || !issueBelongsToCurrentConversation(lastIssue)) return false;
-  if (!["history", "archive", "chromium-main", "settings"].includes(lastIssue.scope)) return false;
+  if (!showGuardNotice || !lastIssue || !issueIsRecent(lastIssue) || !issueBelongsToCurrentConversation(lastIssue)) return false;
+  if (!["history", "archive", "interceptor", "settings"].includes(lastIssue.scope)) return false;
   const el = ensureBadge();
   el.dataset.mode = "error";
   el.classList.remove("cg-compact");
@@ -191,6 +186,15 @@ function renderIssueIfNeeded() {
   el.title = `${lastIssue.scope}/${lastIssue.code}\n${lastIssue.message}`;
   appendRecoveryStatus(el);
   return true;
+}
+
+function queueRenderAfterDomReady() {
+  if (!DOM_GATE || renderQueuedForDomReady) return;
+  renderQueuedForDomReady = true;
+  DOM_GATE.whenReady(() => {
+    renderQueuedForDomReady = false;
+    render(lastStats);
+  });
 }
 
 function render(stats) {
@@ -205,7 +209,7 @@ function render(stats) {
     return;
   }
   installBadgeObserver();
-  if (!currentSettings.showGuardNotice) {
+  if (!showGuardNotice) {
     removeBadge(true);
     return;
   }
@@ -221,6 +225,7 @@ function render(stats) {
     el.title = "Automatic stalled-run recovery countdown";
     return;
   }
+
   const el = ensureBadge();
   el.dataset.mode = lastStats.mode || "unknown";
   el.classList.remove("cg-compact");
@@ -244,7 +249,7 @@ function render(stats) {
 
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
-      if (el && el.dataset.mode === "trimmed" && currentSettings.showGuardNotice && !renderIssueIfNeeded()) {
+      if (el && el.dataset.mode === "trimmed" && showGuardNotice && !renderIssueIfNeeded()) {
         renderTrimmedBadge(el, metric, recent, true);
         appendRecoveryStatus(el);
         el.classList.add("cg-compact");
@@ -252,7 +257,7 @@ function render(stats) {
     }, 9000);
   } else if (lastStats.mode === "error") {
     el.textContent = "AntiCurse error — original response kept";
-    el.title = lastStats.error || "Unknown interception error";
+    el.title = lastStats.error || lastStats.reason || "Unknown interception error";
   } else if (lastStats.reason === "below-limit") {
     renderSimpleBadge(el, "no trimming needed");
   } else {
@@ -261,70 +266,54 @@ function render(stats) {
   appendRecoveryStatus(el);
 }
 
-
-function syncPerformanceClass() {
-  if (currentSettings.enabled === true) document.documentElement.classList.add("cg-anticurse-performance");
-  else document.documentElement.classList.remove("cg-anticurse-performance");
-}
-
-function postSettings() {
-  if (!settingsReady) return false;
-  window.postMessage({ channel: CHANNEL, type: "settings", settings: currentSettings }, location.origin);
+function acceptStats(stats) {
+  if (stats && stats.paginationOlderPageBlocked) return false;
+  if (!stats) {
+    lastStats = null;
+    render(null);
+    return true;
+  }
+  if (!statsBelongToCurrentConversation(stats)) {
+    if (lastStats && !statsBelongToCurrentConversation(lastStats)) {
+      lastStats = null;
+      removeBadge();
+    }
+    return false;
+  }
+  lastStats = stats;
+  if (lastStats.mode === "trimmed" && DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") {
+    DIAGNOSTICS.clear("interceptor");
+  }
+  render(lastStats);
+  window.dispatchEvent(new CustomEvent(STATS_EVENT, { detail: {
+    mode: lastStats.mode,
+    reason: lastStats.reason,
+    conversationId: lastStats.conversationId,
+    displayAfter: Number.isFinite(Number(lastStats.displayAfter)) ? Number(lastStats.displayAfter) : null,
+    paginationFirewall: !!lastStats.paginationFirewall,
+    paginationCursorSuppressed: !!lastStats.paginationCursorSuppressed
+  } }));
   return true;
 }
 
-function recordDiagnostic(scope, code, error, extra) {
-  if (DIAGNOSTICS && typeof DIAGNOSTICS.record === "function") return DIAGNOSTICS.record(scope, code, error, extra);
-  console.warn(`[GPT AntiCurse] ${scope}/${code}`, error, extra || "");
-  return Promise.resolve(null);
-}
-
-function recordTrimmedTotals(stats) {
-  if (!stats || stats.mode !== "trimmed") return;
-  chrome.runtime.sendMessage({ type: "cg-record-stats", stats }).then((totals) => {
-    if (lastStats === stats && statsBelongToCurrentConversation(stats)) {
-      lastStats = { ...stats, totals };
-    }
-  }).catch((error) => {
-    console.warn("[GPT AntiCurse] Failed to update local counters", error);
-  });
-}
-
-function clearRecoveredMainIssue(stats) {
-  const validGraph = stats && (
-    stats.mode === "trimmed" ||
-    (stats.mode === "passthrough" && stats.reason === "below-limit")
-  );
-  if (!validGraph || !lastIssue || lastIssue.scope !== "chromium-main" || !RECOVERABLE_MAIN_CODES.has(lastIssue.code)) return;
-  if (DIAGNOSTICS && typeof DIAGNOSTICS.clear === "function") DIAGNOSTICS.clear("chromium-main", lastIssue.code);
-}
-
-chrome.storage.local.get({ ...DEFAULT_SETTINGS, cgLastIssue: null }).then((saved) => {
-  currentSettings = { ...DEFAULT_SETTINGS, ...saved };
+browser.storage.local.get({ enabled: true, showGuardNotice: true, cgLastIssue: null }).then((saved) => {
+  performanceEnabled = saved.enabled !== false;
   syncPerformanceClass();
+  showGuardNotice = saved.showGuardNotice !== false;
   lastIssue = saved.cgLastIssue || null;
-  settingsReady = true;
-  postSettings();
-  if (!currentSettings.showGuardNotice) removeBadge(true);
-}).catch((error) => {
-  settingsReady = true;
-  postSettings();
-  recordDiagnostic("settings", "storage-read-failed", error);
-});
+  if (!showGuardNotice) removeBadge(true);
+}).catch((error) => recordIssue("settings", "firefox-content-storage-read-failed", error));
 
-chrome.storage.onChanged.addListener((changes, area) => {
+browser.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  let settingsChanged = false;
-  for (const key of Object.keys(DEFAULT_SETTINGS)) {
-    if (!changes[key]) continue;
-    currentSettings[key] = changes[key].newValue;
-    settingsChanged = true;
-  }
+  const enabledChanged = !!changes.enabled;
+  const noticeChanged = !!changes.showGuardNotice;
   const issueChanged = !!changes.cgLastIssue;
+  if (!enabledChanged && !noticeChanged && !issueChanged) return;
+  if (enabledChanged) { performanceEnabled = changes.enabled.newValue !== false; syncPerformanceClass(); }
+  if (noticeChanged) showGuardNotice = changes.showGuardNotice.newValue !== false;
   if (issueChanged) lastIssue = changes.cgLastIssue.newValue || null;
-  if (!settingsReady || (!settingsChanged && !issueChanged)) return;
-  if (settingsChanged) { syncPerformanceClass(); postSettings(); }
-  if (currentSettings.showGuardNotice) render(lastStats);
+  if (showGuardNotice) render(lastStats);
   else removeBadge(true);
 });
 
@@ -335,49 +324,13 @@ window.addEventListener(STALL_STATUS_EVENT, (event) => {
   render(lastStats);
 });
 
-window.addEventListener("message", (event) => {
-  if (event.source !== window || event.origin !== location.origin) return;
-  const msg = event.data;
-  if (!msg || msg.channel !== CHANNEL) return;
-
-  if (msg.type === "settings-request") {
-    postSettings();
-    return;
-  }
-
-  if (msg.type === "diagnostic" && msg.diagnostic) {
-    const diagnostic = msg.diagnostic;
-    if (!issueBelongsToCurrentConversation(diagnostic)) return;
-    recordDiagnostic(diagnostic.scope || "chromium-main", diagnostic.code || "unknown", diagnostic.message, diagnostic.extra);
-    return;
-  }
-
-  if (msg.type !== "stats") return;
-  const stats = msg.stats || null;
-  // A native older cursor request may already have been queued before the newest
-  // page's cursor was suppressed. Its empty firewalled reply must not replace
-  // the real current-page status/history hint when it completes later.
-  if (stats && stats.paginationOlderPageBlocked) return;
-  recordTrimmedTotals(stats);
-  if (!statsBelongToCurrentConversation(stats)) return;
-
-  lastStats = stats;
-  clearRecoveredMainIssue(lastStats);
-  render(lastStats);
-  window.dispatchEvent(new CustomEvent(STATS_EVENT, { detail: {
-    mode: lastStats && lastStats.mode,
-    reason: lastStats && lastStats.reason,
-    conversationId: lastStats && lastStats.conversationId,
-    displayAfter: lastStats && Number.isFinite(Number(lastStats.displayAfter)) ? Number(lastStats.displayAfter) : null,
-    paginationFirewall: !!(lastStats && lastStats.paginationFirewall),
-    paginationCursorSuppressed: !!(lastStats && lastStats.paginationCursorSuppressed)
-  } }));
+browser.runtime.onMessage.addListener((message) => {
+  if (message && message.type === "cg-stats") acceptStats(message.stats);
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message && message.type === "cg-get-stats") {
-    sendResponse(statsBelongToCurrentConversation(lastStats) ? lastStats : null);
-    return false;
-  }
-  return false;
+browser.runtime.sendMessage({
+  type: "cg-get-stats",
+  conversationId: conversationScope.currentId()
+}).then(acceptStats).catch((error) => {
+  recordIssue("interceptor", "initial-stats-request-failed", error);
 });

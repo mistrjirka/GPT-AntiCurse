@@ -157,6 +157,8 @@ function formatRecoveryCountdown(value) {
 
 function recoveryStatusText(status) {
   if (!status) return "";
+  if (status.phase === "blocked-pro") return "Pro model · auto-continue disabled";
+  if (status.phase === "blocked-unknown") return "model not confirmed · auto-continue disabled";
   if (status.phase === "loading") return "response loading · recovery not armed";
   if (status.phase === "paused-hidden") return "auto-continue paused · tab hidden";
   if (status.phase === "paused-draft") return "auto-continue paused · draft present";

@@ -22,7 +22,7 @@
   let turnList = null;
   let turnListObserver = null;
   let shellObservers = [];
-  let shellRefreshRaf = 0;
+  let shellRefreshScheduled = false;
   let activeTurn = null;
   let activityObserver = null;
   let activeTurnKey = null;
@@ -31,7 +31,7 @@
   let recoveryGeneration = 0;
   let attemptedTurnKey = null;
   const attemptedTurns = new Set();
-  let visibilityListenerInstalled = false;
+  const recoveringTurns = new Set();
   let discoveryObserver = null;
   let discoveryTimer = null;
   let countdownUiTimer = null;
@@ -60,8 +60,25 @@
     countdownUiTimer = null;
   }
 
+  function recoveryModelState() {
+    const guard = globalThis.CGAntiCurseProRecoveryGuard;
+    if (!guard || typeof guard.activeRecoveryState !== "function") {
+      return { decision: "unknown", autoRecoveryAllowed: false, detectionSource: "guard-unavailable" };
+    }
+    try {
+      const state = guard.activeRecoveryState();
+      return state && typeof state === "object"
+        ? state
+        : { decision: "unknown", autoRecoveryAllowed: false, detectionSource: "guard-invalid-state" };
+    } catch (error) {
+      console.debug("[GPT AntiCurse] Pro recovery guard state unavailable", error);
+      return { decision: "unknown", autoRecoveryAllowed: false, detectionSource: "guard-error" };
+    }
+  }
+
   function recoveryRemainingMs() {
     if (!activeTurn || !stopButton()) return null;
+    if (recoveryModelState().autoRecoveryAllowed !== true) return null;
     if (hasLongWaitBanner(activeTurn)) return 0;
     if (shellLoading() || preOutputLoading(activeTurn)) return null;
     return Math.max(0, thresholdMs() - (Date.now() - lastActivityAt));
@@ -77,6 +94,8 @@
       return;
     }
 
+    const modelState = recoveryModelState();
+    const modelBlocked = modelState.autoRecoveryAllowed !== true;
     const longWaitBanner = hasLongWaitBanner(activeTurn);
     const loading = shellLoading() || preOutputLoading(activeTurn);
     const tool = runningTool(activeTurn);
@@ -84,7 +103,12 @@
     const hidden = document.visibilityState !== "visible";
     const remainingMs = recoveryRemainingMs();
     const phase = recoveryPhase ||
-      (hidden ? "paused-hidden" : draftBlocked ? "paused-draft" : longWaitBanner ? "checking" : loading ? "loading" : "countdown");
+      (modelBlocked
+        ? (modelState.decision === "pro" ? "blocked-pro" : "blocked-unknown")
+        : draftBlocked ? "paused-draft"
+        : longWaitBanner ? "checking"
+        : loading ? "loading"
+        : "countdown");
 
     window.dispatchEvent(new CustomEvent(STALL_STATUS_EVENT, { detail: {
       active: true,
@@ -94,12 +118,16 @@
       tool,
       longWaitBanner,
       draftBlocked,
-      hidden
+      hidden,
+      recoveryDecision: modelState.decision || "unknown",
+      recoveryDetectionSource: modelState.detectionSource || null
     } }));
 
     // Recovery itself stays deadline/event-driven. This timer only refreshes the
-    // visible countdown while a streaming turn exists.
-    if (!recoveryPhase && !longWaitBanner && !loading) countdownUiTimer = setTimeout(publishRecoveryStatus, 1000);
+    // visible countdown while a positively identified non-Pro streaming turn exists.
+    if (!recoveryPhase && !modelBlocked && !longWaitBanner && !loading) {
+      countdownUiTimer = setTimeout(publishRecoveryStatus, 1000);
+    }
   }
 
   function setRecoveryPhase(phase) {
@@ -168,9 +196,13 @@
 
   function hasAssistantOutput(turn = activeTurn) {
     if (!turn) return false;
-    for (const message of turn.querySelectorAll('[data-message-author-role="assistant"]')) {
+    const section = turn.matches?.('[data-turn="assistant"], [data-testid^="conversation-turn-"][data-turn="assistant"]')
+      ? turn
+      : turn.querySelector?.('[data-turn="assistant"], [data-testid^="conversation-turn-"][data-turn="assistant"]');
+    const scope = section || turn;
+    for (const message of scope.querySelectorAll('[data-message-author-role="assistant"], .markdown, [data-conversation-screenshot-content] .markdown')) {
       if (String(message.textContent || "").trim()) return true;
-      if (message.querySelector("img, video, audio, pre, code, table")) return true;
+      if (message.querySelector?.("img, video, audio, pre, code, table")) return true;
     }
     return false;
   }
@@ -180,12 +212,19 @@
   }
 
   function runningTool(turn = activeTurn) {
-    if (!turn) return false;
+    if (!turn || hasLongWaitBanner(turn)) return false;
+    const toolIconSelector = '[data-testid="cot-v5-tool-icon-pile"], [data-testid*="tool-icon"]';
     for (const shimmer of turn.querySelectorAll(".loading-shimmer-tertiary")) {
-      const row = shimmer.closest("div");
-      if (row && row.querySelector('[data-testid="cot-v5-tool-icon-pile"], [data-testid*="tool-icon"]')) return true;
-      const parent = shimmer.parentElement && shimmer.parentElement.parentElement;
-      if (parent && parent.querySelector('[data-testid="cot-v5-tool-icon-pile"], [data-testid*="tool-icon"]')) return true;
+      // Current ChatGPT renders an active tool row as two siblings: the tool
+      // icon pile and a deeply wrapped shimmer/status cell. Walk only far
+      // enough to find that row and require the icon to be a direct sibling.
+      // Do not accept arbitrary completed tool icons elsewhere in the turn.
+      let node = shimmer.parentElement;
+      for (let depth = 0; node && depth < 12 && node !== turn; depth++, node = node.parentElement) {
+        for (const child of node.children || []) {
+          if (child.matches?.(toolIconSelector)) return true;
+        }
+      }
     }
     return !!turn.querySelector('[aria-busy="true"][data-testid*="tool"], [data-state="running"][data-testid*="tool"]');
   }
@@ -204,6 +243,7 @@
   function scheduleStallCheck(delayOverride) {
     clearTimer();
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) { publishRecoveryStatus(); return; }
+    if (recoveryModelState().autoRecoveryAllowed !== true) { publishRecoveryStatus(); return; }
     if (shellLoading() || preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
     const elapsed = Date.now() - lastActivityAt;
     const delay = delayOverride == null
@@ -249,12 +289,12 @@
   }
 
   function findActiveTurn() {
-    if (!turnList || !turnList.isConnected) return null;
-    const children = Array.from(turnList.children);
-    for (let index = children.length - 1; index >= 0; index--) {
-      const wrapper = children[index];
-      if (!wrapper.matches(TURN_CONTAINER_SELECTOR)) continue;
-      if (wrapper.querySelector(STREAMING_SELECTOR)) return wrapper;
+    // Use the same live-document search as the Pro safety guard. ChatGPT can
+    // replace/reparent the turn list while a request is running, so restricting
+    // discovery to a previously captured parent can miss the new request-* turn.
+    const turns = document.querySelectorAll(TURN_CONTAINER_SELECTOR);
+    for (let index = turns.length - 1; index >= 0; index--) {
+      if (turns[index].querySelector(STREAMING_SELECTOR)) return turns[index];
     }
     return null;
   }
@@ -268,14 +308,19 @@
   function disconnectShellObservers() {
     for (const observer of shellObservers) observer.disconnect();
     shellObservers = [];
-    if (shellRefreshRaf) cancelAnimationFrame(shellRefreshRaf);
-    shellRefreshRaf = 0;
+    shellRefreshScheduled = false;
   }
 
   function scheduleShellRefresh() {
-    if (shellRefreshRaf) return;
-    shellRefreshRaf = requestAnimationFrame(() => {
-      shellRefreshRaf = 0;
+    if (shellRefreshScheduled) return;
+    shellRefreshScheduled = true;
+    queueMicrotask(() => {
+      shellRefreshScheduled = false;
+      // Re-run global live-turn discovery even when the previously captured list
+      // is still connected. ChatGPT can replace/reparent the streaming request
+      // elsewhere while a background tab is virtualized. Microtasks continue to
+      // run in hidden tabs; requestAnimationFrame does not.
+      syncActiveTurn();
       if (turnList && turnList.isConnected) return;
       if (activeTurn && !activeTurn.isConnected) observeActiveTurn(null);
       turnList = null;
@@ -310,7 +355,7 @@
     if (turnListObserver) turnListObserver.disconnect();
     turnList = nextList;
     turnListObserver = new MutationObserver(syncActiveTurn);
-    turnListObserver.observe(turnList, { childList: true });
+    turnListObserver.observe(turnList, { childList: true, subtree: true });
     installShellObservers();
     syncActiveTurn();
     return true;
@@ -356,24 +401,6 @@
     }
   }
 
-  function onVisibilityChange() {
-    if (document.visibilityState !== "visible") return;
-    removeVisibilityWakeup();
-    if (activeTurn) scheduleStallCheck(0);
-  }
-
-  function installVisibilityWakeup() {
-    if (visibilityListenerInstalled) return;
-    visibilityListenerInstalled = true;
-    document.addEventListener("visibilitychange", onVisibilityChange, { passive: true });
-  }
-
-  function removeVisibilityWakeup() {
-    if (!visibilityListenerInstalled) return;
-    visibilityListenerInstalled = false;
-    document.removeEventListener("visibilitychange", onVisibilityChange);
-  }
-
   function waitForCondition(test, root, timeoutMs) {
     return new Promise((resolve) => {
       let settled = false;
@@ -411,8 +438,10 @@
     if (hasUserDraft()) return false;
     const input = composer();
     if (!replaceComposerWithNudge(input)) return false;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    // The user can type during this frame. Never send if the composer changed
+    // Yield out of the input event without relying on requestAnimationFrame:
+    // rAF is suspended for background tabs, while a microtask still runs.
+    await new Promise((resolve) => queueMicrotask(resolve));
+    // The user can type during this transition. Never send if the composer changed
     // from AntiCurse's exact fixed nudge or gained an attachment.
     if (!composerContainsOnlyNudge()) return false;
 
@@ -437,28 +466,33 @@
 
   async function recoverStall(id, key, generation) {
     const identity = `${id || ""}\u001f${key || ""}`;
-    if (generation !== recoveryGeneration || key !== activeTurnKey || attemptedTurns.has(identity)) return;
+    if (generation !== recoveryGeneration || key !== activeTurnKey || attemptedTurns.has(identity) || recoveringTurns.has(identity)) return;
     if (hasUserDraft()) { scheduleStallCheck(30_000); return; }
     const stop = stopButton();
     if (!stop) return;
-    setRecoveryPhase("recovering");
-    attemptedTurns.add(identity);
-    if (attemptedTurns.size > 256) attemptedTurns.delete(attemptedTurns.values().next().value);
+    recoveringTurns.add(identity);
     attemptedTurnKey = key;
-    stop.click();
-    const stopped = await waitForCondition(() => !stopButton(), document.documentElement, 10_000);
-    if (!stopped || hasUserDraft()) { setRecoveryPhase(null); return; }
-    if (await sendNudge()) { setRecoveryPhase(null); return; }
-    // Never reload the chat as a recovery fallback. If ChatGPT does not expose
-    // a usable Send control after Stop, leave the page in place and fail safely.
-    setRecoveryPhase(null);
+    setRecoveryPhase("recovering");
+    try {
+      stop.click();
+      const stopped = await waitForCondition(() => !stopButton(), document.documentElement, 10_000);
+      if (!stopped || hasUserDraft()) return;
+      if (!(await sendNudge())) return;
+      attemptedTurns.add(identity);
+      if (attemptedTurns.size > 256) attemptedTurns.delete(attemptedTurns.values().next().value);
+    } finally {
+      recoveringTurns.delete(identity);
+      // Never reload the chat as a recovery fallback. A failed transient UI
+      // transition is not permanently recorded as an attempted turn.
+      setRecoveryPhase(null);
+    }
   }
 
   async function checkForStall() {
     stallTimer = null;
     if (!settings.stallRecoveryEnabled || !activeTurn || !stopButton()) return;
+    if (recoveryModelState().autoRecoveryAllowed !== true) { publishRecoveryStatus(); return; }
     if (shellLoading() || preOutputLoading(activeTurn)) { publishRecoveryStatus(); return; }
-    if (document.visibilityState !== "visible") { installVisibilityWakeup(); return; }
 
     // OR semantics: the explicit long-wait banner is independently sufficient;
     // without it, retain the conservative inactivity + backend-confirmation path.
@@ -495,6 +529,9 @@
       return;
     }
 
+    // Re-evaluate model identity immediately before any synthetic action. This
+    // closes the race where the user switches to Pro while a check/grace awaits.
+    if (recoveryModelState().autoRecoveryAllowed !== true) { setRecoveryPhase(null); return; }
     await recoverStall(id, key, generation);
   }
 
@@ -502,7 +539,6 @@
     clearTimer();
     clearCountdownUiTimer();
     clearDiscovery();
-    removeVisibilityWakeup();
     disconnectShellObservers();
     if (activityObserver) activityObserver.disconnect();
     if (turnListObserver) turnListObserver.disconnect();
@@ -540,16 +576,30 @@
         conversationId: conversationId(),
         activeTurn: !!activeTurn,
         activeTurnKey,
+        liveTurnKey: turnKey(findActiveTurn()),
+        activeTurnConnected: !!activeTurn?.isConnected,
+        turnListConnected: !!turnList?.isConnected,
         runningTool: runningTool(),
         longWaitBanner: hasLongWaitBanner(),
         assistantOutputPresent: hasAssistantOutput(),
         preOutputLoading: preOutputLoading(),
         shellLoading: shellLoading(),
+        recoveryModelState: (() => {
+          const state = recoveryModelState();
+          return {
+            decision: state.decision || "unknown",
+            detectionSource: state.detectionSource || null,
+            autoRecoveryAllowed: state.autoRecoveryAllowed === true,
+            turnKey: state.turnKey || null,
+            modelSlug: state.modelSlug || null
+          };
+        })(),
         recoveryPhase,
         countdownRemainingMs: recoveryRemainingMs(),
         lastActivityAt,
         attemptedTurnKey,
         attemptedTurnCount: attemptedTurns.size,
+        recoveryInFlightCount: recoveringTurns.size,
         timeoutSeconds: settings.stallRecoveryTimeoutSeconds,
         toolTimeoutSeconds: settings.stallRecoveryToolTimeoutSeconds,
         turnListObserver: !!turnListObserver,
