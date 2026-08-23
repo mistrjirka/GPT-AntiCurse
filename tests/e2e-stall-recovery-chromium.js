@@ -7,6 +7,7 @@ const path = require("path");
 const { chromium } = require("playwright");
 
 const ROOT = path.resolve(__dirname, "..");
+let extWorker = null;
 
 function fixtureHtml() {
   return String.raw`<!doctype html><html><head><meta charset="utf-8"><title>AntiCurse recovery E2E</title></head><body>
@@ -90,25 +91,22 @@ async function openCase(context,id){
   return page;
 }
 const state=p=>p.evaluate(()=>({...window.__state,draft:document.querySelector('#prompt-textarea')?.textContent||''}));
-async function recoveryDiag(p){
-  return p.evaluate(()=>{
-    const button=document.querySelector('#composer-submit-button');
-    const composer=document.querySelector('#prompt-textarea');
-    const recovery=globalThis.CGAntiCurseStallRecovery;
-    const guard=globalThis.CGAntiCurseProRecoveryGuard;
-    const input=globalThis.CGAntiCurseComposerInput;
-    const reload=globalThis.CGAntiCurseRecoveryReloadState;
-    let r=null,g=null,i=null,l=null;
-    try{r=recovery?.debug?.()||null;}catch(e){r={error:String(e)}}
-    try{g=guard?.debug?.()||null;}catch(e){g={error:String(e)}}
-    try{i=input?.debug?.()||null;}catch(e){i={error:String(e)}}
-    try{l=reload?.debug?.()||null;}catch(e){l={error:String(e)}}
-    return {fixture:window.__state||null,recovery:r,guard:g,input:i,reload:l,button:{testid:button?.getAttribute('data-testid')||null,disabled:!!button?.disabled,ariaDisabled:button?.getAttribute('aria-disabled')||null},composer:composer?.textContent||'',ready:document.readyState};
-  });
+async function extensionDiag(id){
+  if(!extWorker)return{error:'no-worker'};
+  return extWorker.evaluate(async id=>{
+    const tabs=await chrome.tabs.query({});
+    const tab=tabs.find(t=>{try{const u=new URL(t.url||'');return u.hostname==='chatgpt.com'&&u.pathname===`/c/${id}`;}catch{return false;}});
+    if(!tab?.id)return{error:'tab-not-found',tabs:tabs.map(t=>({id:t.id,url:t.url}))};
+    try{return await chrome.tabs.sendMessage(tab.id,{type:'cg-get-debug-state'});}catch(e){return{error:String(e),tab:{id:tab.id,url:tab.url}};}
+  },id);
+}
+async function recoveryDiag(p,id){
+  const pageState=await p.evaluate(()=>{const button=document.querySelector('#composer-submit-button');const composer=document.querySelector('#prompt-textarea');return{fixture:window.__state||null,button:{testid:button?.getAttribute('data-testid')||null,disabled:!!button?.disabled,ariaDisabled:button?.getAttribute('aria-disabled')||null},composer:composer?.textContent||'',ready:document.readyState};});
+  return{page:pageState,extension:await extensionDiag(id)};
 }
 async function waitForSend(p,id,timeout){
   try{await p.waitForFunction(()=>window.__state.sends===1,null,{timeout});}
-  catch(error){console.error('RECOVERY DIAG '+id+': '+JSON.stringify(await recoveryDiag(p).catch(e=>({evalError:String(e)}))));throw error;}
+  catch(error){console.error('RECOVERY DIAG '+id+': '+JSON.stringify(await recoveryDiag(p,id).catch(e=>({evalError:String(e)}))));throw error;}
 }
 
 (async()=>{
@@ -126,7 +124,7 @@ async function waitForSend(p,id,timeout){
       let streaming;if(['pre-output-reload','shell-loading-reload'].includes(id))streaming=false;else if(id==='reload-stopped-stale')streaming=n<=3;else if(id==='reload-running')streaming=n<=4;else if(id==='reload-pro')streaming=n<=3;else if(id==='reload-loop')streaming=true;else if(id==='reload-send-not-ready')streaming=n<=2;else if(id==='system-delay-banner')streaming=false;else streaming=n<=2;
       await r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({status:streaming?'IS_STREAMING':'NOT_STREAMING'})});
     });
-    await configure(await worker(context));
+    extWorker=await worker(context);await configure(extWorker);
     for(const id of ['basic','tool-fixed','controlled-editor','stale-stop']){const p=await openCase(context,id);await waitForSend(p,id,6000);const s=await state(p);assert.equal(s.stopClicks,1,id+': one Stop');assert.equal(s.sentText,'.',id+': dot');assert((counts.get(id)||0)>=3,id+': backend checks');if(id==='controlled-editor')assert(s.trustedInputEvents>=1,'native editor event required');await p.close();}
     {const p=await openCase(context,'slow-stop');await p.waitForFunction(()=>window.__state.stopClicks===1,null,{timeout:4000});await p.waitForFunction(()=>(document.querySelector('#cg-conversation-guard-status')?.textContent||'').includes('stopping'),null,{timeout:1500});await p.waitForTimeout(350);let s=await state(p);assert.equal(s.sends,0);assert.equal(s.draft,'');await waitForSend(p,'slow-stop',5000);assert.equal((await state(p)).sentText,'.');await p.close();}
     {const p=await openCase(context,'system-delay-banner');await waitForSend(p,'system-delay-banner',3500);assert.equal((await state(p)).sentText,'.');await p.close();}
