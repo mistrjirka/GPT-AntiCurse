@@ -104,10 +104,26 @@
     return updateStage(`finished-${String(outcome || "unknown")}`, extra);
   }
 
+  function rollbackSyntheticNudge() {
+    const input = globalThis.CGAntiCurseComposerInput;
+    if (!input || typeof input.containsOnlyNudge !== "function" || typeof input.clearNudge !== "function") return false;
+    try {
+      if (!input.containsOnlyNudge()) return false;
+      return input.clearNudge() === true;
+    } catch (error) {
+      lastError = String(error && error.message ? error.message : error);
+      return false;
+    }
+  }
+
   function clear(id = conversationId()) {
     if (!id) return false;
     const marker = readRaw(id);
     if (!marker) return false;
+    // A post-reload Send can fail after AntiCurse inserted its fixed dot. The
+    // normal recovery path already rolls that back; terminal reload cleanup must
+    // do the same so a failed resume never leaves a synthetic user draft behind.
+    rollbackSyntheticNudge();
     const done = {
       ...marker,
       stage: terminal(marker) ? marker.stage : "finished-cleared",
