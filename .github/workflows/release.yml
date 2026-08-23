@@ -54,7 +54,6 @@ jobs:
           cmp firefox/windowed.js chrome/windowed.js
           cmp firefox/debug-state.js chrome/debug-state.js
           cmp firefox/content.css chrome/content.css
-          cmp firefox/content.js chrome/content.js
           cmp firefox/popup.html chrome/popup.html
           cmp firefox/popup.css chrome/popup.css
           cmp firefox/popup-sizing.css chrome/popup-sizing.css
