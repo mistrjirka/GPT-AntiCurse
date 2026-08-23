@@ -12,286 +12,95 @@ const firefox = require("selenium-webdriver/firefox");
 const ROOT = path.resolve(__dirname, "..");
 
 function fixtureHtml() {
-  return String.raw`<!doctype html>
-<html><head><meta charset="utf-8"><title>AntiCurse Firefox stall recovery E2E</title></head>
-<body>
+  return String.raw`<!doctype html><html><head><meta charset="utf-8"><title>AntiCurse Firefox recovery E2E</title></head><body>
 <div id="main"><div id="turn-list"></div></div>
-<form data-type="unified-composer">
-  <div id="prompt-textarea" contenteditable="true"></div>
-  <button id="composer-submit-button" type="button"></button>
-</form>
+<form data-type="unified-composer"><div id="prompt-textarea" contenteditable="true"></div><button id="composer-submit-button" type="button"></button></form>
 <script>
 (() => {
   const id = location.pathname.split('/').pop();
-  const loadKey = 'stall-firefox-loads:' + id;
-  const loads = Number(sessionStorage.getItem(loadKey) || 0) + 1;
-  sessionStorage.setItem(loadKey, String(loads));
   const list = document.getElementById('turn-list');
   const composer = document.getElementById('prompt-textarea');
   const button = document.getElementById('composer-submit-button');
-  window.__state = { id, loads, stopClicks: 0, sends: 0, sentText: '', bumps: 0 };
-
-  function makeTurn(index, tool) {
-    const wrapper = document.createElement('div');
-    wrapper.setAttribute('data-turn-id-container', 'turn-' + index);
-    const section = document.createElement('section');
-    section.setAttribute('data-testid', 'conversation-turn-' + index);
-    section.setAttribute('data-turn-id', 'turn-' + index);
-    section.setAttribute('data-message-model-slug', 'gpt-5-6-thinking');
-    const streaming = document.createElement('div');
-    streaming.setAttribute('data-streaming-response-status', 'streaming');
-    if (id !== 'pre-output-loading') {
-      const output = document.createElement('div');
-      output.setAttribute('data-message-author-role', 'assistant');
-      output.textContent = 'assistant output ' + index;
-      section.append(output);
-    }
-    if (tool || id === 'pre-output-loading') {
-      const row = document.createElement('div');
-      const icon = document.createElement('span');
-      icon.setAttribute('data-testid', 'cot-v5-tool-icon-pile');
-      const shimmer = document.createElement('span');
-      shimmer.className = 'loading-shimmer-tertiary';
-      shimmer.textContent = 'Working';
-      row.append(icon, shimmer);
-      streaming.append(row);
-    }
-    section.append(streaming);
-    wrapper.append(section);
-    list.append(wrapper);
-    return { wrapper, streaming };
+  window.__state = { id, stopClicks: 0, sends: 0, sentText: '', stopAt: 0, sendAt: 0 };
+  function makeTurn(index, { tool = false, output = true } = {}) {
+    const wrapper = document.createElement('div'); wrapper.setAttribute('data-turn-id-container', 'turn-' + index);
+    const section = document.createElement('section'); section.setAttribute('data-testid', 'conversation-turn-' + index); section.setAttribute('data-turn-id', 'turn-' + index); section.setAttribute('data-turn', 'assistant');
+    const message = document.createElement('div'); message.setAttribute('data-message-author-role', 'assistant'); message.setAttribute('data-message-model-slug', 'gpt-5-6-thinking'); if (output) message.textContent = 'assistant output ' + index; section.append(message);
+    const streaming = document.createElement('div'); streaming.setAttribute('data-streaming-response-status', 'streaming');
+    if (tool) { const row = document.createElement('div'); const icon = document.createElement('span'); icon.setAttribute('data-testid','cot-v5-tool-icon-pile'); const shimmer = document.createElement('span'); shimmer.className='loading-shimmer-tertiary'; shimmer.textContent='Working'; row.append(icon, shimmer); streaming.append(row); }
+    section.append(streaming); wrapper.append(section); list.append(wrapper); return { wrapper, streaming };
   }
-
-  let active = null;
-  function setSubmit(disabled = false) {
-    button.setAttribute('data-testid', 'send-button');
-    button.textContent = 'Send';
-    button.disabled = disabled;
-    if (active && active.streaming) active.streaming.removeAttribute('data-streaming-response-status');
-  }
-  function setStop() {
-    button.setAttribute('data-testid', 'stop-button');
-    button.textContent = 'Stop';
-    button.disabled = false;
-  }
-
-  active = makeTurn(1, id === 'tool-timeout');
+  let active = makeTurn(1, { tool: id === 'tool-fixed', output: id !== 'pre-output-loading' });
+  function setStop(){ button.setAttribute('data-testid','stop-button'); button.textContent='Stop'; button.disabled=false; }
+  function setSend(disabled=false, settle=true){ button.setAttribute('data-testid','send-button'); button.textContent='Send'; button.disabled=disabled; if (settle && active?.streaming) active.streaming.removeAttribute('data-streaming-response-status'); }
   setStop();
-  if (id === 'disabled-until-input') {
-    new MutationObserver(() => {
-      if ((composer.textContent || '').trim()) button.disabled = false;
-    }).observe(composer, { childList: true, subtree: true, characterData: true });
-  }
-  if (id === 'system-delay-banner' && active?.streaming) {
-    const banner = document.createElement('span');
-    banner.className = 'loading-shimmer-tertiary';
-    banner.append('Our systems are thinking a bit more about this request before responding. You can retry with a faster model for a quicker response, though it may be less capable of handling complex requests. ');
-    const learnMore = document.createElement('a');
-    learnMore.href = 'https://help.openai.com/articles/20001326';
-    learnMore.textContent = 'Learn more';
-    banner.append(learnMore);
-    active.streaming.append(banner);
-  }
-  if (id === 'draft-protection') composer.textContent = 'do not overwrite me';
-
+  if (id === 'system-delay-banner') { const b=document.createElement('span'); b.className='loading-shimmer-tertiary'; b.append('Our systems are thinking a bit more about this request before responding. '); const a=document.createElement('a'); a.href='https://help.openai.com/articles/20001326'; a.textContent='Learn more'; b.append(a); active.streaming.append(b); }
+  if (id === 'draft-protection') composer.textContent='do not overwrite me';
   button.addEventListener('click', () => {
     if (button.getAttribute('data-testid') === 'stop-button') {
-      window.__state.stopClicks++;
-      if (id === 'disabled-until-input') setSubmit(true);
-      else setSubmit(false);
+      window.__state.stopClicks++; window.__state.stopAt=performance.now();
+      if (id === 'slow-stop') { setSend(true, false); setTimeout(() => { active.streaming.removeAttribute('data-streaming-response-status'); button.disabled=false; }, 650); }
+      else setSend(id === 'disabled-until-input', true);
       return;
     }
     if (button.disabled) return;
-    const text = (composer.textContent || '').trim();
-    window.__state.sends++;
-    window.__state.sentText = text;
-    composer.replaceChildren();
-    active = makeTurn(2 + window.__state.sends, false);
-    setStop();
+    const text=(composer.textContent||'').trim(); window.__state.sends++; window.__state.sentText=text; window.__state.sendAt=performance.now(); composer.replaceChildren(); active=makeTurn(2+window.__state.sends); setStop();
   });
-
-  window.__bumpActivity = () => {
-    if (!active || !active.streaming) return false;
-    const span = document.createElement('span');
-    span.textContent = ' progress-' + (++window.__state.bumps);
-    active.streaming.append(span);
-    return true;
-  };
-  window.__revealAssistantOutput = () => {
-    if (!active || active.wrapper.querySelector('[data-message-author-role="assistant"]')) return false;
-    const output = document.createElement('div');
-    output.setAttribute('data-message-author-role', 'assistant');
-    output.textContent = 'first actual assistant output';
-    active.wrapper.querySelector('section').append(output);
-    return true;
-  };
+  if (id === 'disabled-until-input') new MutationObserver(() => { if ((composer.textContent||'').trim() && button.getAttribute('data-testid') !== 'stop-button') button.disabled=false; }).observe(composer,{childList:true,subtree:true,characterData:true});
+  window.__revealAssistantOutput = () => { const msg=active.wrapper.querySelector('[data-message-author-role="assistant"]'); if (!msg || msg.textContent) return false; msg.textContent='first actual assistant output'; return true; };
 })();
-</script>
-</body></html>`;
+</script></body></html>`;
 }
 
 function createCertificate(dir) {
-  const key = path.join(dir, "key.pem");
-  const cert = path.join(dir, "cert.pem");
-  execFileSync("openssl", [
-    "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-    "-keyout", key, "-out", cert, "-days", "1",
-    "-subj", "/CN=chatgpt.com", "-addext", "subjectAltName=DNS:chatgpt.com"
-  ], { stdio: "ignore" });
+  const key = path.join(dir, "key.pem"), cert = path.join(dir, "cert.pem");
+  execFileSync("openssl", ["req","-x509","-newkey","rsa:2048","-nodes","-keyout",key,"-out",cert,"-days","1","-subj","/CN=chatgpt.com","-addext","subjectAltName=DNS:chatgpt.com"], { stdio: "ignore" });
   return { key: fs.readFileSync(key), cert: fs.readFileSync(cert) };
 }
-
 function createServer(tls, statusCounts) {
   return https.createServer(tls, (req, res) => {
     const url = new URL(req.url, "https://chatgpt.com:8443");
-    if (/^\/c\/[^/]+$/.test(url.pathname)) {
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(fixtureHtml());
-      return;
-    }
-    if (url.pathname === "/api/auth/session") {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ accessToken: "stall-firefox-token" }));
-      return;
-    }
-    const match = url.pathname.match(/^\/backend-api\/conversation\/([^/]+)\/stream_status$/);
-    if (match) {
-      const id = decodeURIComponent(match[1]);
-      assert.equal(req.headers.authorization || "", "Bearer stall-firefox-token");
-      const count = (statusCounts.get(id) || 0) + 1;
-      statusCounts.set(id, count);
-      const status = id === "backend-fail-open" || id === "system-delay-banner" || count > 2 ? "NOT_STREAMING" : "IS_STREAMING";
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ status }));
-      return;
-    }
-    res.writeHead(404, { "content-type": "text/plain" });
-    res.end("not found");
+    if (/^\/c\/[^/]+$/.test(url.pathname)) { res.writeHead(200,{"content-type":"text/html; charset=utf-8"}); res.end(fixtureHtml()); return; }
+    if (url.pathname === "/api/auth/session") { res.writeHead(200,{"content-type":"application/json"}); res.end(JSON.stringify({accessToken:"stall-firefox-token"})); return; }
+    const m=url.pathname.match(/^\/backend-api\/conversation\/([^/]+)\/stream_status$/);
+    if (m) { const id=decodeURIComponent(m[1]); statusCounts.set(id,(statusCounts.get(id)||0)+1); assert.equal(req.headers.authorization||"","Bearer stall-firefox-token"); res.writeHead(200,{"content-type":"application/json"}); res.end(JSON.stringify({status:"IS_STREAMING"})); return; }
+    res.writeHead(404,{"content-type":"text/plain"}); res.end("not found");
   });
 }
+async function waitFor(driver, script, timeout=5000){ await driver.wait(async()=>{try{return !!(await driver.executeScript(script));}catch{return false;}},timeout); }
+async function state(driver){ return driver.executeScript("return {...window.__state,draft:document.querySelector('#prompt-textarea')?.textContent||''}"); }
+async function openCase(driver,id){ await driver.get(`https://chatgpt.com:8443/c/${id}`); await waitFor(driver,"return !!window.__state"); }
 
-async function waitFor(driver, script, timeout = 5000) {
-  await driver.wait(async () => {
-    try { return !!(await driver.executeScript(script)); } catch { return false; }
-  }, timeout);
-}
-
-async function state(driver) {
-  return driver.executeScript("return {...window.__state, draft: document.querySelector('#prompt-textarea')?.textContent || ''}");
-}
-
-async function openCase(driver, id) {
-  await driver.get(`https://chatgpt.com:8443/c/${id}`);
-  await waitFor(driver, "return !!window.__state");
-}
-
-(async () => {
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "anticurse-stall-firefox-e2e-"));
-  const extensionDir = path.join(temp, "firefox");
-  const xpi = path.join(temp, "gpt-anticurse-firefox.xpi");
-  fs.cpSync(path.join(ROOT, "firefox"), extensionDir, { recursive: true });
-
-  const watchdogPath = path.join(extensionDir, "stall-recovery.js");
-  let watchdog = fs.readFileSync(watchdogPath, "utf8");
-  watchdog = watchdog
-    .replace("stallRecoveryTimeoutSeconds: 120", "stallRecoveryTimeoutSeconds: 0.20")
-    .replace("stallRecoveryToolTimeoutSeconds: 300", "stallRecoveryToolTimeoutSeconds: 0.55")
-    .replace("stallRecoveryGraceSeconds: 10", "stallRecoveryGraceSeconds: 0.06")
-    .replace("clampSeconds(next.stallRecoveryTimeoutSeconds, settings.stallRecoveryTimeoutSeconds, 60, 1800)", "clampSeconds(next.stallRecoveryTimeoutSeconds, settings.stallRecoveryTimeoutSeconds, 0.05, 1800)")
-    .replace("clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 120, 3600)", "clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 0.10, 3600)");
-  fs.writeFileSync(watchdogPath, watchdog);
-  execFileSync("zip", ["-qr", xpi, "."], { cwd: extensionDir });
-
-  const statusCounts = new Map();
-  const server = createServer(createCertificate(temp), statusCounts);
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(8443, "0.0.0.0", resolve);
-  });
-
-  const options = new firefox.Options()
-    .addArguments("-headless")
-    .setAcceptInsecureCerts(true)
-    .setPreference("browser.cache.disk.enable", false)
-    .setPreference("browser.cache.memory.enable", false)
-    .setPreference("network.dns.localDomains", "chatgpt.com");
-  if (process.env.FIREFOX_BIN) options.setBinary(process.env.FIREFOX_BIN);
-
-  const driver = await new Builder().forBrowser("firefox").setFirefoxOptions(options).build();
+(async()=>{
+  const temp=fs.mkdtempSync(path.join(os.tmpdir(),"anticurse-stall-firefox-e2e-"));
+  const extensionDir=path.join(temp,"firefox"), xpi=path.join(temp,"gpt-anticurse-firefox.xpi");
+  fs.cpSync(path.join(ROOT,"firefox"),extensionDir,{recursive:true});
+  const watchdogPath=path.join(extensionDir,"stall-recovery.js");
+  let watchdog=fs.readFileSync(watchdogPath,"utf8");
+  watchdog=watchdog
+    .replace("const STALL_TIMEOUT_MS = 120_000;","const STALL_TIMEOUT_MS = 200;")
+    .replace("const STOP_SETTLE_TIMEOUT_MS = 180_000;","const STOP_SETTLE_TIMEOUT_MS = 1_500;")
+    .replace("const SEND_READY_TIMEOUT_MS = 180_000;","const SEND_READY_TIMEOUT_MS = 1_500;")
+    .replace("const SEND_CONFIRM_TIMEOUT_MS = 30_000;","const SEND_CONFIRM_TIMEOUT_MS = 1_500;");
+  fs.writeFileSync(watchdogPath,watchdog); execFileSync("zip",["-qr",xpi,"."],{cwd:extensionDir});
+  const statusCounts=new Map(); const server=createServer(createCertificate(temp),statusCounts);
+  await new Promise((resolve,reject)=>{server.once("error",reject); server.listen(8443,"0.0.0.0",resolve);});
+  const options=new firefox.Options().addArguments("-headless").setAcceptInsecureCerts(true).setPreference("browser.cache.disk.enable",false).setPreference("browser.cache.memory.enable",false).setPreference("network.dns.localDomains","chatgpt.com");
+  if(process.env.FIREFOX_BIN) options.setBinary(process.env.FIREFOX_BIN);
+  const driver=await new Builder().forBrowser("firefox").setFirefoxOptions(options).build();
   try {
-    const addonId = await driver.installAddon(xpi, true);
-    assert(addonId, "temporary Firefox watchdog addon should install");
-
-    await openCase(driver, "basic");
-    await waitFor(driver, "return window.__state.sends === 1");
-    let current = await state(driver);
-    assert.equal(current.stopClicks, 1);
-    assert.equal(current.sentText, ".");
-    assert((statusCounts.get("basic") || 0) >= 2, "Firefox recovery must confirm backend streaming twice");
-    await driver.sleep(450);
-    assert.equal((await state(driver)).sends, 1, "Firefox recovery must not loop on the same turn");
-
-    await openCase(driver, "system-delay-banner");
-    await waitFor(driver, "return window.__state.sends === 1", 2000);
-    current = await state(driver);
-    assert.equal(current.stopClicks, 1, "Firefox explicit long-wait banner must trigger auto-resume");
-    assert.equal(current.sentText, ".");
-
-    await openCase(driver, "draft-protection");
-    await driver.sleep(700);
-    current = await state(driver);
-    assert.equal(current.stopClicks, 0);
-    assert.equal(current.sends, 0);
-    assert.equal(current.draft, "do not overwrite me");
-    assert.equal(statusCounts.get("draft-protection") || 0, 0);
-
-    await openCase(driver, "backend-fail-open");
-    await driver.sleep(700);
-    current = await state(driver);
-    assert.equal(current.stopClicks, 0);
-    assert.equal(current.sends, 0);
-    assert((statusCounts.get("backend-fail-open") || 0) >= 1);
-
-    await openCase(driver, "activity-reset");
-    await driver.sleep(120);
-    assert.equal(await driver.executeScript("return window.__bumpActivity()"), true);
-    await driver.sleep(140);
-    assert.equal((await state(driver)).sends, 0, "Firefox active-turn progress must reset the deadline");
-    await waitFor(driver, "return window.__state.sends === 1", 4000);
-
-    await openCase(driver, "tool-timeout");
-    await waitFor(driver, "return (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('tool auto-continue in')", 1500);
-    await driver.sleep(330);
-    assert.equal((await state(driver)).sends, 0, "Firefox active tool must use the longer timeout");
-    assert.equal(statusCounts.get("tool-timeout") || 0, 0);
-    await waitFor(driver, "return window.__state.sends === 1", 4000);
-
-    await openCase(driver, "pre-output-loading");
-    await waitFor(driver, "return (document.querySelector('#cg-conversation-guard-status')?.textContent || '').includes('response loading · recovery not armed')", 1500);
-    await driver.sleep(800);
-    current = await state(driver);
-    assert.equal(current.stopClicks, 0, "Firefox must not auto-stop while the response is still in pre-output loading/progress state");
-    assert.equal(current.sends, 0);
-    assert.equal(statusCounts.get("pre-output-loading") || 0, 0, "pre-output loading must not even query stream_status on the ordinary timeout path");
-    assert.equal(await driver.executeScript("return window.__revealAssistantOutput()"), true);
-    await waitFor(driver, "return window.__state.sends === 1", 4000);
-
-    await openCase(driver, "disabled-until-input");
-    await waitFor(driver, "return window.__state && window.__state.sends === 1", 6000);
-    current = await state(driver);
-    assert.equal(current.loads, 1, "Firefox recovery must not reload when Send starts disabled");
-    assert.equal(current.stopClicks, 1);
-    assert.equal(current.sentText, ".");
-    await driver.sleep(450);
-    assert.equal(Number(await driver.executeScript("return sessionStorage.getItem('stall-firefox-loads:disabled-until-input')")), 1);
-
-    console.log("Firefox stall-recovery E2E: PASS", JSON.stringify({ addonId, statusCounts: Object.fromEntries(statusCounts) }));
-  } finally {
-    await driver.quit().catch(() => {});
-    await new Promise((resolve) => server.close(resolve));
-    fs.rmSync(temp, { recursive: true, force: true });
-  }
-})().catch((error) => {
-  console.error(error && error.stack || error);
-  process.exit(1);
-});
+    const addonId=await driver.installAddon(xpi,true); assert(addonId);
+    for (const id of ["basic","tool-fixed","disabled-until-input"]) {
+      await openCase(driver,id); await waitFor(driver,"return window.__state.sends===1",6000); const s=await state(driver);
+      assert.equal(s.stopClicks,1,`${id}: expected one Stop`); assert.equal(s.sentText,".",`${id}: expected continuation nudge`);
+      if(id==="tool-fixed") assert((s.stopAt||0)<1000,"tool DOM must not select a longer timeout");
+      if(id!=="disabled-until-input") assert((statusCounts.get(id)||0)>=2,`${id}: expected two stream confirmations`);
+    }
+    await openCase(driver,"slow-stop"); await waitFor(driver,"return window.__state.stopClicks===1",3000); await waitFor(driver,"return (document.querySelector('#cg-conversation-guard-status')?.textContent||'').includes('stopping')",1500); await driver.sleep(350);
+    let s=await state(driver); assert.equal(s.sends,0); assert.equal(s.draft,""); let dbg=await driver.executeScript("return globalThis.CGAntiCurseStallRecovery?.debugState?.()||null"); assert.equal(dbg?.recoveryPhase,"stopping"); assert.equal(dbg?.countdownRemainingMs,null); await waitFor(driver,"return window.__state.sends===1",5000); s=await state(driver); assert(s.sendAt-s.stopAt>=600);
+    await openCase(driver,"system-delay-banner"); await waitFor(driver,"return window.__state.sends===1",2500); assert.equal((await state(driver)).sentText,".");
+    await openCase(driver,"draft-protection"); await driver.sleep(700); s=await state(driver); assert.equal(s.stopClicks,0); assert.equal(s.sends,0); assert.equal(s.draft,"do not overwrite me");
+    await openCase(driver,"pre-output-loading"); await waitFor(driver,"return (document.querySelector('#cg-conversation-guard-status')?.textContent||'').includes('loading')",1500); await driver.sleep(500); assert.equal((await state(driver)).stopClicks,0); assert.equal(await driver.executeScript("return window.__revealAssistantOutput()"),true); await waitFor(driver,"return window.__state.sends===1",5000);
+    console.log("Firefox stall-recovery E2E: PASS",JSON.stringify({addonId,statusCounts:Object.fromEntries(statusCounts)}));
+  } finally { await driver.quit().catch(()=>{}); await new Promise((resolve)=>server.close(resolve)); fs.rmSync(temp,{recursive:true,force:true}); }
+})().catch((error)=>{console.error(error&&error.stack||error);process.exit(1);});

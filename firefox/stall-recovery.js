@@ -4,12 +4,11 @@
 
   const ext = typeof browser !== "undefined" ? browser : chrome;
   const SESSION_AUTH = globalThis.CGAntiCurseSessionAuth;
-  const DEFAULTS = Object.freeze({
-    stallRecoveryEnabled: true,
-    stallRecoveryTimeoutSeconds: 120,
-    stallRecoveryToolTimeoutSeconds: 300,
-    stallRecoveryGraceSeconds: 10
-  });
+  const DEFAULTS = Object.freeze({ stallRecoveryEnabled: true });
+  const STALL_TIMEOUT_MS = 120_000;
+  const STOP_SETTLE_TIMEOUT_MS = 180_000;
+  const SEND_READY_TIMEOUT_MS = 180_000;
+  const SEND_CONFIRM_TIMEOUT_MS = 30_000;
   const STALL_STATUS_EVENT = "__gpt_anticurse_stall_status__";
   const TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
   const TURN_CONTAINER_SELECTOR = '[data-turn-id-container]';
@@ -36,18 +35,14 @@
   let discoveryTimer = null;
   let countdownUiTimer = null;
   let recoveryPhase = null;
-
-  function clampSeconds(value, fallback, min, max) {
-    const number = Number(value);
-    return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
-  }
+  let recoveryStartedAt = 0;
+  let lastRecoveryFinishedAt = 0;
+  let lastRecoveryResult = null;
+  let lastRecoveryFailure = null;
 
   function applySettings(next) {
     if (!next || typeof next !== "object") return;
     if (typeof next.stallRecoveryEnabled === "boolean") settings.stallRecoveryEnabled = next.stallRecoveryEnabled;
-    settings.stallRecoveryTimeoutSeconds = clampSeconds(next.stallRecoveryTimeoutSeconds, settings.stallRecoveryTimeoutSeconds, 60, 1800);
-    settings.stallRecoveryToolTimeoutSeconds = clampSeconds(next.stallRecoveryToolTimeoutSeconds, settings.stallRecoveryToolTimeoutSeconds, 120, 3600);
-    settings.stallRecoveryGraceSeconds = clampSeconds(next.stallRecoveryGraceSeconds, settings.stallRecoveryGraceSeconds, 0, 60);
   }
 
   function clearTimer() {
@@ -77,6 +72,7 @@
   }
 
   function recoveryRemainingMs() {
+    if (recoveringTurns.size || recoveryPhase) return null;
     if (!activeTurn || !stopButton()) return null;
     if (recoveryModelState().autoRecoveryAllowed !== true) return null;
     if (hasLongWaitBanner(activeTurn)) return 0;
@@ -87,9 +83,10 @@
   function publishRecoveryStatus() {
     clearCountdownUiTimer();
     const id = conversationId();
-    const active = settings.stallRecoveryEnabled && !!activeTurn && !!stopButton();
+    const transactionActive = recoveringTurns.size > 0;
+    const active = settings.stallRecoveryEnabled && (transactionActive || (!!activeTurn && !!stopButton()));
     if (!active) {
-      recoveryPhase = null;
+      if (!transactionActive) recoveryPhase = null;
       window.dispatchEvent(new CustomEvent(STALL_STATUS_EVENT, { detail: { active: false, conversationId: id } }));
       return;
     }
@@ -98,9 +95,7 @@
     const modelBlocked = modelState.autoRecoveryAllowed !== true;
     const longWaitBanner = hasLongWaitBanner(activeTurn);
     const loading = shellLoading() || preOutputLoading(activeTurn);
-    const tool = runningTool(activeTurn);
     const draftBlocked = hasUserDraft();
-    const hidden = document.visibilityState !== "visible";
     const remainingMs = recoveryRemainingMs();
     const phase = recoveryPhase ||
       (modelBlocked
@@ -115,10 +110,8 @@
       conversationId: id,
       phase,
       remainingMs,
-      tool,
       longWaitBanner,
       draftBlocked,
-      hidden,
       recoveryDecision: modelState.decision || "unknown",
       recoveryDetectionSource: modelState.detectionSource || null
     } }));
@@ -211,26 +204,8 @@
     return !!turn && !!turn.querySelector(STREAMING_SELECTOR) && !hasLongWaitBanner(turn) && !hasAssistantOutput(turn);
   }
 
-  function runningTool(turn = activeTurn) {
-    if (!turn || hasLongWaitBanner(turn)) return false;
-    const toolIconSelector = '[data-testid="cot-v5-tool-icon-pile"], [data-testid*="tool-icon"]';
-    for (const shimmer of turn.querySelectorAll(".loading-shimmer-tertiary")) {
-      // Current ChatGPT renders an active tool row as two siblings: the tool
-      // icon pile and a deeply wrapped shimmer/status cell. Walk only far
-      // enough to find that row and require the icon to be a direct sibling.
-      // Do not accept arbitrary completed tool icons elsewhere in the turn.
-      let node = shimmer.parentElement;
-      for (let depth = 0; node && depth < 12 && node !== turn; depth++, node = node.parentElement) {
-        for (const child of node.children || []) {
-          if (child.matches?.(toolIconSelector)) return true;
-        }
-      }
-    }
-    return !!turn.querySelector('[aria-busy="true"][data-testid*="tool"], [data-state="running"][data-testid*="tool"]');
-  }
-
   function thresholdMs() {
-    return (runningTool() ? settings.stallRecoveryToolTimeoutSeconds : settings.stallRecoveryTimeoutSeconds) * 1000;
+    return STALL_TIMEOUT_MS;
   }
 
   function turnKey(turn) {
@@ -254,6 +229,9 @@
   }
 
   function markActivity() {
+    // DOM churn caused by our own Stop → Send transaction is not new model
+    // progress and must not restart the stall deadline or cancel the transaction.
+    if (recoveringTurns.size) { publishRecoveryStatus(); return; }
     lastActivityAt = Date.now();
     recoveryGeneration++;
     recoveryPhase = null;
@@ -300,6 +278,10 @@
   }
 
   function syncActiveTurn() {
+    // Once recovery owns a turn, ChatGPT is allowed to remove/reparent its
+    // streaming DOM while Stop settles. Keep that transaction pinned to the
+    // original turn until it either sends the nudge or fails safely.
+    if (recoveringTurns.size) return;
     const next = findActiveTurn();
     if (next !== activeTurn) observeActiveTurn(next);
     else if (activeTurn && !stopButton()) observeActiveTurn(null);
@@ -401,6 +383,38 @@
     }
   }
 
+  function findTurnByKey(key) {
+    if (!key) return null;
+    for (const turn of document.querySelectorAll(TURN_CONTAINER_SELECTOR)) {
+      if (turnKey(turn) === key) return turn;
+    }
+    return null;
+  }
+
+  function originalTurnStillStreaming(key) {
+    const turn = findTurnByKey(key);
+    return !!turn && !!turn.querySelector(STREAMING_SELECTOR);
+  }
+
+  async function waitForStopSettlement(id, key) {
+    // ChatGPT can remove the Stop button immediately while the server spends
+    // tens of seconds cancelling a long tool/reasoning run. Do not type the
+    // nudge during that limbo state: wait for both the Stop control and the
+    // original streaming marker to settle.
+    const settledInDom = await waitForCondition(
+      () => !stopButton() && !originalTurnStillStreaming(key),
+      document.documentElement,
+      STOP_SETTLE_TIMEOUT_MS
+    );
+    if (settledInDom) return true;
+
+    // If React left stale streaming DOM behind, one backend check may still
+    // prove cancellation completed. Never proceed when the backend still says
+    // the original request is streaming or when its state is unknown.
+    const status = await streamStatus(id);
+    return status !== null && status !== "IS_STREAMING";
+  }
+
   function waitForCondition(test, root, timeoutMs) {
     return new Promise((resolve) => {
       let settled = false;
@@ -434,7 +448,17 @@
     return (node.textContent || "").trim() === ".";
   }
 
-  async function sendNudge() {
+  function clearSyntheticNudge() {
+    const node = composer();
+    if (!node || !node.isConnected || !composerContainsOnlyNudge()) return false;
+    const before = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "deleteContentBackward", data: null });
+    if (!node.dispatchEvent(before)) return false;
+    node.replaceChildren();
+    node.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward", data: null }));
+    return !(node.textContent || "").trim();
+  }
+
+  async function sendNudge(originalKey) {
     if (hasUserDraft()) return false;
     const input = composer();
     if (!replaceComposerWithNudge(input)) return false;
@@ -451,16 +475,31 @@
       if (!composerContainsOnlyNudge()) return false;
       const candidate = document.querySelector(SUBMIT_SELECTOR);
       return !!candidate && !candidate.disabled && candidate.getAttribute("aria-disabled") !== "true";
-    }, input.closest("form") || document.documentElement, 3_000);
+    }, input.closest("form") || document.documentElement, SEND_READY_TIMEOUT_MS);
     if (!submitReady || !composerContainsOnlyNudge()) return false;
 
     const submit = document.querySelector(SUBMIT_SELECTOR);
     if (!submit || submit.disabled || submit.getAttribute("aria-disabled") === "true") return false;
+    // At this point Stop has settled and is absent. A newly appearing Stop
+    // button therefore belongs to the resumed request. Alternatively accept a
+    // different streaming turn key. Do not accept the old turn's stale marker.
+    setRecoveryPhase("confirming");
     submit.click();
+
+    // The Pro/unknown click guard can synchronously cancel our synthetic Send.
+    // If it did, fail immediately instead of holding a synthetic dot for the
+    // whole confirmation timeout.
+    const postClickModel = recoveryModelState();
+    if (composerContainsOnlyNudge() && postClickModel.autoRecoveryAllowed !== true) return false;
+
     return waitForCondition(
-      () => !!stopButton() || !!document.querySelector(`${TURN_CONTAINER_SELECTOR} ${STREAMING_SELECTOR}`),
+      () => !!stopButton() || (() => {
+        const live = findActiveTurn();
+        const liveKey = turnKey(live);
+        return !!liveKey && liveKey !== originalKey;
+      })(),
       document.documentElement,
-      8_000
+      SEND_CONFIRM_TIMEOUT_MS
     );
   }
 
@@ -472,19 +511,36 @@
     if (!stop) return;
     recoveringTurns.add(identity);
     attemptedTurnKey = key;
-    setRecoveryPhase("recovering");
+    recoveryStartedAt = Date.now();
+    lastRecoveryResult = "in-flight";
+    lastRecoveryFailure = null;
+    setRecoveryPhase("stopping");
     try {
       stop.click();
-      const stopped = await waitForCondition(() => !stopButton(), document.documentElement, 10_000);
-      if (!stopped || hasUserDraft()) return;
-      if (!(await sendNudge())) return;
+      if (!(await waitForStopSettlement(id, key))) { lastRecoveryFailure = "stop-not-settled"; return; }
+      if (!settings.stallRecoveryEnabled || conversationId() !== id || generation !== recoveryGeneration) {
+        lastRecoveryFailure = "transaction-invalidated";
+        return;
+      }
+      if (hasUserDraft()) { lastRecoveryFailure = "user-draft-during-stop"; return; }
+      if (recoveryModelState().autoRecoveryAllowed !== true) { lastRecoveryFailure = "model-blocked-after-stop"; return; }
+      setRecoveryPhase("sending");
+      if (!(await sendNudge(key))) { lastRecoveryFailure = "nudge-send-failed"; return; }
       attemptedTurns.add(identity);
+      lastRecoveryResult = "completed";
       if (attemptedTurns.size > 256) attemptedTurns.delete(attemptedTurns.values().next().value);
     } finally {
+      if (lastRecoveryResult !== "completed") lastRecoveryResult = "failed";
+      lastRecoveryFinishedAt = Date.now();
+      // Remove only AntiCurse's exact synthetic nudge after a failed Send. Never
+      // touch a composer that the user changed while recovery was in flight.
+      if (lastRecoveryResult !== "completed") clearSyntheticNudge();
       recoveringTurns.delete(identity);
       // Never reload the chat as a recovery fallback. A failed transient UI
       // transition is not permanently recorded as an attempted turn.
       setRecoveryPhase(null);
+      // Reconcile whatever ChatGPT mounted while recovery owned the old turn.
+      syncActiveTurn();
     }
   }
 
@@ -512,16 +568,11 @@
     if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
 
     if (!longWaitBanner) {
-      const graceMs = settings.stallRecoveryGraceSeconds * 1000;
-      if (graceMs > 0) {
-        setRecoveryPhase("grace");
-        await new Promise((resolve) => setTimeout(resolve, graceMs));
-      }
       if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
       if (Date.now() - lastActivityAt < threshold || hasUserDraft() || !stopButton()) { setRecoveryPhase(null); return; }
-      // The ordinary heuristic always requires a second exact backend
-      // confirmation immediately before intervention.
-      setRecoveryPhase("checking");
+      // Confirm the backend a second time immediately before intervention. There
+      // is deliberately no extra grace delay: the user-selected deadline is the
+      // actual deadline, subject only to the two network checks themselves.
       if (await streamStatus(id) !== "IS_STREAMING") { setRecoveryPhase(null); return; }
       if (generation !== recoveryGeneration || key !== activeTurnKey) { setRecoveryPhase(null); return; }
     } else if (!hasLongWaitBanner(activeTurn) || hasUserDraft() || !stopButton()) {
@@ -530,12 +581,13 @@
     }
 
     // Re-evaluate model identity immediately before any synthetic action. This
-    // closes the race where the user switches to Pro while a check/grace awaits.
+    // closes the race where the user switches to Pro while a backend check awaits.
     if (recoveryModelState().autoRecoveryAllowed !== true) { setRecoveryPhase(null); return; }
     await recoverStall(id, key, generation);
   }
 
   function teardown() {
+    recoveryGeneration++;
     clearTimer();
     clearCountdownUiTimer();
     clearDiscovery();
@@ -579,7 +631,6 @@
         liveTurnKey: turnKey(findActiveTurn()),
         activeTurnConnected: !!activeTurn?.isConnected,
         turnListConnected: !!turnList?.isConnected,
-        runningTool: runningTool(),
         longWaitBanner: hasLongWaitBanner(),
         assistantOutputPresent: hasAssistantOutput(),
         preOutputLoading: preOutputLoading(),
@@ -596,12 +647,18 @@
         })(),
         recoveryPhase,
         countdownRemainingMs: recoveryRemainingMs(),
+        recoveryStartedAt,
+        lastRecoveryFinishedAt,
+        lastRecoveryResult,
+        lastRecoveryFailure,
         lastActivityAt,
         attemptedTurnKey,
         attemptedTurnCount: attemptedTurns.size,
         recoveryInFlightCount: recoveringTurns.size,
-        timeoutSeconds: settings.stallRecoveryTimeoutSeconds,
-        toolTimeoutSeconds: settings.stallRecoveryToolTimeoutSeconds,
+        recoveryStopSettleTimeoutSeconds: STOP_SETTLE_TIMEOUT_MS / 1000,
+        recoverySendReadyTimeoutSeconds: SEND_READY_TIMEOUT_MS / 1000,
+        recoverySendConfirmTimeoutSeconds: SEND_CONFIRM_TIMEOUT_MS / 1000,
+        timeoutSeconds: STALL_TIMEOUT_MS / 1000,
         turnListObserver: !!turnListObserver,
         shellObserverCount: shellObservers.length,
         discoveryObserver: !!discoveryObserver

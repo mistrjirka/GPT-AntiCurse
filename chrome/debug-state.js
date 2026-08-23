@@ -121,6 +121,11 @@
         try { return recovery && typeof recovery.debug === "function" ? { present: true, ...recovery.debug() } : { present: !!recovery }; }
         catch (error) { return { present: !!recovery, debugError: String(error && error.message ? error.message : error) }; }
       })(),
+      deliveryTimeoutReload: (() => {
+        const recovery = globalThis.CGAntiCurseDeliveryTimeoutReload;
+        try { return recovery && typeof recovery.debug === "function" ? { present: true, ...recovery.debug() } : { present: !!recovery }; }
+        catch (error) { return { present: !!recovery, debugError: String(error && error.message ? error.message : error) }; }
+      })(),
       archiveBridge: bridgeState,
       backendHistory: await backendHistory(id, Number(saved.maxDisplayMessages) || 64),
       lastIssue: saved.cgLastIssue || null

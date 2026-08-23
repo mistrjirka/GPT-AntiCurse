@@ -11,12 +11,16 @@
   const BLOCK_EVENT = '__gpt_anticurse_pro_recovery_blocked__';
   const CONFIRMED_NON_PRO_LABELS = new Set([
     "instant", "thinking",
-    // Current intelligence-preset labels observed in live ChatGPT. These map
-    // to the Thinking/Instant lanes; Pro is a separate exact preset.
+    // Capture-backed fallbacks only. Primary classification resolves the
+    // localized displayed preset through ChatGPT's own preset -> lane mapping.
     "medium", "high", "extra high",
     "okamžitá", "střední", "vysoká", "velmi vysoká"
   ]);
+  const PRESET_LANES = new Set(["instant", "thinking", "pro"]);
   const ALLOWED_NUDGE_WINDOW_MS = 20_000;
+  let presetLaneCache = new Map();
+  let presetLaneCacheScriptCount = -1;
+  let presetLaneCacheBuilt = false;
   let blockedClicks = 0;
   let blockedUnknownClicks = 0;
   let lastBlockedTurnKey = null;
@@ -36,17 +40,22 @@
 
   function labelIsPro(value) {
     const label = normalize(value);
-    return label === "pro" || label.startsWith("pro thinking") || label.startsWith("pro ");
+    if (!label) return false;
+    // This is only used on model/intelligence UI or active streaming status, so
+    // a standalone Pro token is strong model evidence. It also covers labels
+    // such as "GPT-5.6 Pro" without depending on word order or locale.
+    return /(^|[\s(/_\-])pro(?=$|[\s).,/:;!?_\-])/.test(label);
   }
 
   function streamingLabelIsPro(value) {
     const label = normalize(value);
     if (!label) return false;
-    if (labelIsPro(label)) return true;
-    // Current localized ChatGPT status can be e.g. "Model Pro přemýšlí".
-    // This is scoped to the active streaming-status node, so a standalone "Pro"
-    // token here is model evidence rather than the account-plan label elsewhere.
-    return /(^|\s)pro(?=\s|$|[.,:;!?()[\]{}-])/.test(label);
+    // Never treat an arbitrary standalone "pro" token as model evidence. In
+    // several locales (including Czech) it is an ordinary preposition and live
+    // tool/status text can contain it. Only accept narrowly structured model
+    // status labels observed in ChatGPT's streaming UI; all other cases fall
+    // back to the explicit model slug or the canonical composer preset lane.
+    return label === "pro" || label === "pro thinking" || label.startsWith("pro thinking ") || /^model\s+pro(?:\s|$)/.test(label);
   }
 
   function turnKey(turn) {
@@ -70,6 +79,28 @@
     return null;
   }
 
+  function requestModelSlugForTurn(turn) {
+    if (!turn) return null;
+    // The model slug lives on the user message that launched the active assistant
+    // turn. Read only the immediately preceding rendered user turn (skipping
+    // virtualization placeholders), never an arbitrary historical turn.
+    let container = turn;
+    while (container.parentElement?.matches?.(TURN_CONTAINER_SELECTOR)) container = container.parentElement;
+    let node = container.previousElementSibling;
+    for (let skipped = 0; node && skipped < 8; skipped++, node = node.previousElementSibling) {
+      if (!(node instanceof Element) || !node.matches(TURN_CONTAINER_SELECTOR)) continue;
+      const user = node.querySelector('[data-message-author-role="user"]');
+      const assistant = node.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"]');
+      if (user) {
+        const slugNode = user.matches(MODEL_SELECTOR) ? user : user.querySelector(MODEL_SELECTOR);
+        return String(slugNode?.getAttribute("data-message-model-slug") || "").trim() || null;
+      }
+      if (assistant) return null;
+      // A placeholder has neither role and can be skipped safely.
+    }
+    return null;
+  }
+
   function proStatusLabelForTurn(turn) {
     if (!turn) return null;
     for (const node of turn.querySelectorAll(`${STREAMING_SELECTOR} .loading-shimmer-tertiary`)) {
@@ -88,6 +119,61 @@
     return null;
   }
 
+  function decodeJsString(value) {
+    try { return JSON.parse(`"${value}"`); } catch { return String(value || ""); }
+  }
+
+  function rememberPresetLane(map, label, lane) {
+    const key = normalize(label);
+    if (!key || !PRESET_LANES.has(lane)) return;
+    const previous = map.get(key);
+    if (!previous) map.set(key, lane);
+    else if (previous !== lane) map.set(key, "ambiguous");
+  }
+
+  function buildPresetLaneMap() {
+    const scripts = document.scripts || [];
+    if (presetLaneCacheBuilt && presetLaneCacheScriptCount === scripts.length) return presetLaneCache;
+
+    const next = new Map();
+    // ChatGPT serializes the localized intelligence presets into first-party page
+    // bootstrap data. Resolve the visible label back to its canonical lane rather
+    // than maintaining a translation list. Keep the parser deliberately narrow:
+    // only selected_display_title objects with a recognized lane are accepted.
+    const pattern = /selected_display_title:"((?:\\.|[^"\\])*)"[^{}]{0,700}?lane:"(instant|thinking|pro)"/g;
+    for (const script of scripts) {
+      const text = String(script.textContent || "");
+      if (!text.includes("intelligencePresets") || !text.includes("selected_display_title")) continue;
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(text))) rememberPresetLane(next, decodeJsString(match[1]), match[2]);
+    }
+    presetLaneCache = next;
+    presetLaneCacheScriptCount = scripts.length;
+    presetLaneCacheBuilt = true;
+    return presetLaneCache;
+  }
+
+  function selectedComposerModelLane(label) {
+    const key = normalize(label);
+    if (!key) return null;
+    const map = buildPresetLaneMap();
+    const exact = map.get(key);
+    if (PRESET_LANES.has(exact)) return exact;
+
+    // Some layouts may prefix the selected label with a model/version. Use the
+    // longest unique mapped label as a suffix fallback and fail closed on conflict.
+    let resolved = null;
+    let bestLength = -1;
+    for (const [candidate, lane] of map) {
+      if (!PRESET_LANES.has(lane) || candidate.length <= bestLength) continue;
+      if (key !== candidate && !key.endsWith(` ${candidate}`) && !key.endsWith(` · ${candidate}`)) continue;
+      resolved = lane;
+      bestLength = candidate.length;
+    }
+    return resolved;
+  }
+
   function activeStreamingTurn() {
     const turns = document.querySelectorAll(TURN_CONTAINER_SELECTOR);
     for (let index = turns.length - 1; index >= 0; index--) {
@@ -99,25 +185,35 @@
   function activeRecoveryState() {
     const turn = activeStreamingTurn();
     const directModelSlug = modelSlugForTurn(turn);
+    const requestModelSlug = requestModelSlugForTurn(turn);
     const proStatusLabel = proStatusLabelForTurn(turn);
     const selectedModelLabel = selectedComposerModelLabel();
-    const modelSlug = directModelSlug;
+    const selectedModelLane = selectedComposerModelLane(selectedModelLabel);
+    const modelSlug = directModelSlug || requestModelSlug;
     let decision = "unknown";
     let detectionSource = null;
 
-    // Current Pro evidence always wins over historical/fallback evidence.
-    if (modelSlugIsPro(directModelSlug)) {
+    // The active request's own model slug is the strongest signal and is
+    // language-independent. The preceding-user lookup is deliberately adjacent
+    // only, so it cannot accidentally reuse a model from an older request.
+    if (modelSlugIsPro(modelSlug)) {
       decision = "pro";
-      detectionSource = "message-model-slug";
+      detectionSource = directModelSlug ? "message-model-slug" : "request-model-slug";
     } else if (proStatusLabel) {
       decision = "pro";
       detectionSource = "streaming-pro-status";
     } else if (labelIsPro(selectedModelLabel)) {
       decision = "pro";
       detectionSource = "composer-model-label";
-    } else if (directModelSlug) {
+    } else if (selectedModelLane === "pro") {
+      decision = "pro";
+      detectionSource = "composer-preset-lane";
+    } else if (modelSlug) {
       decision = "non-pro";
-      detectionSource = "message-model-slug";
+      detectionSource = directModelSlug ? "message-model-slug" : "request-model-slug";
+    } else if (selectedModelLane === "instant" || selectedModelLane === "thinking") {
+      decision = "non-pro";
+      detectionSource = "composer-preset-lane";
     } else if (CONFIRMED_NON_PRO_LABELS.has(normalize(selectedModelLabel))) {
       // Current ChatGPT exposes the selected intelligence preset in the composer.
       // These exact labels are capture-backed Thinking/Instant presets; "Pro" is
@@ -131,8 +227,10 @@
       turnKey: turnKey(turn),
       modelSlug,
       directModelSlug,
+      requestModelSlug,
       proStatusLabel,
       selectedModelLabel,
+      selectedModelLane,
       decision,
       detectionSource,
       pro: decision === "pro",
@@ -252,11 +350,14 @@
         activeProRun: state.pro,
         activeModelSlug: state.modelSlug,
         directModelSlug: state.directModelSlug,
+        requestModelSlug: state.requestModelSlug,
         activeTurnKey: state.turnKey,
         recoveryDecision: state.decision,
         detectionSource: state.detectionSource,
         proStatusLabel: state.proStatusLabel,
         selectedModelLabel: state.selectedModelLabel,
+        selectedModelLane: state.selectedModelLane,
+        presetLaneCount: buildPresetLaneMap().size,
         autoRecoveryAllowed: state.autoRecoveryAllowed,
         blockedClicks,
         blockedUnknownClicks,
