@@ -90,6 +90,26 @@ async function openCase(context,id){
   return page;
 }
 const state=p=>p.evaluate(()=>({...window.__state,draft:document.querySelector('#prompt-textarea')?.textContent||''}));
+async function recoveryDiag(p){
+  return p.evaluate(()=>{
+    const button=document.querySelector('#composer-submit-button');
+    const composer=document.querySelector('#prompt-textarea');
+    const recovery=globalThis.CGAntiCurseStallRecovery;
+    const guard=globalThis.CGAntiCurseProRecoveryGuard;
+    const input=globalThis.CGAntiCurseComposerInput;
+    const reload=globalThis.CGAntiCurseRecoveryReloadState;
+    let r=null,g=null,i=null,l=null;
+    try{r=recovery?.debug?.()||null;}catch(e){r={error:String(e)}}
+    try{g=guard?.debug?.()||null;}catch(e){g={error:String(e)}}
+    try{i=input?.debug?.()||null;}catch(e){i={error:String(e)}}
+    try{l=reload?.debug?.()||null;}catch(e){l={error:String(e)}}
+    return {fixture:window.__state||null,recovery:r,guard:g,input:i,reload:l,button:{testid:button?.getAttribute('data-testid')||null,disabled:!!button?.disabled,ariaDisabled:button?.getAttribute('aria-disabled')||null},composer:composer?.textContent||'',ready:document.readyState};
+  });
+}
+async function waitForSend(p,id,timeout){
+  try{await p.waitForFunction(()=>window.__state.sends===1,null,{timeout});}
+  catch(error){console.error('RECOVERY DIAG '+id+': '+JSON.stringify(await recoveryDiag(p).catch(e=>({evalError:String(e)}))));throw error;}
+}
 
 (async()=>{
   const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'anticurse-stall-e2e-')),ext=path.join(tmp,'chrome'),profile=path.join(tmp,'profile');
@@ -98,8 +118,6 @@ const state=p=>p.evaluate(()=>({...window.__state,draft:document.querySelector('
   const counts=new Map();
   const context=await chromium.launchPersistentContext(profile,{channel:'chromium',headless:true,args:[`--disable-extensions-except=${ext}`,`--load-extension=${ext}`]});
   try{
-    // Use a glob rather than an exact RegExp: Chromium can normalize the initial
-    // conversation navigation (trailing slash/query) before Playwright routing.
     await context.route('https://chatgpt.com/c/**',r=>{console.log('FIXTURE ROUTE '+r.request().url());return r.fulfill({status:200,contentType:'text/html',headers:{'cache-control':'no-store'},body:fixtureHtml()});});
     await context.route('https://chatgpt.com/api/auth/session',r=>r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({accessToken:'stall-e2e-token'})}));
     await context.route(/https:\/\/chatgpt\.com\/backend-api\/conversation\/[^/]+\/stream_status$/,async r=>{
@@ -109,12 +127,12 @@ const state=p=>p.evaluate(()=>({...window.__state,draft:document.querySelector('
       await r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({status:streaming?'IS_STREAMING':'NOT_STREAMING'})});
     });
     await configure(await worker(context));
-    for(const id of ['basic','tool-fixed','controlled-editor','stale-stop']){const p=await openCase(context,id);await p.waitForFunction(()=>window.__state.sends===1,null,{timeout:6000});const s=await state(p);assert.equal(s.stopClicks,1,id+': one Stop');assert.equal(s.sentText,'.',id+': dot');assert((counts.get(id)||0)>=3,id+': backend checks');if(id==='controlled-editor')assert(s.trustedInputEvents>=1,'native editor event required');await p.close();}
-    {const p=await openCase(context,'slow-stop');await p.waitForFunction(()=>window.__state.stopClicks===1,null,{timeout:4000});await p.waitForFunction(()=>(document.querySelector('#cg-conversation-guard-status')?.textContent||'').includes('stopping'),null,{timeout:1500});await p.waitForTimeout(350);let s=await state(p);assert.equal(s.sends,0);assert.equal(s.draft,'');await p.waitForFunction(()=>window.__state.sends===1,null,{timeout:5000});assert.equal((await state(p)).sentText,'.');await p.close();}
-    {const p=await openCase(context,'system-delay-banner');await p.waitForFunction(()=>window.__state.sends===1,null,{timeout:3500});assert.equal((await state(p)).sentText,'.');await p.close();}
+    for(const id of ['basic','tool-fixed','controlled-editor','stale-stop']){const p=await openCase(context,id);await waitForSend(p,id,6000);const s=await state(p);assert.equal(s.stopClicks,1,id+': one Stop');assert.equal(s.sentText,'.',id+': dot');assert((counts.get(id)||0)>=3,id+': backend checks');if(id==='controlled-editor')assert(s.trustedInputEvents>=1,'native editor event required');await p.close();}
+    {const p=await openCase(context,'slow-stop');await p.waitForFunction(()=>window.__state.stopClicks===1,null,{timeout:4000});await p.waitForFunction(()=>(document.querySelector('#cg-conversation-guard-status')?.textContent||'').includes('stopping'),null,{timeout:1500});await p.waitForTimeout(350);let s=await state(p);assert.equal(s.sends,0);assert.equal(s.draft,'');await waitForSend(p,'slow-stop',5000);assert.equal((await state(p)).sentText,'.');await p.close();}
+    {const p=await openCase(context,'system-delay-banner');await waitForSend(p,'system-delay-banner',3500);assert.equal((await state(p)).sentText,'.');await p.close();}
     {const p=await openCase(context,'draft-protection');await p.waitForTimeout(700);const s=await state(p);assert.equal(s.stopClicks,0);assert.equal(s.sends,0);assert.equal(s.draft,'do not overwrite me');await p.close();}
-    for(const id of ['pre-output-reload','shell-loading-reload','reload-stopped-stale']){const p=await openCase(context,id);await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await p.waitForFunction(()=>window.__state.sends===1,null,{timeout:6000});const s=await state(p);assert.equal(s.loads,2,id+': one reload');assert.equal(s.sentText,'.');await p.close();}
-    {const p=await openCase(context,'reload-running');await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await p.waitForFunction(()=>window.__state.sends===1,null,{timeout:7000});const s=await state(p);assert.equal(s.loads,2);assert.equal(s.stopClicks,2);assert.equal(s.sentText,'.');await p.close();}
+    for(const id of ['pre-output-reload','shell-loading-reload','reload-stopped-stale']){const p=await openCase(context,id);await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await waitForSend(p,id,6000);const s=await state(p);assert.equal(s.loads,2,id+': one reload');assert.equal(s.sentText,'.');await p.close();}
+    {const p=await openCase(context,'reload-running');await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await waitForSend(p,'reload-running',7000);const s=await state(p);assert.equal(s.loads,2);assert.equal(s.stopClicks,2);assert.equal(s.sentText,'.');await p.close();}
     {const p=await openCase(context,'reload-pro');await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await p.waitForTimeout(1200);const s=await state(p);assert.equal(s.loads,2);assert.equal(s.sends,0);await p.close();}
     {const p=await openCase(context,'reload-loop');await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await p.waitForTimeout(3800);const s=await state(p);assert.equal(s.loads,2,'no second reload');assert.equal(s.sends,0);await p.close();}
     {const p=await openCase(context,'reload-send-not-ready');await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await p.waitForTimeout(2400);const s=await state(p);assert.equal(s.loads,2);assert.equal(s.sends,0);assert.equal(s.draft,'','failed post-reload Send must roll back dot');await p.close();}
