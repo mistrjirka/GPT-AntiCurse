@@ -108,7 +108,9 @@
   ext.storage?.local?.get({ showGuardNotice: true }).then((saved) => {
     showGuardNotice = saved.showGuardNotice !== false;
     if (status && showGuardNotice) scheduleRender();
-  }).catch(() => {});
+  }).catch((error) => {
+    console.debug("[GPT AntiCurse] Recovery status setting unavailable", error);
+  });
   ext.storage?.onChanged?.addListener((changes, area) => {
     if (area !== "local" || !changes.showGuardNotice) return;
     showGuardNotice = changes.showGuardNotice.newValue !== false;
