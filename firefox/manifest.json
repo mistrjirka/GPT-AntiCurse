@@ -55,6 +55,7 @@
         "recovery-reload-state.js",
         "composer-native-input.js",
         "pro-recovery-guard.js",
+        "post-run-recovery.js",
         "stall-recovery.js",
         "windowed.js",
         "debug-state.js"
