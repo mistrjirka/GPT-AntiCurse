@@ -15,22 +15,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Apply live smoke regression fixes
-        if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch origin "$GITHUB_HEAD_REF"
-          git checkout -B "$GITHUB_HEAD_REF" "origin/$GITHUB_HEAD_REF"
-          python scripts/run-live-smoke-regressions.py
-          git diff --check
-          if ! git diff --quiet; then
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git add firefox chrome tests scripts
-            git commit -m "Fix native history capture and pre-output recovery arming"
-            git push origin "HEAD:$GITHUB_HEAD_REF"
-          fi
       - name: Validate manifests
         run: |
           python -m json.tool firefox/manifest.json >/dev/null
@@ -70,6 +54,7 @@ jobs:
           cmp firefox/windowed.js chrome/windowed.js
           cmp firefox/debug-state.js chrome/debug-state.js
           cmp firefox/content.css chrome/content.css
+          cmp firefox/content.js chrome/content.js
           cmp firefox/popup.html chrome/popup.html
           cmp firefox/popup.css chrome/popup.css
           cmp firefox/popup-sizing.css chrome/popup-sizing.css
