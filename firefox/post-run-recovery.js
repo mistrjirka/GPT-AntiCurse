@@ -18,7 +18,6 @@
   const SEND_READY_TIMEOUT_MS = 30_000;
   const SEND_CONFIRM_TIMEOUT_MS = 30_000;
   const BACKEND_POLL_MS = 1_500;
-  const STREAM_STATUS_FETCH_TIMEOUT_MS = 5_000;
 
   let settings = { stallRecoveryEnabled: true };
   let observer = null;
@@ -142,19 +141,15 @@
     if (!id || !SESSION_AUTH || typeof SESSION_AUTH.resolveAccessToken !== "function") return null;
     const auth = await SESSION_AUTH.resolveAccessToken({ isCurrent: () => conversationId() === id });
     if (!auth.ok || conversationId() !== id) return null;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), STREAM_STATUS_FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(`${location.origin}/backend-api/conversation/${encodeURIComponent(id)}/stream_status`, {
         method: "GET", credentials: "same-origin", cache: "no-store",
-        headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` },
-        signal: controller.signal
+        headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` }
       });
       if (!response.ok) return null;
       const data = await response.json();
       return typeof data?.status === "string" ? data.status : null;
     } catch { return null; }
-    finally { clearTimeout(timeout); }
   }
 
   function waitForCondition(test, timeoutMs) {
