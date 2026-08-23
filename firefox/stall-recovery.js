@@ -307,16 +307,25 @@
       let done = false;
       let observer = null;
       let timeout = null;
+      let readyStateHandler = null;
       const finish = (value) => {
         if (done) return;
         done = true;
         if (observer) observer.disconnect();
         if (timeout !== null) clearTimeout(timeout);
+        if (readyStateHandler) document.removeEventListener("readystatechange", readyStateHandler);
         resolve(value);
       };
-      try { if (test()) return finish(true); } catch { /* keep waiting */ }
-      observer = new MutationObserver(() => { try { if (test()) finish(true); } catch { /* keep waiting */ } });
-      observer.observe(root || document.documentElement, { childList: true, subtree: true, attributes: true });
+      const check = () => {
+        try { if (test()) finish(true); } catch { /* keep waiting */ }
+      };
+      check();
+      if (done) return;
+      observer = new MutationObserver(check);
+      observer.observe(root || document.documentElement || document, { childList: true, subtree: true, attributes: true });
+      readyStateHandler = check;
+      document.addEventListener("readystatechange", readyStateHandler);
+      queueMicrotask(check);
       timeout = setTimeout(() => finish(false), timeoutMs);
     });
   }
