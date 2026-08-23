@@ -37,7 +37,7 @@ function fixtureHtml(id, loadNumber) {
   const composer=document.getElementById('prompt-textarea');
   const streamingNode=document.querySelector('[data-streaming-response-status]');
   const state=window.__state={id,loadNumber:${loadNumber},stopClicks:0,sends:Number(sessionStorage.getItem('fixture-sends')||0),sentText:''};
-  function setSend(){ button.setAttribute('data-testid','send-button'); button.textContent='Send'; button.disabled=false; streamingNode?.removeAttribute('data-streaming-response-status'); }
+  function setSend(){ button.setAttribute('data-testid','send-button'); button.textContent='Send'; button.disabled=false; streamingNode?.removeAttribute('data-streaming-response-status'); return true; }
   button.addEventListener('click',()=>{
     if(button.getAttribute('data-testid')==='stop-button') { state.stopClicks++; setSend(); return; }
     if(button.disabled) return;
@@ -45,7 +45,7 @@ function fixtureHtml(id, loadNumber) {
     state.sends++; state.sentText=text; sessionStorage.setItem('fixture-sends',String(state.sends));
     composer.replaceChildren(); button.setAttribute('data-testid','stop-button'); button.textContent='Stop';
   });
-  if(id==='tool-ended' || id==='useful-answer') setTimeout(setSend,350);
+  window.__finishRun=setSend;
 })();
 </script></body></html>`;
 }
@@ -120,6 +120,8 @@ async function openCase(driver, id) {
     assert(addonId);
 
     await openCase(driver, "tool-ended");
+    await driver.sleep(700);
+    assert.equal(await driver.executeScript("return window.__finishRun()"), true);
     await waitFor(driver, "return Number(sessionStorage.getItem('fixture-sends')||0)===1");
     let state = await driver.executeScript("return window.__state");
     assert.equal(state.stopClicks, 0, "natural tool-only terminal state must not click Stop");
@@ -127,10 +129,13 @@ async function openCase(driver, id) {
     assert.equal(loadCounts.get("tool-ended"), 1, "tool-only terminal state must not reload");
 
     await openCase(driver, "useful-answer");
+    await driver.sleep(700);
+    assert.equal(await driver.executeScript("return window.__finishRun()"), true);
     await driver.sleep(1400);
     assert.equal(await driver.executeScript("return Number(sessionStorage.getItem('fixture-sends')||0)"), 0, "useful Markdown answer must not auto-continue");
 
     await openCase(driver, "manual-stop");
+    await driver.sleep(700);
     const stop = await driver.findElement(By.css('#composer-submit-button[data-testid="stop-button"]'));
     await stop.click();
     await driver.sleep(1400);
