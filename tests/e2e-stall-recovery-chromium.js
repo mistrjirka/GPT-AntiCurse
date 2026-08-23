@@ -207,9 +207,12 @@ async function state(page) {
       let s = await state(page);
       assert.equal(s.sends, 0, "must not type/send while the original turn is still cancelling");
       assert.equal(s.draft, "", "composer must remain untouched during Stop settlement");
-      const dbg = await page.evaluate(() => globalThis.CGAntiCurseStallRecovery?.debug?.());
-      assert.equal(dbg?.recoveryPhase, "stopping");
-      assert.equal(dbg?.countdownRemainingMs, null, "countdown must be suspended during slow Stop");
+      const recoveryUi = await page.evaluate(() => {
+        const badge = document.querySelector('#cg-conversation-guard-status');
+        return { phase: badge?.dataset?.recoveryPhase || null, state: badge?.querySelector('.cg-state')?.textContent || '' };
+      });
+      assert.equal(recoveryUi.phase, "stopping");
+      assert.equal(recoveryUi.state, "stopping", "countdown must be replaced by the stopping transaction state");
       await page.waitForFunction(() => window.__state.sends === 1, null, { timeout: 4000 });
       s = await state(page);
       assert(s.sendAt - s.stopAt >= 600, "Send must wait for slow Stop settlement");
