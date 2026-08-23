@@ -100,12 +100,6 @@
     return (section && (section.getAttribute("data-turn-id") || section.getAttribute("data-testid"))) || turn.getAttribute?.("data-turn-id-container") || null;
   }
 
-  function findActiveTurn() {
-    const turns = document.querySelectorAll(TURN_CONTAINER_SELECTOR);
-    for (let index = turns.length - 1; index >= 0; index--) if (turns[index].querySelector(STREAMING_SELECTOR)) return turns[index];
-    return null;
-  }
-
   function newestAssistantTurn() {
     const turns = document.querySelectorAll(TURN_CONTAINER_SELECTOR);
     for (let index = turns.length - 1; index >= 0; index--) {
@@ -113,6 +107,14 @@
       if (turn.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"]')) return turn;
     }
     return null;
+  }
+
+  function findActiveTurn() {
+    // Old assistant turns can retain stale streaming markers after ChatGPT has
+    // already stopped the newest request. Only the newest assistant turn can be
+    // the recovery target; this is also the source used for Stop settlement.
+    const newest = newestAssistantTurn();
+    return newest && newest.querySelector(STREAMING_SELECTOR) ? newest : null;
   }
 
   function newestAssistantStreaming() {
