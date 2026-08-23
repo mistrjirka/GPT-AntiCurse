@@ -35,7 +35,11 @@
     const text = label(status);
     const badge = document.getElementById(BADGE_ID);
     if (!text || !badge) return;
-    badge.dataset.recoveryPhase = status.phase || (status.longWaitBanner ? "now" : "countdown");
+    const phase = status.phase || (status.longWaitBanner ? "now" : "countdown");
+    const currentState = badge.querySelector(".cg-state");
+    if (badge.dataset.recoveryPhase === phase && currentState && currentState.textContent === text) return;
+
+    badge.dataset.recoveryPhase = phase;
     const strong = document.createElement("strong");
     strong.textContent = "AC";
     const sep = document.createElement("span");
