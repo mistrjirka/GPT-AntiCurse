@@ -41,7 +41,7 @@ assert(!chromeSource.includes("setInterval("), "watchdog must be event-driven, n
 assert(!chromeSource.includes("innerHTML"));
 assert(!chromeSource.includes("execCommand"));
 assert(!/(^|[^\w])(eval|Function)\s*\(/.test(chromeSource));
-assert(chromeSource.includes('turnListObserver.observe(turnList, { childList: true })'), "steady-state turn-list watch must be direct-child only");
+assert(chromeSource.includes('turnListObserver.observe(turnList, { childList: true, subtree: true })'), "turn-list watch must observe descendant streaming-marker changes after ChatGPT virtualization");
 assert(chromeSource.includes('activityObserver.observe(activeTurn, {'), "only the active turn subtree should be observed for progress");
 assert(chromeSource.includes('discoveryObserver.observe(root, { childList: true, subtree: true })'), "broad discovery may exist only as temporary fallback");
 assert(chromeSource.includes("discoveryTimer = setTimeout(clearDiscovery, 10_000)"), "broad discovery must self-expire");
