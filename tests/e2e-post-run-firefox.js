@@ -33,16 +33,17 @@ function fixtureHtml(id, loadNumber) {
 <script>
 (() => {
   const id=${JSON.stringify(id)};
+  const sendKey='fixture-sends:'+id;
   const button=document.getElementById('composer-submit-button');
   const composer=document.getElementById('prompt-textarea');
   const streamingNode=document.querySelector('[data-streaming-response-status]');
-  const state=window.__state={id,loadNumber:${loadNumber},stopClicks:0,sends:Number(sessionStorage.getItem('fixture-sends')||0),sentText:''};
+  const state=window.__state={id,loadNumber:${loadNumber},stopClicks:0,sends:Number(sessionStorage.getItem(sendKey)||0),sentText:''};
   function setSend(){ button.setAttribute('data-testid','send-button'); button.textContent='Send'; button.disabled=false; streamingNode?.removeAttribute('data-streaming-response-status'); return true; }
   button.addEventListener('click',()=>{
     if(button.getAttribute('data-testid')==='stop-button') { state.stopClicks++; setSend(); return; }
     if(button.disabled) return;
     const text=(composer.textContent||'').trim();
-    state.sends++; state.sentText=text; sessionStorage.setItem('fixture-sends',String(state.sends));
+    state.sends++; state.sentText=text; sessionStorage.setItem(sendKey,String(state.sends));
     composer.replaceChildren(); button.setAttribute('data-testid','stop-button'); button.textContent='Stop';
   });
   window.__finishRun=setSend;
@@ -120,22 +121,22 @@ async function openCase(driver, id) {
     assert(addonId);
 
     await openCase(driver, "tool-ended");
-    await driver.sleep(700);
+    await driver.sleep(1100);
     assert.equal(await driver.executeScript("return window.__finishRun()"), true);
-    await waitFor(driver, "return Number(sessionStorage.getItem('fixture-sends')||0)===1");
+    await waitFor(driver, "return Number(sessionStorage.getItem('fixture-sends:tool-ended')||0)===1");
     let state = await driver.executeScript("return window.__state");
     assert.equal(state.stopClicks, 0, "natural tool-only terminal state must not click Stop");
     assert.equal(state.sentText, ".", "tool-only terminal state must continue with dot");
     assert.equal(loadCounts.get("tool-ended"), 1, "tool-only terminal state must not reload");
 
     await openCase(driver, "useful-answer");
-    await driver.sleep(700);
+    await driver.sleep(1100);
     assert.equal(await driver.executeScript("return window.__finishRun()"), true);
     await driver.sleep(1400);
-    assert.equal(await driver.executeScript("return Number(sessionStorage.getItem('fixture-sends')||0)"), 0, "useful Markdown answer must not auto-continue");
+    assert.equal(await driver.executeScript("return Number(sessionStorage.getItem('fixture-sends:useful-answer')||0)"), 0, "useful Markdown answer must not auto-continue");
 
     await openCase(driver, "manual-stop");
-    await driver.sleep(700);
+    await driver.sleep(1100);
     const stop = await driver.findElement(By.css('#composer-submit-button[data-testid="stop-button"]'));
     await stop.click();
     await driver.sleep(1400);
@@ -144,7 +145,7 @@ async function openCase(driver, id) {
     assert.equal(state.sends, 0, "trusted/manual Stop must suppress post-run auto-continuation");
 
     await openCase(driver, "network-reload");
-    await waitFor(driver, "return Number(sessionStorage.getItem('fixture-sends')||0)===1", 8000);
+    await waitFor(driver, "return Number(sessionStorage.getItem('fixture-sends:network-reload')||0)===1", 8000);
     assert((loadCounts.get("network-reload") || 0) >= 2, "retryable network error must reload before continuation");
     state = await driver.executeScript("return window.__state");
     assert.equal(state.sentText, ".", "reloaded network-error conversation must continue with dot");
