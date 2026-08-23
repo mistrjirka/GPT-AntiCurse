@@ -42,20 +42,13 @@
   function labelIsPro(value) {
     const label = normalize(value);
     if (!label) return false;
-    // This is only used on model/intelligence UI or active streaming status, so
-    // a standalone Pro token is strong model evidence. It also covers labels
-    // such as "GPT-5.6 Pro" without depending on word order or locale.
     return /(^|[\s(/_\-])pro(?=$|[\s).,/:;!?_\-])/.test(label);
   }
 
   function streamingLabelIsPro(value) {
     const label = normalize(value);
     if (!label) return false;
-    // Never treat an arbitrary standalone "pro" token as model evidence. In
-    // several locales (including Czech) it is an ordinary preposition and live
-    // tool/status text can contain it. Only accept narrowly structured model
-    // status labels observed in ChatGPT's streaming UI; all other cases fall
-    // back to the explicit model slug or the canonical composer preset lane.
+    // Arbitrary translated status prose must never count as model evidence.
     return label === "pro" || label === "pro thinking" || label.startsWith("pro thinking ") || /^model\s+pro(?:\s|$)/.test(label);
   }
 
@@ -82,9 +75,8 @@
 
   function requestModelSlugForTurn(turn) {
     if (!turn) return null;
-    // The model slug lives on the user message that launched the active assistant
-    // turn. Read only the immediately preceding rendered user turn (skipping
-    // virtualization placeholders), never an arbitrary historical turn.
+    // The request model belongs to the immediately preceding rendered user turn.
+    // Skip virtualization placeholders, but never reuse an arbitrary older turn.
     let container = turn;
     while (container.parentElement?.matches?.(TURN_CONTAINER_SELECTOR)) container = container.parentElement;
     let node = container.previousElementSibling;
@@ -97,7 +89,6 @@
         return String(slugNode?.getAttribute("data-message-model-slug") || "").trim() || null;
       }
       if (assistant) return null;
-      // A placeholder has neither role and can be skipped safely.
     }
     return null;
   }
@@ -137,10 +128,7 @@
     if (presetLaneCacheBuilt && presetLaneCacheScriptCount === scripts.length) return presetLaneCache;
 
     const next = new Map();
-    // ChatGPT serializes the localized intelligence presets into first-party page
-    // bootstrap data. Resolve the visible label back to its canonical lane rather
-    // than maintaining a translation list. Keep the parser deliberately narrow:
-    // only selected_display_title objects with a recognized lane are accepted.
+    // Resolve translated visible preset labels through ChatGPT's own canonical lane data.
     const pattern = /selected_display_title:"((?:\\.|[^"\\])*)"[^{}]{0,700}?lane:"(instant|thinking|pro)"/g;
     for (const script of scripts) {
       const text = String(script.textContent || "");
@@ -162,8 +150,6 @@
     const exact = map.get(key);
     if (PRESET_LANES.has(exact)) return exact;
 
-    // Some layouts may prefix the selected label with a model/version. Use the
-    // longest unique mapped label as a suffix fallback and fail closed on conflict.
     let resolved = null;
     let bestLength = -1;
     for (const [candidate, lane] of map) {
@@ -183,44 +169,49 @@
     return null;
   }
 
-  function activeRecoveryState() {
-    const turn = activeStreamingTurn();
+  function newestAssistantTurn() {
+    const turns = document.querySelectorAll(TURN_CONTAINER_SELECTOR);
+    for (let index = turns.length - 1; index >= 0; index--) {
+      if (turns[index].querySelector('[data-message-author-role="assistant"], [data-turn="assistant"]')) return turns[index];
+    }
+    return null;
+  }
+
+  function classifyTurn(turn, { allowStreamingStatus = false, sourcePrefix = "" } = {}) {
     const directModelSlug = modelSlugForTurn(turn);
     const requestModelSlug = requestModelSlugForTurn(turn);
-    const proStatusLabel = proStatusLabelForTurn(turn);
+    const proStatusLabel = allowStreamingStatus ? proStatusLabelForTurn(turn) : null;
     const selectedModelLabel = selectedComposerModelLabel();
     const selectedModelLane = selectedComposerModelLane(selectedModelLabel);
     const modelSlug = directModelSlug || requestModelSlug;
     let decision = "unknown";
     let detectionSource = null;
+    const source = (name) => sourcePrefix ? `${sourcePrefix}${name}` : name;
 
-    // The active request's own model slug is the strongest signal and is
-    // language-independent. The preceding-user lookup is deliberately adjacent
-    // only, so it cannot accidentally reuse a model from an older request.
+    // The request/message slug is strongest. Current explicit Pro picker evidence
+    // also overrides a completed non-Pro request because the user may switch to Pro
+    // while recovery is between Stop/reload and Send.
     if (modelSlugIsPro(modelSlug)) {
       decision = "pro";
-      detectionSource = directModelSlug ? "message-model-slug" : "request-model-slug";
+      detectionSource = source(directModelSlug ? "message-model-slug" : "request-model-slug");
     } else if (proStatusLabel) {
       decision = "pro";
-      detectionSource = "streaming-pro-status";
+      detectionSource = source("streaming-pro-status");
     } else if (labelIsPro(selectedModelLabel)) {
       decision = "pro";
-      detectionSource = "composer-model-label";
+      detectionSource = source("composer-model-label");
     } else if (selectedModelLane === "pro") {
       decision = "pro";
-      detectionSource = "composer-preset-lane";
+      detectionSource = source("composer-preset-lane");
     } else if (modelSlug) {
       decision = "non-pro";
-      detectionSource = directModelSlug ? "message-model-slug" : "request-model-slug";
+      detectionSource = source(directModelSlug ? "message-model-slug" : "request-model-slug");
     } else if (selectedModelLane === "instant" || selectedModelLane === "thinking") {
       decision = "non-pro";
-      detectionSource = "composer-preset-lane";
+      detectionSource = source("composer-preset-lane");
     } else if (CONFIRMED_NON_PRO_LABELS.has(normalize(selectedModelLabel))) {
-      // Current ChatGPT exposes the selected intelligence preset in the composer.
-      // These exact labels are capture-backed Thinking/Instant presets; "Pro" is
-      // matched above and therefore can never be authorized through this branch.
       decision = "non-pro";
-      detectionSource = "composer-model-label";
+      detectionSource = source("composer-model-label");
     }
 
     return {
@@ -237,6 +228,32 @@
       pro: decision === "pro",
       autoRecoveryAllowed: decision === "non-pro"
     };
+  }
+
+  function activeRecoveryState() {
+    return classifyTurn(activeStreamingTurn(), { allowStreamingStatus: true });
+  }
+
+  function completedRecoveryState(expectedTurnKey = null) {
+    const turn = newestAssistantTurn();
+    const key = turnKey(turn);
+    if (!turn || (expectedTurnKey && key !== expectedTurnKey)) {
+      return {
+        turn,
+        turnKey: key,
+        modelSlug: null,
+        directModelSlug: null,
+        requestModelSlug: null,
+        proStatusLabel: null,
+        selectedModelLabel: selectedComposerModelLabel(),
+        selectedModelLane: selectedComposerModelLane(selectedComposerModelLabel()),
+        decision: "unknown",
+        detectionSource: expectedTurnKey && key ? "completed-turn-mismatch" : "completed-turn-unavailable",
+        pro: false,
+        autoRecoveryAllowed: false
+      };
+    }
+    return classifyTurn(turn, { allowStreamingStatus: false, sourcePrefix: "completed-" });
   }
 
   function composerContainsOnlyNudge() {
@@ -270,30 +287,42 @@
   function recoveryNudgeState(expectedTurnKey = null) {
     const state = activeRecoveryState();
     if (state.decision === "pro" || state.autoRecoveryAllowed) return state;
+
     const handoff = clearExpiredAllowedNudge();
-    if (!handoff || handoff.decision !== "non-pro") return state;
-    if (expectedTurnKey && handoff.turnKey !== expectedTurnKey) return state;
-    // A model-picker change during a slow Stop invalidates the handoff unless the
-    // current UI still positively identifies the model above. Missing composer
-    // evidence is allowed because ChatGPT often temporarily unmounts it while
-    // cancelling the old request.
-    if (state.selectedModelLabel && handoff.selectedModelLabel &&
-        normalize(state.selectedModelLabel) !== normalize(handoff.selectedModelLabel)) return state;
-    return {
-      ...state,
-      turnKey: handoff.turnKey || state.turnKey,
-      modelSlug: handoff.modelSlug || state.modelSlug,
-      decision: "non-pro",
-      detectionSource: "approved-stop-handoff",
-      pro: false,
-      autoRecoveryAllowed: true
-    };
+    if (handoff && handoff.decision === "non-pro" && (!expectedTurnKey || handoff.turnKey === expectedTurnKey)) {
+      // Missing composer evidence is allowed during cancellation. Any explicit model
+      // change invalidates the handoff, while current Pro was already returned above.
+      if (!(state.selectedModelLabel && handoff.selectedModelLabel &&
+          normalize(state.selectedModelLabel) !== normalize(handoff.selectedModelLabel))) {
+        return {
+          ...state,
+          turnKey: handoff.turnKey || state.turnKey,
+          modelSlug: handoff.modelSlug || state.modelSlug,
+          decision: "non-pro",
+          detectionSource: "approved-stop-handoff",
+          pro: false,
+          autoRecoveryAllowed: true
+        };
+      }
+    }
+
+    // After the one guarded reload the original request may already be stopped, so
+    // there is no active streaming turn to classify. Reuse only the exact newest
+    // completed assistant turn and its immediately preceding request. A mismatch
+    // fails closed; current composer Pro evidence still wins in classifyTurn().
+    const completed = completedRecoveryState(expectedTurnKey);
+    if (completed.decision === "pro" || completed.autoRecoveryAllowed) return completed;
+    return state;
   }
 
   function armRecoveryNudge(expectedTurnKey = null) {
     const state = recoveryNudgeState(expectedTurnKey);
     if (!state.autoRecoveryAllowed) return state;
-    const handoff = clearExpiredAllowedNudge();
+    let handoff = clearExpiredAllowedNudge();
+    if (!handoff || (expectedTurnKey && handoff.turnKey !== expectedTurnKey)) {
+      rememberAllowedStop(state);
+      handoff = clearExpiredAllowedNudge();
+    }
     if (handoff && (!expectedTurnKey || handoff.turnKey === expectedTurnKey)) handoff.armedAt = Date.now();
     return state;
   }
@@ -325,8 +354,6 @@
     const button = target.closest(SUBMIT_SELECTOR);
     if (!button) return;
 
-    // Human clicks must always keep their native behavior. They also cancel any
-    // one-shot authorization left by an in-progress automatic recovery.
     if (event.isTrusted) {
       allowedRecoveryNudge = null;
       return;
@@ -335,17 +362,11 @@
     const state = activeRecoveryState();
     const stop = button.getAttribute("data-testid") === "stop-button";
 
-    // Fail closed. Automatic recovery is permitted only when the active model is
-    // positively identified as non-Pro. ChatGPT has removed data-message-model-slug
-    // from some live DOMs, so "unknown" must not silently mean "safe".
     if (stop) {
       if (!state.autoRecoveryAllowed) {
         block(event, state, "stop");
         return;
       }
-      // Stop removes ChatGPT's streaming marker before AntiCurse sends its fixed
-      // nudge. Carry this positively identified non-Pro decision across that one
-      // transition only; do not reinterpret the now-missing turn as safe.
       rememberAllowedStop(state);
       return;
     }
@@ -357,17 +378,11 @@
       allowedRecoveryNudge = null;
       return;
     }
-    // An explicit current Pro signal always wins. The one-shot authorization is
-    // only for the brief state where Stop removed the streaming marker; it must
-    // never authorize a nudge after the user switches the composer to Pro.
     if (state.decision === "pro") {
       block(event, state, "send-nudge");
       return;
     }
     if (allowedNudge && allowedNudge.armedAt && Date.now() - allowedNudge.armedAt <= NUDGE_ARM_WINDOW_MS) {
-      // One-shot authorization: the watchdog must arm the previously approved
-      // Stop handoff immediately before Send. Consume it before page handlers
-      // run so it cannot be reused by a later synthetic click.
       allowedRecoveryNudge = null;
       return;
     }
@@ -379,6 +394,7 @@
     labelIsPro,
     activeProRun: activeRecoveryState,
     activeRecoveryState,
+    completedRecoveryState,
     recoveryNudgeState,
     armRecoveryNudge,
     autoRecoveryAllowed() {
@@ -386,6 +402,7 @@
     },
     debug() {
       const state = activeRecoveryState();
+      const completed = completedRecoveryState();
       const allowedNudge = clearExpiredAllowedNudge();
       return {
         activeProRun: state.pro,
@@ -398,6 +415,9 @@
         proStatusLabel: state.proStatusLabel,
         selectedModelLabel: state.selectedModelLabel,
         selectedModelLane: state.selectedModelLane,
+        completedTurnKey: completed.turnKey,
+        completedRecoveryDecision: completed.decision,
+        completedRecoveryDetectionSource: completed.detectionSource,
         presetLaneCount: buildPresetLaneMap().size,
         autoRecoveryAllowed: state.autoRecoveryAllowed,
         blockedClicks,
