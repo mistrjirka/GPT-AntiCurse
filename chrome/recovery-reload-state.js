@@ -16,9 +16,8 @@
     try { return decodeURIComponent(match[1]); } catch { return null; }
   }
 
-  function key(id) {
-    return `${STORAGE_PREFIX}${id}`;
-  }
+  function key(id) { return `${STORAGE_PREFIX}${id}`; }
+  function terminal(marker) { return !!marker && String(marker.stage || "").startsWith("finished-"); }
 
   function valid(marker, id) {
     if (!marker || typeof marker !== "object") return false;
@@ -27,7 +26,7 @@
     return Number.isFinite(at) && at > 0 && Date.now() - at <= TTL_MS;
   }
 
-  function read(id = conversationId()) {
+  function readRaw(id = conversationId()) {
     if (!id) return null;
     try {
       const parsed = JSON.parse(sessionStorage.getItem(key(id)) || "null");
@@ -38,6 +37,13 @@
     }
     return null;
   }
+
+  function read(id = conversationId()) {
+    const marker = readRaw(id);
+    return marker && !terminal(marker) ? marker : null;
+  }
+
+  function pending(id = conversationId()) { return read(id); }
 
   function write(marker) {
     if (!marker || !marker.conversationId) return false;
@@ -51,10 +57,16 @@
     }
   }
 
+  function sameTurn(existingKey, nextKey) {
+    if (existingKey && nextKey) return existingKey === nextKey;
+    if (!existingKey && nextKey) return false;
+    return true;
+  }
+
   function armReload({ conversationId: id = conversationId(), turnKey = null, reason = "unknown", modelSlug = null } = {}) {
     if (!id) return { ok: false, reason: "no-conversation", marker: null };
-    const existing = read(id);
-    if (existing && Number(existing.reloadCount || 0) >= MAX_RELOADS) {
+    const existing = readRaw(id);
+    if (existing && Number(existing.reloadCount || 0) >= MAX_RELOADS && sameTurn(existing.turnKey, turnKey)) {
       rejectedReloads++;
       return { ok: false, reason: "reload-already-used", marker: existing };
     }
@@ -62,12 +74,12 @@
     const marker = {
       version: 1,
       conversationId: id,
-      turnKey: turnKey || (existing && existing.turnKey) || null,
-      modelSlug: modelSlug || (existing && existing.modelSlug) || null,
+      turnKey: turnKey || null,
+      modelSlug: modelSlug || null,
       reason,
       stage: "reloading",
-      reloadCount: Number(existing && existing.reloadCount || 0) + 1,
-      createdAt: Number(existing && existing.createdAt || now),
+      reloadCount: 1,
+      createdAt: now,
       updatedAt: now
     };
     if (!write(marker)) return { ok: false, reason: "storage-failed", marker: null };
@@ -76,7 +88,7 @@
 
   function updateStage(stage, extra = {}) {
     const id = conversationId();
-    const marker = read(id);
+    const marker = readRaw(id);
     if (!marker) return null;
     const next = {
       ...marker,
@@ -88,28 +100,37 @@
     return write(next) ? next : null;
   }
 
+  function finish(outcome, extra = {}) {
+    return updateStage(`finished-${String(outcome || "unknown")}`, extra);
+  }
+
   function clear(id = conversationId()) {
     if (!id) return false;
-    try {
-      sessionStorage.removeItem(key(id));
-      clears++;
-      return true;
-    } catch (error) {
-      lastError = String(error && error.message ? error.message : error);
-      return false;
-    }
+    const marker = readRaw(id);
+    if (!marker) return false;
+    const done = {
+      ...marker,
+      stage: terminal(marker) ? marker.stage : "finished-cleared",
+      updatedAt: Date.now()
+    };
+    if (!write(done)) return false;
+    clears++;
+    return true;
   }
 
   globalThis.CGAntiCurseRecoveryReloadState = {
     read,
+    pending,
     armReload,
     updateStage,
+    finish,
     clear,
     debug() {
       return {
         present: true,
         conversationId: conversationId(),
-        marker: read(),
+        marker: readRaw(),
+        pending: pending(),
         ttlSeconds: TTL_MS / 1000,
         maxReloads: MAX_RELOADS,
         writes,
