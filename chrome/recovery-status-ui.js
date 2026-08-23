@@ -18,12 +18,14 @@
     switch (value.phase) {
       case "blocked-pro": return "Pro off";
       case "blocked-unknown": return "model ?";
-      case "loading": return "loading";
+      case "loading": return value.remainingMs == null ? "loading" : `load ${countdown(value.remainingMs)}`;
       case "paused-draft": return "draft";
       case "checking": return "check";
       case "stopping": return "stopping";
       case "sending": return "sending";
       case "confirming": return "sent…";
+      case "reloading": return "reload";
+      case "restoring": return "resume";
       default: return value.longWaitBanner ? "resume now" : countdown(value.remainingMs);
     }
   }
