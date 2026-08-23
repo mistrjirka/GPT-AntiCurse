@@ -298,6 +298,30 @@
     return state;
   }
 
+
+  function restoreRecoveryHandoff(snapshot) {
+    const state = activeRecoveryState();
+    if (!snapshot || snapshot.decision !== "non-pro") return state;
+    if (state.decision === "pro") return state;
+    if (modelSlugIsPro(snapshot.modelSlug)) return state;
+    // If ChatGPT exposes a current model selection after reload, it must agree
+    // with the selection approved before the guarded recovery reload. Missing UI
+    // evidence is allowed because composer controls can hydrate after the thread.
+    if (state.selectedModelLabel && snapshot.selectedModelLabel &&
+        normalize(state.selectedModelLabel) !== normalize(snapshot.selectedModelLabel)) return state;
+    if (state.selectedModelLane === "pro") return state;
+    allowedRecoveryNudge = {
+      at: Date.now(),
+      armedAt: null,
+      turnKey: snapshot.turnKey || null,
+      modelSlug: snapshot.modelSlug || null,
+      selectedModelLabel: snapshot.selectedModelLabel || null,
+      selectedModelLane: snapshot.selectedModelLane || null,
+      decision: "non-pro",
+      detectionSource: snapshot.detectionSource || "recovery-reload"
+    };
+    return recoveryNudgeState(snapshot.turnKey || null);
+  }
   function block(event, state, phase) {
     blockedClicks++;
     if (state.decision === "unknown") blockedUnknownClicks++;
@@ -381,6 +405,7 @@
     activeRecoveryState,
     recoveryNudgeState,
     armRecoveryNudge,
+    restoreRecoveryHandoff,
     autoRecoveryAllowed() {
       return activeRecoveryState().autoRecoveryAllowed;
     },
