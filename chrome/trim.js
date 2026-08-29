@@ -45,12 +45,25 @@
   function isDisplayCandidate(node) {
     if (!node || !node.message) return false;
     if (VISIBILITY && typeof VISIBILITY.isDisplayMessage === "function") {
-      return VISIBILITY.isDisplayMessage(node.message);
+      if (!VISIBILITY.isDisplayMessage(node.message)) return false;
+      // A user-facing record must contain text/non-text content. Empty assistant
+      // shells are transport state, not a visible message budget unit.
+      if (typeof VISIBILITY.contentToText !== "function") return true;
+      if (VISIBILITY.contentToText(node.message.content).trim()) return true;
+      return typeof VISIBILITY.fileReferences === "function" && VISIBILITY.fileReferences(node.message).length > 0;
     }
     if (isExplicitlyHidden(node)) return false;
     const role = getRole(node);
     if (role === "assistant" && isToolTargetedMessage(node.message)) return false;
     return role === "user" || role === "assistant";
+  }
+
+  function isDisplayCandidateAt(mapping, chain, index, messages = null) {
+    const id = chain[index];
+    if (!id || !isDisplayCandidate(mapping[id])) return false;
+    if (!VISIBILITY || typeof VISIBILITY.isRecoveryContinuationAt !== "function") return true;
+    const source = messages || chain.map((nodeId) => getMessage(mapping[nodeId]));
+    return !VISIBILITY.isRecoveryContinuationAt(source, index);
   }
 
   function buildActiveChain(mapping, currentId) {
@@ -73,8 +86,10 @@
     let displayCandidates = 0;
     let explicitlyHidden = 0;
     let noMessage = 0;
+    const messages = chain.map((id) => getMessage(mapping[id]));
 
-    for (const id of chain) {
+    for (let index = 0; index < chain.length; index++) {
+      const id = chain[index];
       const node = mapping[id];
       if (!node || !node.message) {
         noMessage++;
@@ -85,7 +100,7 @@
       const role = getRole(node) || "(unknown)";
       roles[role] = (roles[role] || 0) + 1;
       if (isExplicitlyHidden(node)) explicitlyHidden++;
-      if (isDisplayCandidate(node)) displayCandidates++;
+      if (isDisplayCandidateAt(mapping, chain, index, messages)) displayCandidates++;
     }
 
     return { roles, displayCandidates, explicitlyHidden, noMessage };
@@ -114,9 +129,10 @@
 
   function findRecentCutoff(mapping, chain, displayLimit) {
     let seenDisplay = 0;
+    const messages = chain.map((id) => getMessage(mapping[id]));
 
     for (let index = chain.length - 1; index >= 0; index--) {
-      if (!isDisplayCandidate(mapping[chain[index]])) continue;
+      if (!isDisplayCandidateAt(mapping, chain, index, messages)) continue;
       seenDisplay++;
       if (seenDisplay >= displayLimit) return index;
     }
@@ -160,11 +176,14 @@
     if (!mapping || typeof mapping !== "object" || !currentId || !mapping[currentId]) return [];
 
     const history = [];
-    for (const id of buildActiveChain(mapping, currentId)) {
+    const chain = buildActiveChain(mapping, currentId);
+    const messages = chain.map((id) => getMessage(mapping[id]));
+    for (let index = 0; index < chain.length; index++) {
+      const id = chain[index];
       const node = mapping[id];
-      if (!isDisplayCandidate(node)) continue;
+      if (!isDisplayCandidateAt(mapping, chain, index, messages)) continue;
 
-      const message = getMessage(node);
+      const message = messages[index];
       if (VISIBILITY && typeof VISIBILITY.historyEntry === "function") {
         const entry = VISIBILITY.historyEntry(message, id);
         if (entry) history.push(entry);
@@ -279,6 +298,7 @@
     extractVisibleHistory,
     DEFAULTS,
     isDisplayCandidate,
+    isDisplayCandidateAt,
     isExplicitlyHidden,
     isToolTargetedMessage
   });

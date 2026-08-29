@@ -31,6 +31,18 @@ function conversation() {
   for (let exchange = 0; exchange < 6; exchange++) {
     const user = `user-${exchange}`;
     mapping[user] = node(user, parent, "user", `User message ${exchange}`);
+    if (exchange === 0) {
+      mapping[user].message.content = {
+        content_type: "multimodal_text",
+        parts: [
+          `User message ${exchange}`,
+          { content_type: "image_asset_pointer", asset_pointer: "sediment://file_fidelity_upload", mime_type: "image/png", size_bytes: 2048 }
+        ]
+      };
+      mapping[user].message.metadata.attachments = [
+        { id: "file_fidelity_upload", name: "reference-upload.png", mime_type: "image/png", size_bytes: 2048 }
+      ];
+    }
     link(mapping, parent, user);
     parent = user;
 
@@ -212,7 +224,10 @@ async function waitForStorageApi(worker) {
         activityText: activity&&activity.textContent,
         activityTitle: activity&&activity.title,
         text: host.textContent,
-        nativeIdentityAttrs: host.querySelectorAll('[data-message-author-role],[data-turn-id]').length
+        nativeIdentityAttrs: host.querySelectorAll('[data-message-author-role],[data-turn-id]').length,
+        fileCards: host.querySelectorAll('.cg-history-file-card').length,
+        fileName: host.querySelector('.cg-history-file-name')?.textContent || '',
+        fileInsideUserBubble: !!host.querySelector('.cg-history-user-bubble .cg-history-files')
       };
     });
 
@@ -229,6 +244,9 @@ async function waitForStorageApi(worker) {
     assert(!result.text.includes("fidelity-secret"), "raw tool payload must not occupy the visible transcript");
     assert(!result.text.includes("fidelity-web-secret"), "raw web-search payload must not occupy the visible transcript");
     assert(!result.text.includes("[Non-text visible message]"), "legacy placeholder must be suppressed");
+    assert(result.fileCards >= 1, `archived user upload should render as a file card: ${JSON.stringify(result)}`);
+    assert.equal(result.fileName, "reference-upload.png", "archived file card should retain the original filename");
+    assert.equal(result.fileInsideUserBubble, false, "archived file card should sit beside, not inside, the user text bubble");
     assert.equal(result.nativeIdentityAttrs, 0, "synthetic archived history must not impersonate React-owned messages");
 
     console.log("Chromium native-fidelity E2E: PASS", JSON.stringify(result));

@@ -45,7 +45,9 @@ function rawConversation() {
   add("tool-result", "tool", "tool result should not be exported as an assistant record");
   add("hidden-plan", "assistant", JSON.stringify({ plan: [{ step: "Verify export", status: "in_progress" }], explanation: "Safe structured plan" }), { is_visually_hidden_from_conversation: true });
   add("hidden-narration", "assistant", "arbitrary hidden assistant narration", { is_visually_hidden_from_conversation: true });
-  add("final", "assistant", "Final answer");
+  add("final", "assistant", "Final answer", {
+    attachments: [{ id: "file_export123", name: "final-model.stl", mime_type: "model/stl", size_bytes: 12345 }]
+  });
   return { id: "raw-export", title: "Raw export", mapping, current_node: parent, root: "root" };
 }
 
@@ -66,6 +68,9 @@ assert.deepEqual(
 assert.equal(archive.messages[2].recipient, "Development_Sandbox.exec_command");
 assert.equal(archive.messages[2].hidden, true);
 assert.equal(archive.messages[3].hidden, true);
+const finalMessage = archive.messages.find((message) => message.id === "final");
+assert(finalMessage.attachments.some((item) => item.fileId === "file_export123" && item.name === "final-model.stl"),
+  "authoritative history/export must preserve archived file references");
 assert(!archive.messages.some((message) => message.id === "tool-result"));
 assert(!archive.messages.some((message) => message.id === "hidden-narration"));
 
@@ -125,6 +130,24 @@ assert(!clean.includes("Verify export"), "Clean export should still contain only
   ]);
   assert.equal(merged.messages.at(-1).text, "new live question");
   assert.equal(merged.messages.at(-1).role, "user");
+}
+
+
+// Auto-Continue recovery plumbing must not reappear in authoritative history/export.
+{
+  const mapping = { root: node("root", null, null, "") };
+  let parent = "root";
+  const add = (id, role, text) => {
+    mapping[id] = node(id, parent, role, text);
+    link(mapping, parent, id);
+    parent = id;
+  };
+  add("ru", "user", "do task");
+  add("empty", "assistant", "");
+  add("nudge", "user", ".");
+  add("ra", "assistant", "resumed answer");
+  const recovered = X.createArchive({ id: "recovered", mapping, current_node: parent, root: "root" }, { id: "recovered" });
+  assert.deepEqual(recovered.messages.map((message) => [message.id, message.text]), [["ru", "do task"], ["ra", "resumed answer"]]);
 }
 
 console.log("raw export extraction tests: PASS");

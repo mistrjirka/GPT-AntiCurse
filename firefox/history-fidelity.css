@@ -48,3 +48,55 @@
   color: var(--text-tertiary);
   font-size: 0.875em;
 }
+
+/* Lightweight archived file tiles; kept outside the user's text bubble. */
+#cg-window-history-host .cg-history-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  width: 100%;
+  margin-block: .25rem;
+}
+#cg-window-history-host .cg-history-turn[data-cg-role="user"] .cg-history-files {
+  max-width: var(--user-chat-width, 70%);
+  justify-content: flex-end;
+  align-self: flex-end;
+}
+#cg-window-history-host .cg-history-file-card {
+  display: flex;
+  min-width: min(15rem, 100%);
+  max-width: min(20rem, 100%);
+  overflow: hidden;
+  border: 1px solid var(--border-default, var(--border-light));
+  border-radius: 1rem;
+  background: var(--bg-primary, transparent);
+}
+#cg-window-history-host .cg-history-file-open {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .15rem;
+  padding: .65rem .8rem;
+  text-align: start;
+  font: inherit;
+}
+#cg-window-history-host .cg-history-file-open:hover {
+  background: var(--surface-hover, var(--bg-secondary));
+}
+#cg-window-history-host .cg-history-file-name,
+#cg-window-history-host .cg-history-file-meta {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#cg-window-history-host .cg-history-file-name { font-weight: 600; }
+#cg-window-history-host .cg-history-file-meta { font-size: .75rem; }

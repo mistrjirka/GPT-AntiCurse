@@ -70,11 +70,15 @@
     const id = String(options.id || data?.id || data?.conversation_id || "").trim();
     if (!id) return null;
     const messages = [];
-    for (const nodeId of activeChain(data)) {
+    const chain = activeChain(data);
+    const rawMessages = chain.map((nodeId) => data.mapping[nodeId]?.message || null);
+    for (let chainIndex = 0; chainIndex < chain.length; chainIndex++) {
+      const nodeId = chain[chainIndex];
       const node = data.mapping[nodeId];
-      const message = node && node.message;
+      const message = rawMessages[chainIndex];
       const role = message && message.author && message.author.role;
       if (role !== "user" && role !== "assistant") continue;
+      if (VISIBILITY && typeof VISIBILITY.isRecoveryContinuationAt === "function" && VISIBILITY.isRecoveryContinuationAt(rawMessages, chainIndex)) continue;
       const hidden = isHidden(message);
       if (VISIBILITY && typeof VISIBILITY.isPrivateInternal === "function" && VISIBILITY.isPrivateInternal(message)) continue;
       const explicitToolCall = isExplicitToolCall(message, role);
@@ -89,6 +93,7 @@
         id: nodeId,
         role,
         text,
+        attachments: VISIBILITY && typeof VISIBILITY.fileReferences === "function" ? VISIBILITY.fileReferences(message) : [],
         createTime: message.create_time == null ? null : message.create_time,
         recipient: typeof message.recipient === "string" ? message.recipient : "",
         hidden

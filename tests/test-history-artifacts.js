@@ -19,6 +19,15 @@ assert.equal(parsed.searchParams.get("sandbox_path"), "/mnt/data/a b.stl");
 assert.equal(A.retryResponse({ status: "retry" }), true);
 assert.equal(A.retryResponse({ status: "success" }), false);
 
+
+assert.equal(A.normalizeFileId("sediment://file_upload123"), "file_upload123");
+assert.equal(A.normalizeFileId("file-service://file_upload456"), "file_upload456");
+assert.equal(A.normalizeFileId("sandbox:/mnt/data/model.stl"), null);
+const artifactSource = fs.readFileSync(path.join(__dirname, "..", "firefox", "history-artifacts.js"), "utf8");
+assert(artifactSource.includes("/backend-api/files/download/"), "native archived file cards need ChatGPT's file download resolver");
+assert(artifactSource.includes("renderFileCards"));
+assert(artifactSource.includes("sandboxLinkPresent"), "assistant sandbox links must not be duplicated as generic file cards");
+
 const markdown = fs.readFileSync(path.join(__dirname, "..", "firefox", "history-markdown.js"), "utf8");
 const virtualized = fs.readFileSync(path.join(__dirname, "..", "firefox", "history-virtualized.js"), "utf8");
 assert(markdown.includes("data-cg-sandbox-path") || markdown.includes("cgSandboxPath"), "Markdown renderer must identify archived sandbox links");

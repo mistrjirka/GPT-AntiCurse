@@ -176,4 +176,24 @@ const tests = [
 ];
 
 for (const test of tests) test();
+
+// Structured file references survive the archive normalization boundary.
+{
+  const fileData = {
+    id: "files", title: "files",
+    mapping: {
+      u: { id: "u", parent: null, children: [], message: {
+        author: { role: "user" },
+        content: { content_type: "multimodal_text", parts: [
+          { content_type: "image_asset_pointer", asset_pointer: "sediment://file_archive123" }
+        ] },
+        metadata: { attachments: [{ id: "file_archive123", name: "archive.png", mime_type: "image/png" }] }
+      } }
+    },
+    current_node: "u"
+  };
+  const archived = A.createArchive(fileData, { id: "files" });
+  assert.equal(archived.messages[0].attachments[0].fileId, "file_archive123");
+}
+
 console.log(`archive tests: PASS (${tests.length})`);

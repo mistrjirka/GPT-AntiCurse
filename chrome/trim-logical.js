@@ -141,9 +141,15 @@
   function visibleRows(data) {
     const mapping = data && data.mapping;
     const rows = [];
-    for (const id of activeChain(data)) {
+    const chain = activeChain(data);
+    const messages = chain.map((id) => getMessage(mapping[id]));
+    for (let index = 0; index < chain.length; index++) {
+      const id = chain[index];
       const node = mapping[id];
-      if (!core.isDisplayCandidate(node)) continue;
+      const visible = typeof core.isDisplayCandidateAt === "function"
+        ? core.isDisplayCandidateAt(mapping, chain, index, messages)
+        : core.isDisplayCandidate(node);
+      if (!visible) continue;
       rows.push({ id, role: getRole(node) });
     }
     return rows;

@@ -24,6 +24,16 @@ assert.equal(start, 25, "six logical units should select the last three complete
 assert.equal(H.logicalUnitCount(messages, start, messages.length), 6);
 assert.equal(messages[start].role, "user", "page boundary must not split an assistant response group");
 
+
+const fileOnlyGroups = H.grouped([
+  { id: "upload", role: "user", text: "", attachments: [{ fileId: "file_upload123", name: "reference.png" }] },
+  { id: "answer", role: "assistant", text: "received" }
+], 0, 2);
+assert.equal(fileOnlyGroups.length, 2);
+assert.equal(fileOnlyGroups[0].role, "user");
+assert.equal(fileOnlyGroups[0].parts[0].attachments[0].fileId, "file_upload123");
+assert.equal(fileOnlyGroups[0].text, "");
+
 const virtualSource = source("firefox/history-virtualized.js");
 assert(virtualSource.includes("this.maxPages()"), "history renderer must enforce a mounted-page ceiling");
 assert(virtualSource.includes("cg-history-spacer-top"), "virtualized history needs a top height spacer");

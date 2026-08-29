@@ -57,12 +57,15 @@
     for (let index = start; index < end; index++) {
       const raw = messages[index] || {};
       const role = raw.role === "user" ? "user" : "assistant";
-      const text = typeof raw.text === "string" ? raw.text.trim() : String(raw.text || "").trim();
-      if (!text || /^\[Non-text visible message\]$/i.test(text)) continue;
-      const part = { id: String(raw.id || ""), text, index };
+      let text = typeof raw.text === "string" ? raw.text.trim() : String(raw.text || "").trim();
+      const attachments = Array.isArray(raw.attachments) ? raw.attachments.filter(Boolean).map((item) => ({ ...item })) : [];
+      if (/^\[Non-text visible message\]$/i.test(text) && !attachments.length) continue;
+      if (!text && !attachments.length) continue;
+      if (/^\[Image \/ attachment\]$/i.test(text) && attachments.length) text = "";
+      const part = { id: String(raw.id || ""), text, attachments, index };
       const previous = result[result.length - 1];
       if (role === "assistant" && previous && previous.role === "assistant") {
-        previous.text += `\n\n${text}`;
+        if (text) previous.text += `${previous.text ? "\n\n" : ""}${text}`;
         previous.parts.push(part);
       } else {
         result.push({ role, text, index, id: part.id, parts: [part] });
@@ -75,12 +78,13 @@
     let height = 0;
     for (const message of groups) {
       const text = String(message && message.text || "");
+      const attachmentCount = (message?.parts || []).reduce((sum, part) => sum + (Array.isArray(part?.attachments) ? part.attachments.length : 0), 0);
       const explicitLines = Math.max(1, text.split("\n").length);
       const wrapWidth = message && message.role === "user" ? 68 : 88;
       const wrappedLines = Math.max(1, Math.ceil(text.length / wrapWidth));
       const contentLines = Math.max(explicitLines, wrappedLines);
       const verticalChrome = message && message.role === "user" ? 78 : 64;
-      height += verticalChrome + contentLines * 24;
+      height += verticalChrome + contentLines * 24 + attachmentCount * 68;
     }
     return Math.max(140, height);
   }
@@ -104,7 +108,13 @@
     const parts = Array.isArray(message.parts) && message.parts.length
       ? message.parts
       : [{ id: message.id || "", text: message.text || "" }];
-    for (const part of parts) renderMarkdown(markdownElement, part.text, { messageId: part.id || "" });
+    for (const part of parts) {
+      if (part.text) renderMarkdown(markdownElement, part.text, { messageId: part.id || "" });
+      const artifactApi = global.CGAntiCurseHistoryArtifacts;
+      if (artifactApi && typeof artifactApi.renderFileCards === "function" && Array.isArray(part.attachments) && part.attachments.length) {
+        artifactApi.renderFileCards(markdownElement, part.attachments, { sourceText: part.text });
+      }
+    }
 
     if (message.role === "user") {
       const bubble = document.createElement("div");
@@ -463,6 +473,7 @@
     create(options) { return new VirtualHistory(options); },
     renderMarkdown,
     logicalUnitCount,
-    previousLogicalStart
+    previousLogicalStart,
+    grouped
   };
 })(globalThis);

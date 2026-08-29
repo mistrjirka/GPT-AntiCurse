@@ -54,6 +54,87 @@
     return true;
   }
 
+  function fileIdFromValue(value) {
+    const text = String(value || "").trim();
+    if (!text) return null;
+    const pointer = text.match(/^(?:sediment|file-service):\/\/(file_[A-Za-z0-9_-]+)$/i);
+    if (pointer) return pointer[1];
+    return /^file_[A-Za-z0-9_-]+$/i.test(text) ? text : null;
+  }
+
+  function firstTextField(value, names) {
+    if (!value || typeof value !== "object") return "";
+    for (const name of names) {
+      const candidate = value[name];
+      if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+    }
+    return "";
+  }
+
+  function fileReferences(message) {
+    if (!message || typeof message !== "object") return [];
+    const result = [];
+    const byId = new Map();
+    let visited = 0;
+
+    function add(value, contextKind = "") {
+      if (value == null) return;
+      const object = value && typeof value === "object" ? value : null;
+      const rawId = object
+        ? firstTextField(object, ["asset_pointer", "file_id", "fileId", "id", "download_id"])
+        : value;
+      const fileId = fileIdFromValue(rawId);
+      if (!fileId) return;
+      const name = object ? firstTextField(object, ["file_name", "filename", "name", "display_name", "title"]) : "";
+      const mimeType = object ? firstTextField(object, ["mime_type", "mimeType"]) : "";
+      const kind = object ? firstTextField(object, ["content_type", "type", "kind"]) : "";
+      const sizeValue = object && (object.size_bytes ?? object.file_size_bytes ?? object.size);
+      const sizeBytes = Number.isFinite(Number(sizeValue)) ? Math.max(0, Number(sizeValue)) : null;
+      const existing = byId.get(fileId);
+      if (existing) {
+        if (!existing.name && name) existing.name = name;
+        if (!existing.mimeType && mimeType) existing.mimeType = mimeType;
+        if (!existing.kind && (kind || contextKind)) existing.kind = kind || contextKind;
+        if (existing.sizeBytes == null && sizeBytes != null) existing.sizeBytes = sizeBytes;
+        return;
+      }
+      const item = { fileId, name, mimeType, kind: kind || contextKind, sizeBytes };
+      byId.set(fileId, item);
+      result.push(item);
+    }
+
+    function scan(value, depth = 0, contextKind = "") {
+      if (value == null || depth > 5 || visited > 160) return;
+      if (typeof value === "string") {
+        if (value.includes("file_") || value.includes("sediment://") || value.includes("file-service://")) add(value, contextKind);
+        return;
+      }
+      if (typeof value !== "object") return;
+      visited++;
+      add(value, contextKind);
+      if (Array.isArray(value)) {
+        for (const item of value) scan(item, depth + 1, contextKind);
+        return;
+      }
+      const nextKind = firstTextField(value, ["content_type", "type", "kind"]) || contextKind;
+      for (const [key, child] of Object.entries(value)) {
+        if (["dalle", "generation", "image_metadata", "model_slug", "finish_details"].includes(key)) continue;
+        scan(child, depth + 1, nextKind);
+      }
+    }
+
+    scan(message.content);
+    const metadata = message.metadata;
+    if (metadata && typeof metadata === "object") {
+      const relevant = /(?:file|asset|attach|reference|sandbox|download|artifact|output|image)/i;
+      for (const [key, value] of Object.entries(metadata)) {
+        if (relevant.test(key)) scan(value);
+        else if (typeof value === "string" && (value.includes("file_") || value.includes("sediment://") || value.includes("file-service://"))) scan(value);
+      }
+    }
+    return result;
+  }
+
   function contentToText(content) {
     if (!content) return "";
     if (typeof content === "string") return content;
@@ -78,16 +159,47 @@
 
   function historyEntry(message, fallbackId) {
     if (!isDisplayMessage(message)) return null;
-    const text = contentToText(message.content).trim();
-    if (!text) return null;
+    const attachments = fileReferences(message);
+    let text = contentToText(message.content).trim();
+    if (attachments.length) {
+      text = text.replace(/(?:^|\n)\s*\[Image \/ attachment\]\s*(?=\n|$)/gi, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+    if (!text && !attachments.length) return null;
     return {
       id: String(message.id || fallbackId || "").trim() || String(fallbackId || ""),
       role: role(message),
       text,
+      attachments,
       createTime: message.create_time == null ? null : message.create_time,
       contentType: contentType(message) || null,
       channel: channel(message) || null
     };
+  }
+
+  function nearbyConversationMessage(messages, from, step) {
+    const list = Array.isArray(messages) ? messages : [];
+    for (let index = from + step; index >= 0 && index < list.length; index += step) {
+      const message = list[index];
+      const messageRole = role(message);
+      if (messageRole !== "user" && messageRole !== "assistant") continue;
+      if (isHidden(message) || isPrivateInternal(message)) continue;
+      if (messageRole === "assistant" && isToolTargeted(message)) continue;
+      return { message, index };
+    }
+    return null;
+  }
+
+  function isRecoveryContinuationAt(messages, index) {
+    const list = Array.isArray(messages) ? messages : [];
+    const current = list[index];
+    if (!current || role(current) !== "user" || !isDisplayMessage(current)) return false;
+    if (contentToText(current.content).trim() !== "." || fileReferences(current).length) return false;
+    const previous = nearbyConversationMessage(list, index, -1);
+    const next = nearbyConversationMessage(list, index, 1);
+    if (!previous || !next) return false;
+    if (role(previous.message) !== "assistant" || role(next.message) !== "assistant") return false;
+    if (!isDisplayMessage(previous.message) || !isDisplayMessage(next.message)) return false;
+    return contentToText(previous.message.content).trim() === "";
   }
 
   const api = Object.freeze({
@@ -101,7 +213,9 @@
     isPrivateInternal,
     isDisplayMessage,
     contentToText,
-    historyEntry
+    fileReferences,
+    historyEntry,
+    isRecoveryContinuationAt
   });
 
   global.CGAntiCurseMessageVisibility = api;

@@ -35,6 +35,18 @@ function conversation(exchanges = 36) {
   for (let exchange = 0; exchange < exchanges; exchange++) {
     const user = `user-${exchange}`;
     mapping[user] = node(user, parent, "user", `User message ${exchange}`);
+    if (exchange === 0) {
+      mapping[user].message.content = {
+        content_type: "multimodal_text",
+        parts: [
+          `User message ${exchange}`,
+          { content_type: "image_asset_pointer", asset_pointer: "sediment://file_fidelity_upload", mime_type: "image/png", size_bytes: 2048 }
+        ]
+      };
+      mapping[user].message.metadata.attachments = [
+        { id: "file_fidelity_upload", name: "reference-upload.png", mime_type: "image/png", size_bytes: 2048 }
+      ];
+    }
     link(mapping, parent, user);
     parent = user;
 
@@ -264,7 +276,10 @@ async function waitForValue(driver, script, timeout = 12000) {
         activityText: activity&&activity.textContent,
         activityTitle: activity&&activity.title,
         text: host.textContent,
-        nativeIdentityAttrs: host.querySelectorAll('[data-message-author-role],[data-turn-id]').length
+        nativeIdentityAttrs: host.querySelectorAll('[data-message-author-role],[data-turn-id]').length,
+        fileCards: host.querySelectorAll('.cg-history-file-card').length,
+        fileName: host.querySelector('.cg-history-file-name')?.textContent || '',
+        fileInsideUserBubble: !!host.querySelector('.cg-history-user-bubble .cg-history-files')
       };
     `);
 
@@ -280,6 +295,9 @@ async function waitForValue(driver, script, timeout = 12000) {
     assert(result.activityTitle.includes("firefox-fidelity-secret"), "raw Firefox tool payload must remain inspectable in title");
     assert(!result.text.includes("firefox-fidelity-secret"), "raw Firefox tool payload must not occupy visible transcript text");
     assert(!result.text.includes("[Non-text visible message]"), "legacy Firefox non-text placeholder must be suppressed");
+    assert(result.fileCards >= 1, `Firefox archived user upload should render as a file card: ${JSON.stringify(result)}`);
+    assert.equal(result.fileName, "reference-upload.png", "Firefox archived file card should retain the original filename");
+    assert.equal(result.fileInsideUserBubble, false, "Firefox archived file card should sit beside, not inside, the user text bubble");
     assert.equal(result.nativeIdentityAttrs, 0, "Firefox synthetic archive must not impersonate React-owned messages");
 
     console.log("Firefox native-fidelity E2E: PASS", JSON.stringify({ addonId, ...nativeState, ...result }));

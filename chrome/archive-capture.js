@@ -148,6 +148,7 @@
         id: message.id || `history-${index}`,
         role: message.role,
         text: typeof message.text === "string" ? message.text : String(message.text || ""),
+        attachments: Array.isArray(message.attachments) ? message.attachments.map((item) => ({ ...item })) : [],
         createTime: message.createTime == null ? null : message.createTime
       }))
     };
@@ -402,6 +403,7 @@
       id: message.id,
       role: message.role,
       text: message.text,
+      attachments: Array.isArray(message.attachments) ? message.attachments.map((item) => ({ ...item })) : [],
       createTime: message.createTime == null ? null : message.createTime
     }));
     return { ...rawArchive, complete: true, messages };

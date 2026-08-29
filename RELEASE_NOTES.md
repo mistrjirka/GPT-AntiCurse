@@ -1,19 +1,22 @@
-# GPT AntiCurse 0.7.11
+# GPT AntiCurse 0.7.12
 
-This release fixes remaining fidelity problems in Performance Guard's reconstructed older-history view.
+Follow-up to 0.7.11's reconstructed-history fidelity fixes.
 
-## Reconstructed history
+## Archived uploads and files
 
-- Restores generated-file links such as `sandbox:/mnt/data/...` by preserving the originating ChatGPT message ID and resolving downloads through ChatGPT's own interpreter-download API when clicked.
-- Shows archived generated files as `preparing…` while resolving and `unavailable` if ChatGPT no longer has the artifact, instead of leaving a dead Markdown-looking link.
-- Preserves sandbox links carried through ChatGPT rich `url` tokens as well as ordinary Markdown links, including filenames containing spaces.
-- Removes empty synthetic assistant turns instead of turning empty records into fake/non-text messages.
-- Introduces one shared visibility policy for graph history, paginated history, and export extraction, preventing those paths from drifting again.
-- Excludes private/internal assistant records structurally, including hidden messages, tool-targeted messages, `thoughts` / reasoning-recap content, and analysis-channel records.
-- Keeps legitimate visible non-text content such as image/attachment records represented in reconstructed history.
-- Consecutive assistant records can still be visually grouped, but each original message ID is retained so artifact links resolve against the correct source message.
+- Preserves structured ChatGPT file references through graph history, paginated history, authoritative history reloads, and the export/archive boundary.
+- Reconstructs lightweight file tiles for older user uploads and file-only turns instead of flattening them to `[Image / attachment]` or dropping them.
+- Archived file tiles resolve a fresh ChatGPT file download URL only when clicked; normal history rendering does not download the files.
+- Keeps file tiles outside the user text bubble, matching ChatGPT's current attachment layout.
+- Assistant responses that already contain a `sandbox:/mnt/data/...` artifact link continue to use 0.7.11's message-scoped interpreter resolver and do not get duplicate generic file cards.
+
+## Auto-Continue history cleanup
+
+- Removes recovery `.` messages only when the raw conversation graph shows the specific pattern `empty assistant -> "." -> assistant`, so ordinary user dots remain visible.
+- Empty assistant shells and their recovery nudges no longer consume Performance Guard's display/window budget.
+- The same recovery-noise rule is shared by graph trimming, logical-window counting, paginated history, reconstructed history, and authoritative export.
 
 ## Regression coverage
 
-- Adds direct contracts for private-message filtering, empty-assistant suppression, visible attachments, and sandbox artifact URL construction.
-- Adds the new shared modules and tests to release CI cross-browser consistency checks.
+- Adds direct contracts for file-only history entries, attachment preservation, recovery-dot detection, and display-budget counting.
+- Extends the existing Chromium and Firefox native-fidelity E2Es with an archived user upload and verifies its file tile stays outside the user bubble.

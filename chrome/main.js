@@ -99,6 +99,7 @@
     for (let index = 0; index < data.messages.length; index++) {
       const message = data.messages[index];
       if (VISIBILITY && typeof VISIBILITY.historyEntry === "function") {
+        if (typeof VISIBILITY.isRecoveryContinuationAt === "function" && VISIBILITY.isRecoveryContinuationAt(data.messages, index)) continue;
         const entry = VISIBILITY.historyEntry(message, `paginated-message-${index}`);
         if (entry) messages.push(entry);
         continue;
@@ -289,6 +290,7 @@
       id: message.id || `message-${index}`,
       role: message.role,
       text: typeof message.text === "string" ? message.text : String(message.text || ""),
+      attachments: Array.isArray(message.attachments) ? message.attachments.map((item) => ({ ...item })) : [],
       createTime: message.createTime == null ? null : message.createTime
     }));
     const cursor = paginated

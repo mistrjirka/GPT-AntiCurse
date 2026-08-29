@@ -40,6 +40,7 @@
       id: oneLine(message.id, fallbackId),
       role: message.role,
       text: typeof message.text === "string" ? message.text : String(message.text || ""),
+      attachments: Array.isArray(message.attachments) ? message.attachments.map((item) => ({ ...item })) : [],
       createTime: message.createTime == null ? null : message.createTime
     };
   }

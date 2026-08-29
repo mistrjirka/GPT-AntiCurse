@@ -264,6 +264,8 @@
 
   function enhanceUser(group, oldMessage, template) {
     const oldMarkdown = oldMessage.querySelector(".cg-history-markdown");
+    const fileGroups = oldMarkdown ? Array.from(oldMarkdown.querySelectorAll(":scope > .cg-history-files")) : [];
+    for (const files of fileGroups) files.remove();
     const sourceText = oldMarkdown ? oldMarkdown.textContent : oldMessage.textContent;
 
     const grow = document.createElement("div");
@@ -272,13 +274,16 @@
     message.className = `cg-history-message ${template.message}`;
     const body = document.createElement("div");
     body.className = template.userBody;
-    const bubble = document.createElement("div");
-    bubble.className = `cg-history-user-bubble ${template.userBubble}`;
-    const text = document.createElement("div");
-    text.className = template.userText;
-    text.textContent = sourceText;
-    bubble.append(text);
-    body.append(bubble);
+    for (const files of fileGroups) body.append(files);
+    if (String(sourceText || "").trim()) {
+      const bubble = document.createElement("div");
+      bubble.className = `cg-history-user-bubble ${template.userBubble}`;
+      const text = document.createElement("div");
+      text.className = template.userText;
+      text.textContent = sourceText;
+      bubble.append(text);
+      body.append(bubble);
+    }
     message.append(body);
     grow.append(message);
     group.replaceChildren(grow);
@@ -287,6 +292,8 @@
   function enhanceAssistant(group, oldMessage, template) {
     const markdown = oldMessage.querySelector(".cg-history-markdown");
     if (!markdown) return;
+    const fileGroups = Array.from(markdown.querySelectorAll(":scope > .cg-history-files"));
+    for (const files of fileGroups) files.remove();
     const chunks = splitAssistantNodes(markdown);
     const grow = document.createElement("div");
     grow.className = template.grow;
@@ -295,6 +302,7 @@
       if (chunk.kind === "activity") grow.append(activityRow(chunk.label, chunk.raw));
       else if (chunk.nodes && chunk.nodes.length) grow.append(buildAssistantMessage(chunk.nodes, template));
     }
+    for (const files of fileGroups) grow.append(files);
     group.replaceChildren(grow);
   }
 
