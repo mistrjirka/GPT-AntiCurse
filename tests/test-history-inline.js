@@ -5,6 +5,8 @@ const path = require("path");
 function source(relative) { return fs.readFileSync(path.join(__dirname, "..", relative), "utf8"); }
 
 const markdown = source("firefox/history-markdown.js");
+const artifacts = source("firefox/history-artifacts.js");
+const visibility = source("firefox/message-visibility.js");
 const virtualized = source("firefox/history-virtualized.js");
 const fidelity = source("firefox/history-fidelity.js");
 const historyHydration = source("firefox/history-hydration-safe.js");
@@ -30,6 +32,10 @@ const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
 assert(markdown.includes("function renderMarkdown"), "history Markdown parser must remain packaged");
 assert(markdown.includes("function projectRichTokens"), "archived history must project ChatGPT rich tokens instead of printing transport syntax");
 assert(markdown.includes("global.CGHistoryMarkdown"), "Markdown helper must expose a named module");
+assert(markdown.includes("cgSandboxPath"), "archived sandbox links must retain a resolvable sandbox path");
+assert(artifacts.includes("/interpreter/download"), "archived sandbox links must use ChatGPT's supported download resolver");
+assert(artifacts.includes("message_id"), "artifact resolution must remain tied to the originating message");
+assert(visibility.includes("reasoning_recap"), "private reasoning records must never enter synthetic visible history");
 assert(!markdown.includes("CGHistoryOverlay"), "Markdown parsing must not publish or mutate the final history overlay");
 assert(virtualized.includes('document.querySelector("#thread")'), "active history must anchor to ChatGPT #thread");
 assert(virtualized.includes("insertBefore(this.host, thread)"), "active history must stay immediately before native #thread");
@@ -38,6 +44,8 @@ assert(virtualized.includes("markdown prose dark:prose-invert"), "older text sho
 assert(virtualized.includes("user-message-bubble-color"), "older user turns should reuse ChatGPT's bubble surface class");
 assert(virtualized.includes("renderMarkdown"), "older Markdown should be rendered structurally rather than as pre-wrapped plaintext");
 assert(virtualized.includes("function grouped"), "consecutive assistant records should be visually grouped");
+assert(virtualized.includes("parts.push(part)"), "assistant grouping must preserve each original message ID for artifact links");
+assert(!virtualized.includes('raw.text || "[Non-text visible message]"'), "empty assistant records must not become synthetic blank/noise turns");
 assert(virtualized.includes("Load previous ${next}"), "Recent N mode needs an inline Load previous button");
 assert(virtualized.includes('this.mode === "recent"'), "the button must belong only to Recent N mode");
 assert(virtualized.includes("global.CGHistoryVirtualized"), "virtual renderer must expose a named module");
@@ -99,6 +107,7 @@ const chromeMainScripts = chromeManifest.content_scripts[0];
 const chromeUi = chromeManifest.content_scripts[1];
 const firefoxUi = firefoxManifest.content_scripts[0];
 assert.equal(chromeMainScripts.run_at, "document_start", "Chromium graph interception must still install before page JavaScript consumes conversation data");
+assert(chromeMainScripts.js.indexOf("message-visibility.js") < chromeMainScripts.js.indexOf("trim.js"), "Chromium MAIN history filtering must use the shared visibility policy before trimming");
 assert.deepEqual(chromeMainScripts.js.slice(-1), ["main.js"], "main.js must be the sole final Chromium response interceptor");
 assert(!chromeMainScripts.js.includes("main-settings-barrier.js"), "superseded stacked Response wrapper must not be packaged");
 assert(!chromeMainScripts.js.includes("history-replay-main.js"), "Chromium MAIN world must not package the old full-history replay bridge");
@@ -106,6 +115,8 @@ assert(!chromeUi.js.includes("history-request.js"), "Chromium isolated world mus
 assert(chromeUi.js.indexOf("diagnostics.js") < chromeUi.js.indexOf("content.js"), "Chromium diagnostics must exist before code can report failures");
 assert(chromeUi.js.includes("conversation-scope.js"), "Chromium must package the shared page conversation scope");
 assert(chromeUi.js.indexOf("conversation-scope.js") < chromeUi.js.indexOf("archive-capture.js"), "conversation scope must exist before archive capture");
+assert(chromeUi.js.indexOf("message-visibility.js") < chromeUi.js.indexOf("export-extract.js"), "Chromium export/history extraction must share visibility policy");
+assert(chromeUi.js.indexOf("session-auth.js") < chromeUi.js.indexOf("history-artifacts.js"), "artifact resolver requires session auth");
 assert(chromeUi.js.indexOf("history-markdown.js") < chromeUi.js.indexOf("history-virtualized.js"), "Markdown helper must load before the virtualized renderer");
 assert(chromeUi.js.indexOf("history-virtualized.js") < chromeUi.js.indexOf("history-fidelity.js"), "virtual renderer must load before fidelity decorator");
 assert(chromeUi.js.indexOf("history-fidelity.js") < chromeUi.js.indexOf("history-hydration-safe.js"), "fidelity decorator must load before hydration decorator");
@@ -115,6 +126,9 @@ assert(chromeUi.js.indexOf("windowed.js") < chromeUi.js.indexOf("debug-state.js"
 assert(firefoxUi.js.indexOf("diagnostics.js") < firefoxUi.js.indexOf("content.js"), "Firefox diagnostics must exist before code can report failures");
 assert(firefoxUi.js.includes("conversation-scope.js"), "Firefox must package the shared page conversation scope");
 assert(firefoxUi.js.indexOf("conversation-scope.js") < firefoxUi.js.indexOf("archive-capture.js"), "Firefox conversation scope must exist before archive capture");
+assert(firefoxUi.js.indexOf("message-visibility.js") < firefoxUi.js.indexOf("export-extract.js"), "Firefox export/history extraction must share visibility policy");
+assert(firefoxUi.js.indexOf("session-auth.js") < firefoxUi.js.indexOf("history-artifacts.js"), "Firefox artifact resolver requires session auth");
+assert(firefoxManifest.background.scripts.indexOf("message-visibility.js") < firefoxManifest.background.scripts.indexOf("trim.js"), "Firefox network history must share the same visibility policy");
 assert(firefoxUi.js.indexOf("history-markdown.js") < firefoxUi.js.indexOf("history-virtualized.js"), "Firefox Markdown helper must load before virtualized history");
 assert(firefoxUi.js.indexOf("history-hydration-safe.js") < firefoxUi.js.indexOf("history-overlay.js"), "Firefox decorators must load before final history composition");
 assert(firefoxUi.js.indexOf("history-overlay.js") < firefoxUi.js.indexOf("windowed.js"), "Firefox final history overlay must exist before the controller");

@@ -8,9 +8,11 @@
 
   function markdownLink(label, href) {
     const text = String(label || "Link").replace(/[\[\]]/g, "").trim() || "Link";
+    const rawHref = String(href || "").trim();
+    if (/^sandbox:\/mnt\/data\//i.test(rawHref)) return `[${text}](${rawHref})`;
     try {
       const base = typeof location !== "undefined" && location?.href ? location.href : "https://chatgpt.com/";
-      const url = new URL(String(href || ""), base);
+      const url = new URL(rawHref, base);
       if (!/^https?:$/.test(url.protocol)) return text;
       return `[${text}](${url.href})`;
     } catch (error) {
@@ -64,9 +66,9 @@
     return String(source || "").replace(token, (_match, kind, body) => projectRichToken(kind, body));
   }
 
-  function appendInline(parent, source) {
+  function appendInline(parent, source, context = {}) {
     const text = String(source || "");
-    const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\([^\s)]+\))/g;
+    const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\((?:sandbox:\/mnt\/data\/[^)\n]+|[^\s)]+)\))/g;
     let at = 0;
     let match;
     while ((match = re.exec(text))) {
@@ -84,21 +86,36 @@
         const split = token.lastIndexOf("](");
         const label = token.slice(1, split);
         const rawHref = token.slice(split + 2, -1);
-        try {
-          const url = new URL(rawHref, location.href);
-          if (/^https?:$/.test(url.protocol)) {
-            const anchor = document.createElement("a");
-            anchor.href = url.href;
-            anchor.target = "_blank";
-            anchor.rel = "noopener noreferrer";
-            anchor.textContent = label;
-            parent.append(anchor);
-          } else {
-            parent.append(document.createTextNode(token));
+        if (/^sandbox:\/mnt\/data\//i.test(rawHref)) {
+          const messageId = String(context.messageId || "").trim();
+          const anchor = document.createElement("a");
+          anchor.href = "#";
+          anchor.className = "cg-history-artifact-link";
+          anchor.textContent = label;
+          anchor.dataset.cgSandboxPath = rawHref.replace(/^sandbox:/i, "");
+          if (messageId) anchor.dataset.cgMessageId = messageId;
+          anchor.title = messageId
+            ? "Download archived ChatGPT file"
+            : "Archived file reference is missing its original message ID";
+          parent.append(anchor);
+        } else {
+          try {
+            const base = typeof location !== "undefined" && location?.href ? location.href : "https://chatgpt.com/";
+            const url = new URL(rawHref, base);
+            if (/^https?:$/.test(url.protocol)) {
+              const anchor = document.createElement("a");
+              anchor.href = url.href;
+              anchor.target = "_blank";
+              anchor.rel = "noopener noreferrer";
+              anchor.textContent = label;
+              parent.append(anchor);
+            } else {
+              parent.append(document.createTextNode(label));
+            }
+          } catch (error) {
+            void error;
+            parent.append(document.createTextNode(label));
           }
-        } catch (error) {
-          void error;
-          parent.append(document.createTextNode(token));
         }
       }
       at = match.index + token.length;
@@ -116,7 +133,7 @@
     return values.length > 1 && values.every((part) => /^:?-{3,}:?$/.test(part));
   }
 
-  function renderMarkdown(root, source) {
+  function renderMarkdown(root, source, context = {}) {
     const lines = projectRichTokens(source).replace(/\r\n?/g, "\n").split("\n");
     let index = 0;
 
@@ -145,7 +162,7 @@
       match = lines[index].match(/^\s{0,3}(#{1,6})\s+(.+)$/);
       if (match) {
         const heading = document.createElement(`h${match[1].length}`);
-        appendInline(heading, match[2]);
+        appendInline(heading, match[2], context);
         root.append(heading);
         index++;
         continue;
@@ -157,7 +174,7 @@
         const row = document.createElement("tr");
         for (const value of cells(lines[index])) {
           const cell = document.createElement("th");
-          appendInline(cell, value);
+          appendInline(cell, value, context);
           row.append(cell);
         }
         head.append(row);
@@ -169,7 +186,7 @@
           const bodyRow = document.createElement("tr");
           for (const value of cells(lines[index++])) {
             const cell = document.createElement("td");
-            appendInline(cell, value);
+            appendInline(cell, value, context);
             bodyRow.append(cell);
           }
           body.append(bodyRow);
@@ -185,7 +202,7 @@
         while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
           quoteLines.push(lines[index++].replace(/^\s*>\s?/, ""));
         }
-        renderMarkdown(quote, quoteLines.join("\n"));
+        renderMarkdown(quote, quoteLines.join("\n"), context);
         root.append(quote);
         continue;
       }
@@ -198,7 +215,7 @@
           const item = lines[index].match(/^\s*([-*+]|\d+[.)])\s+(.+)$/);
           if (!item || /^\d/.test(item[1]) !== ordered) break;
           const row = document.createElement("li");
-          appendInline(row, item[2]);
+          appendInline(row, item[2], context);
           list.append(row);
           index++;
         }
@@ -222,7 +239,7 @@
         const node = document.createElement("p");
         paragraph.forEach((line, lineIndex) => {
           if (lineIndex) node.append(document.createElement("br"));
-          appendInline(node, line);
+          appendInline(node, line, context);
         });
         root.append(node);
       } else {

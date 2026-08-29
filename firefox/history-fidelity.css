@@ -35,3 +35,16 @@
   max-width: var(--thread-content-max-width, 48rem);
   padding-inline: var(--thread-content-margin, 1rem);
 }
+
+/* Archived sandbox artifacts resolve lazily through ChatGPT's own download API. */
+#cg-window-history-host .cg-history-artifact-link[data-cg-artifact-state="loading"]::after {
+  content: " · preparing…";
+  color: var(--text-tertiary);
+  font-size: 0.875em;
+}
+
+#cg-window-history-host .cg-history-artifact-link[data-cg-artifact-state="error"]::after {
+  content: " · unavailable";
+  color: var(--text-tertiary);
+  font-size: 0.875em;
+}

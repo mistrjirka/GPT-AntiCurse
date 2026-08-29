@@ -28,6 +28,7 @@ const LIMITED_MODES = new Set(["recent", "windowed-visible"]);
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
 const PAGINATION = globalThis.CGPaginationFirewall;
 const ENDPOINT = globalThis.CGConversationEndpoint;
+const VISIBILITY = globalThis.CGAntiCurseMessageVisibility;
 const PAGINATED_HISTORY = globalThis.CGPaginatedHistoryAccumulator
   ? globalThis.CGPaginatedHistoryAccumulator.create({ maxPages: 100 })
   : null;
@@ -357,12 +358,19 @@ function paginatedVisibleHistory(data) {
   const messages = [];
   for (let index = 0; index < data.messages.length; index++) {
     const message = data.messages[index];
+    if (VISIBILITY && typeof VISIBILITY.historyEntry === "function") {
+      const entry = VISIBILITY.historyEntry(message, `paginated-message-${index}`);
+      if (entry) messages.push(entry);
+      continue;
+    }
     const role = messageRole(message);
     if ((role !== "user" && role !== "assistant") || messageHidden(message) || messageToolTargeted(message)) continue;
+    const text = messageText(message).trim();
+    if (!text) continue;
     messages.push({
       id: message && message.id ? message.id : `paginated-message-${index}`,
       role,
-      text: messageText(message),
+      text,
       createTime: message && message.create_time ? message.create_time : null
     });
   }

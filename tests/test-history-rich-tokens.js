@@ -13,6 +13,7 @@ const input = [
   "Local detail. \uE200filecite\uE202turn2file0\uE202L9-L18\uE201",
   "\uE200image_group\uE202{\"layout\":\"carousel\",\"image_refs\":[\"turn1image0\"]}\uE201",
   "Product: \uE200entity\uE202[\"turn0product1\",\"Example Widget\"]\uE201",
+  "Artifact: \uE200url\uE202Model file\uE202sandbox:/mnt/data/model file.stl\uE201",
   "\uE200memcite\uE201"
 ].join("\n");
 
@@ -20,6 +21,7 @@ const projected = H.projectRichTokens(input);
 assert(projected.includes("[Manual Go-To guide](https://example.com/guide)"));
 assert(projected.includes("[Images from original response]"));
 assert(projected.includes("Product: Example Widget"));
+assert(projected.includes("[Model file](sandbox:/mnt/data/model file.stl)"));
 assert(!projected.includes("turn1search0"));
 assert(!projected.includes("turn2file0"));
 assert(!projected.includes("\uE200"));

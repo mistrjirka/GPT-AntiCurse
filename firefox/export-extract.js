@@ -2,6 +2,9 @@
 (function (global) {
   "use strict";
 
+  const VISIBILITY = global.CGAntiCurseMessageVisibility ||
+    (typeof require === "function" ? require("./message-visibility.js") : null);
+
   function contentToText(content) {
     if (!content) return "";
     if (typeof content === "string") return content;
@@ -73,6 +76,7 @@
       const role = message && message.author && message.author.role;
       if (role !== "user" && role !== "assistant") continue;
       const hidden = isHidden(message);
+      if (VISIBILITY && typeof VISIBILITY.isPrivateInternal === "function" && VISIBILITY.isPrivateInternal(message)) continue;
       const explicitToolCall = isExplicitToolCall(message, role);
       const structuredPlan = isStructuredPlanPayload(message, role);
       if (role === "user" && hidden) continue;

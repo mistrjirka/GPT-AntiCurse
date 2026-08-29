@@ -7,6 +7,9 @@
 (function (global) {
   "use strict";
 
+  const VISIBILITY = global.CGAntiCurseMessageVisibility ||
+    (typeof require === "function" ? require("./message-visibility.js") : null);
+
   const DEFAULTS = Object.freeze({
     mode: "recent",
     maxDisplayMessages: 64,
@@ -24,6 +27,7 @@
 
   function isExplicitlyHidden(node) {
     const message = getMessage(node);
+    if (VISIBILITY && typeof VISIBILITY.isHidden === "function") return VISIBILITY.isHidden(message);
     const metadata = message && message.metadata;
     return !!(metadata && (
       metadata.is_visually_hidden_from_conversation === true ||
@@ -32,13 +36,18 @@
   }
 
   function isToolTargetedMessage(message) {
+    if (VISIBILITY && typeof VISIBILITY.isToolTargeted === "function") return VISIBILITY.isToolTargeted(message);
     if (!message || message?.author?.role !== "assistant") return false;
     const recipient = String(message.recipient || "").trim().toLowerCase();
     return !!recipient && recipient !== "all" && recipient !== "assistant";
   }
 
   function isDisplayCandidate(node) {
-    if (!node || !node.message || isExplicitlyHidden(node)) return false;
+    if (!node || !node.message) return false;
+    if (VISIBILITY && typeof VISIBILITY.isDisplayMessage === "function") {
+      return VISIBILITY.isDisplayMessage(node.message);
+    }
+    if (isExplicitlyHidden(node)) return false;
     const role = getRole(node);
     if (role === "assistant" && isToolTargetedMessage(node.message)) return false;
     return role === "user" || role === "assistant";
@@ -122,6 +131,7 @@
   }
 
   function contentToText(content) {
+    if (VISIBILITY && typeof VISIBILITY.contentToText === "function") return VISIBILITY.contentToText(content);
     if (!content) return "";
     if (typeof content === "string") return content;
     if (typeof content.text === "string") return content.text;
@@ -155,10 +165,17 @@
       if (!isDisplayCandidate(node)) continue;
 
       const message = getMessage(node);
+      if (VISIBILITY && typeof VISIBILITY.historyEntry === "function") {
+        const entry = VISIBILITY.historyEntry(message, id);
+        if (entry) history.push(entry);
+        continue;
+      }
+      const text = contentToText(message && message.content).trim();
+      if (!text) continue;
       history.push({
         id,
         role: getRole(node),
-        text: contentToText(message && message.content),
+        text,
         createTime: message && message.create_time ? message.create_time : null
       });
     }

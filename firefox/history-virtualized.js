@@ -57,10 +57,16 @@
     for (let index = start; index < end; index++) {
       const raw = messages[index] || {};
       const role = raw.role === "user" ? "user" : "assistant";
-      const text = raw.text || "[Non-text visible message]";
+      const text = typeof raw.text === "string" ? raw.text.trim() : String(raw.text || "").trim();
+      if (!text || /^\[Non-text visible message\]$/i.test(text)) continue;
+      const part = { id: String(raw.id || ""), text, index };
       const previous = result[result.length - 1];
-      if (role === "assistant" && previous && previous.role === "assistant") previous.text += `\n\n${text}`;
-      else result.push({ role, text, index });
+      if (role === "assistant" && previous && previous.role === "assistant") {
+        previous.text += `\n\n${text}`;
+        previous.parts.push(part);
+      } else {
+        result.push({ role, text, index, id: part.id, parts: [part] });
+      }
     }
     return result;
   }
@@ -95,7 +101,10 @@
 
     const markdownElement = document.createElement("div");
     markdownElement.className = "cg-history-markdown markdown prose dark:prose-invert wrap-break-word dark markdown-new-styling";
-    renderMarkdown(markdownElement, message.text);
+    const parts = Array.isArray(message.parts) && message.parts.length
+      ? message.parts
+      : [{ id: message.id || "", text: message.text || "" }];
+    for (const part of parts) renderMarkdown(markdownElement, part.text, { messageId: part.id || "" });
 
     if (message.role === "user") {
       const bubble = document.createElement("div");
