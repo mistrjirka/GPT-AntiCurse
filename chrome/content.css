@@ -38,7 +38,13 @@
   color: rgba(253,164,175,.88);
 }
 #cg-conversation-guard-status[data-mode="error"] .cg-dot { background: rgba(251,113,133,.82); }
-#cg-conversation-guard-status[data-recovery-phase="recovering"],
+#cg-conversation-guard-status[data-recovery-phase="checking"],
+#cg-conversation-guard-status[data-recovery-phase="stopping"],
+#cg-conversation-guard-status[data-recovery-phase="settling"],
+#cg-conversation-guard-status[data-recovery-phase="sending"],
+#cg-conversation-guard-status[data-recovery-phase="confirming"],
+#cg-conversation-guard-status[data-recovery-phase="reloading"],
+#cg-conversation-guard-status[data-recovery-phase="restoring"],
 #cg-conversation-guard-status[data-recovery-phase="now"] {
   opacity: .96;
   color: rgba(255,255,255,.9);

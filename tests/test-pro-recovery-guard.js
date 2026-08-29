@@ -45,7 +45,7 @@ assert(chrome.includes("event.stopImmediatePropagation()"));
 assert(!chrome.includes("setInterval("));
 assert(!/(^|[^\w])(eval|Function)\s*\(/.test(chrome));
 
-function executeGuardWithCurrentComposerLabel(label) {
+function createGuardWithCurrentComposerLabel(label) {
   const vm = require("vm");
   const streaming = {};
   const section = {
@@ -86,7 +86,15 @@ function executeGuardWithCurrentComposerLabel(label) {
   };
   context.globalThis = context;
   vm.runInNewContext(chrome, context, { filename: "pro-recovery-guard.js" });
-  return context.CGAntiCurseProRecoveryGuard.debug();
+  return {
+    context,
+    pill,
+    debug() { return context.CGAntiCurseProRecoveryGuard.debug(); }
+  };
+}
+
+function executeGuardWithCurrentComposerLabel(label) {
+  return createGuardWithCurrentComposerLabel(label).debug();
 }
 
 {
@@ -96,6 +104,15 @@ function executeGuardWithCurrentComposerLabel(label) {
   const currentPro = executeGuardWithCurrentComposerLabel("Pro");
   assert.equal(currentPro.recoveryDecision, "pro", "current Pro composer pill must remain hard-blocked");
   assert.equal(currentPro.autoRecoveryAllowed, false);
+
+  const delayed = createGuardWithCurrentComposerLabel("");
+  assert.equal(delayed.debug().recoveryDecision, "unknown", "missing composer model evidence must fail closed while hydration is incomplete");
+  delayed.pill.textContent = "Extra High";
+  assert.equal(delayed.debug().recoveryDecision, "non-pro", "late non-Pro model hydration must become recoverable without a reload");
+  delayed.pill.textContent = "Pro";
+  const delayedPro = delayed.debug();
+  assert.equal(delayedPro.recoveryDecision, "pro", "late Pro hydration must immediately become blocked");
+  assert.equal(delayedPro.autoRecoveryAllowed, false);
 }
 
 for (const [browser, manifest] of [["chrome", chromeManifest], ["firefox", firefoxManifest]]) {

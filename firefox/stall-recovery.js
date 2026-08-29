@@ -6,11 +6,17 @@
   const SESSION_AUTH = globalThis.CGAntiCurseSessionAuth;
   const COMPOSER_INPUT = globalThis.CGAntiCurseComposerInput;
   const RELOAD_STATE = globalThis.CGAntiCurseRecoveryReloadState;
+  const RECOVERY_POLICY = globalThis.CGAntiCurseRecoveryPolicy;
   const DEFAULTS = Object.freeze({ stallRecoveryEnabled: true });
   const STALL_TIMEOUT_MS = 120_000;
   const PHASE_TIMEOUT_MS = 120_000;
+  const MODEL_HYDRATION_TIMEOUT_MS = 15_000;
+  const UNKNOWN_MODEL_RECHECK_MS = 500;
+  const STREAM_STATUS_TIMEOUT_MS = 5_000;
+  const UI_SETTLE_GRACE_MS = 750;
   const SEND_CONFIRM_TIMEOUT_MS = 30_000;
   const STATUS_EVENT = "__gpt_anticurse_stall_status__";
+  const STATUS_BADGE_ID = "cg-conversation-guard-status";
   const TURN_CONTAINER_SELECTOR = '[data-turn-id-container]';
   const TURN_SELECTOR = '[data-testid^="conversation-turn-"]';
   const STREAMING_SELECTOR = '[data-streaming-response-status]';
@@ -34,12 +40,14 @@
   let monitorGeneration = 0;
   let transaction = null;
   const attemptedTurns = new Set();
-  const backendSettledTurns = new Set();
+  const settledTurns = new Set();
   let attemptedTurnKey = null;
   let recoveryStartedAt = 0;
   let lastRecoveryFinishedAt = 0;
   let lastRecoveryResult = null;
   let lastRecoveryFailure = null;
+  let lastTriggerBackendStatus = null;
+  let lastSettlementSource = null;
   const transitionLog = [];
 
   function applySettings(next) {
@@ -101,10 +109,10 @@
     return (section && (section.getAttribute("data-turn-id") || section.getAttribute("data-testid"))) || turn.getAttribute?.("data-turn-id-container") || null;
   }
 
-  function rememberBackendSettled(key) {
+  function rememberSettledTurn(key) {
     if (!key) return;
-    backendSettledTurns.add(key);
-    if (backendSettledTurns.size > 256) backendSettledTurns.delete(backendSettledTurns.values().next().value);
+    settledTurns.add(key);
+    if (settledTurns.size > 256) settledTurns.delete(settledTurns.values().next().value);
   }
 
   function newestAssistantTurn() {
@@ -119,12 +127,19 @@
   function findActiveTurn() {
     const newest = newestAssistantTurn();
     if (!newest || !newest.querySelector(STREAMING_SELECTOR)) return null;
-    return backendSettledTurns.has(turnKey(newest)) ? null : newest;
+    const key = turnKey(newest);
+    if (settledTurns.has(key) || attemptedTurns.has(identity(conversationId(), key))) return null;
+    return newest;
   }
 
   function newestAssistantStreaming() {
     const turn = newestAssistantTurn();
     return !!(turn && turn.querySelector(STREAMING_SELECTOR));
+  }
+
+  function attemptedCurrentTurn(turn = newestAssistantTurn()) {
+    const key = turnKey(turn);
+    return !!key && attemptedTurns.has(identity(conversationId(), key));
   }
 
   function shellRunLoading() {
@@ -194,8 +209,12 @@
   function publishStatus() {
     clearCountdownTimer();
     const state = modelState();
-    const running = !!activeTurn || shellRunLoading();
-    const active = settings.stallRecoveryEnabled && (!!transaction || running);
+    const shellLoading = shellRunLoading();
+    const active = settings.stallRecoveryEnabled && (RECOVERY_POLICY?.recoveryVisible?.({
+      transactionActive: !!transaction,
+      liveTurnPresent: !!findActiveTurn(),
+      shellLoading
+    }) ?? (!!transaction || shellLoading || !!findActiveTurn()));
     if (!active) {
       window.dispatchEvent(new CustomEvent(STATUS_EVENT, { detail: { active: false, conversationId: conversationId() } }));
       return;
@@ -216,7 +235,10 @@
       recoveryDecision: state.decision || "unknown",
       recoveryDetectionSource: state.detectionSource || null
     } }));
-    if (!transaction && state.autoRecoveryAllowed === true && !hasUserDraft()) countdownUiTimer = setTimeout(publishStatus, 1000);
+    if (!transaction && !hasUserDraft()) {
+      if (state.autoRecoveryAllowed === true) countdownUiTimer = setTimeout(publishStatus, 1000);
+      else if (state.decision === "unknown") countdownUiTimer = setTimeout(syncMonitoring, UNKNOWN_MODEL_RECHECK_MS);
+    }
   }
 
   function setPhase(phase, detail = null) {
@@ -235,6 +257,19 @@
     if (syncQueued) return;
     syncQueued = true;
     queueMicrotask(() => { syncQueued = false; syncMonitoring(); });
+  }
+
+  function nodeIsOwnStatusUi(node) {
+    if (!(node instanceof Element)) return false;
+    return node.id === STATUS_BADGE_ID || !!node.closest?.(`#${STATUS_BADGE_ID}`);
+  }
+
+  function mutationIsOnlyOwnStatusUi(record) {
+    if (!record) return false;
+    if (nodeIsOwnStatusUi(record.target)) return true;
+    if (record.type !== "childList") return false;
+    const changed = [...(record.addedNodes || []), ...(record.removedNodes || [])];
+    return changed.length > 0 && changed.every(nodeIsOwnStatusUi);
   }
 
   function observeTurn(turn) {
@@ -289,17 +324,25 @@
 
   async function streamStatus(id) {
     if (!id || !SESSION_AUTH || typeof SESSION_AUTH.resolveAccessToken !== "function") return null;
-    const auth = await SESSION_AUTH.resolveAccessToken({ isCurrent: () => conversationId() === id });
-    if (!auth.ok || conversationId() !== id) return null;
-    try {
+    const controller = new AbortController();
+    let timeout = null;
+    const request = (async () => {
+      const auth = await SESSION_AUTH.resolveAccessToken({ isCurrent: () => conversationId() === id });
+      if (!auth.ok || conversationId() !== id || controller.signal.aborted) return null;
       const response = await fetch(`${location.origin}/backend-api/conversation/${encodeURIComponent(id)}/stream_status`, {
-        method: "GET", credentials: "same-origin", cache: "no-store",
+        method: "GET", credentials: "same-origin", cache: "no-store", signal: controller.signal,
         headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` }
       });
       if (!response.ok) return null;
       const data = await response.json();
       return typeof data?.status === "string" ? data.status : null;
-    } catch { return null; }
+    })();
+    const timedOut = new Promise((resolve) => {
+      timeout = setTimeout(() => { controller.abort(); resolve(null); }, STREAM_STATUS_TIMEOUT_MS);
+    });
+    try { return await Promise.race([request, timedOut]); }
+    catch { return null; }
+    finally { if (timeout !== null) clearTimeout(timeout); }
   }
 
   function waitForCondition(test, root, timeoutMs) {
@@ -322,7 +365,7 @@
       check();
       if (done) return;
       observer = new MutationObserver(check);
-      observer.observe(root || document.documentElement || document, { childList: true, subtree: true, attributes: true });
+      observer.observe(root || document.documentElement || document, { childList: true, subtree: true, attributes: true, characterData: true });
       readyStateHandler = check;
       document.addEventListener("readystatechange", readyStateHandler);
       queueMicrotask(check);
@@ -331,23 +374,23 @@
   }
 
   function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
-  function domStopSettled() { return !stopButton() && !newestAssistantStreaming() && composerIdle(); }
+  function stopUiSettled() { return !stopButton() && composerIdle(); }
+  function domStopSettled() { return stopUiSettled() && !newestAssistantStreaming(); }
+  function decisiveModelState(state) { return state?.decision === "pro" || state?.autoRecoveryAllowed === true; }
 
-  async function waitForStopSettlement(id) {
-    const deadline = Date.now() + PHASE_TIMEOUT_MS;
-    let nextBackendCheckAt = 0;
-    while (Date.now() < deadline) {
-      if (domStopSettled() && Date.now() >= nextBackendCheckAt) {
-        const status = await streamStatus(id);
-        if (status !== null && status !== "IS_STREAMING") return true;
-        nextBackendCheckAt = Date.now() + 10_000;
-      }
-      await sleep(Math.min(1000, Math.max(100, deadline - Date.now())));
-    }
+  async function recoverySafety(turnKey, waitForHydration = false) {
+    let state = nudgeModelState(turnKey);
+    if (decisiveModelState(state) || !waitForHydration) return state;
+    await waitForCondition(() => decisiveModelState(nudgeModelState(turnKey)), document.documentElement, MODEL_HYDRATION_TIMEOUT_MS);
+    return nudgeModelState(turnKey);
+  }
+
+  function rejectUnsafeModel(state, stage) {
+    lastRecoveryFailure = state?.decision === "pro" ? `model-pro-${stage}` : `model-unknown-${stage}`;
     return false;
   }
 
-  async function guardedReload(reason, key, state = modelState()) {
+  async function guardedReload(reason, key, state = nudgeModelState(key)) {
     if (!RELOAD_STATE || typeof RELOAD_STATE.armReload !== "function") {
       lastRecoveryFailure = "reload-state-unavailable";
       return false;
@@ -414,11 +457,12 @@
   }
 
   function identity(id, key) { return `${id || ""}\u001f${key || ""}`; }
+  function recoveryAttemptKey(key) { return key || "__shell-loading__"; }
 
   function rememberAttempt(id, key) {
-    if (!key) return;
-    attemptedTurnKey = key;
-    attemptedTurns.add(identity(id, key));
+    const attemptKey = recoveryAttemptKey(key);
+    attemptedTurnKey = attemptKey;
+    attemptedTurns.add(identity(id, attemptKey));
     if (attemptedTurns.size > 256) attemptedTurns.delete(attemptedTurns.values().next().value);
   }
 
@@ -429,65 +473,119 @@
     else if (typeof RELOAD_STATE.clear === "function") RELOAD_STATE.clear();
   }
 
-  async function performStopAndResume({ id, key, allowReload }) {
-    const state = modelState();
-    if (state.autoRecoveryAllowed !== true) {
-      lastRecoveryFailure = state.decision === "pro" ? "model-pro-before-stop" : "model-unknown-before-stop";
-      return false;
-    }
-    const stop = stopButton();
-    if (!stop) {
-      lastRecoveryFailure = "stop-button-missing";
-      return false;
+  async function settleRunForContinuation({ id, key, allowReload, waitForModelHydration }) {
+    const deadline = Date.now() + PHASE_TIMEOUT_MS;
+    let stopRequested = false;
+    let uiSettledSince = 0;
+    lastSettlementSource = null;
+
+    while (Date.now() < deadline) {
+      if (!settings.stallRecoveryEnabled || conversationId() !== id) {
+        lastRecoveryFailure = "transaction-invalidated";
+        return false;
+      }
+      if (hasUserDraft()) {
+        lastRecoveryFailure = stopRequested ? "user-draft-during-stop" : "user-draft-before-stop";
+        return false;
+      }
+
+      const stop = stopButton();
+      if (!stopRequested && stop) {
+        const state = await recoverySafety(key, waitForModelHydration);
+        if (state.autoRecoveryAllowed !== true) return rejectUnsafeModel(state, "before-stop");
+        setPhase("stopping");
+        stop.click();
+        stopRequested = true;
+        uiSettledSince = 0;
+        await sleep(100);
+        continue;
+      }
+
+      // The ChatGPT UI can be ready for another message while both its old
+      // data-streaming-response-status marker and stream_status still lag. Once
+      // Stop is gone and the composer is interactive, keep that state stable for
+      // a short React handoff window and treat it as settled. This is exactly what
+      // a human uses to decide the stopped run is over.
+      const uiReady = stopUiSettled();
+      if (uiReady) {
+        if (!uiSettledSince) {
+          uiSettledSince = Date.now();
+          setPhase("settling");
+        }
+      } else {
+        uiSettledSince = 0;
+      }
+
+      const decision = RECOVERY_POLICY?.settlement?.({
+        stopPresent: !!stopButton(),
+        composerIdle: composerIdle(),
+        uiSettledMs: uiSettledSince ? Date.now() - uiSettledSince : 0,
+        uiGraceMs: UI_SETTLE_GRACE_MS
+      });
+      if (decision?.settled) {
+        rememberSettledTurn(key);
+        lastSettlementSource = decision.source;
+        recordTransition("settled", decision.source === "ui" ? "ui-idle" : decision.source);
+        return true;
+      }
+
+      await sleep(Math.min(250, Math.max(100, deadline - Date.now())));
     }
 
-    setPhase("stopping");
-    stop.click();
-    if (!(await waitForStopSettlement(id))) {
-      lastRecoveryFailure = "stop-not-settled";
-      if (allowReload) return guardedReload("stop-timeout", key, nudgeModelState(key));
-      return false;
+    lastRecoveryFailure = stopRequested ? "stop-not-settled" : "run-not-settled";
+    if (allowReload) {
+      const state = await recoverySafety(key, false);
+      return guardedReload(stopRequested ? "stop-timeout" : "run-state-timeout", key, state);
     }
+    return false;
+  }
+
+  async function resumeSettledRun({ id, key, allowReload, waitForModelHydration }) {
     if (!settings.stallRecoveryEnabled || conversationId() !== id) {
       lastRecoveryFailure = "transaction-invalidated";
       return false;
     }
     if (hasUserDraft()) {
-      lastRecoveryFailure = "user-draft-during-stop";
+      lastRecoveryFailure = "user-draft-before-nudge";
       return false;
     }
-    const postStopState = nudgeModelState(key);
-    if (postStopState.autoRecoveryAllowed !== true) {
-      lastRecoveryFailure = postStopState.decision === "pro" ? "model-pro-after-stop" : "model-unknown-after-stop";
-      return false;
-    }
+    const state = await recoverySafety(key, waitForModelHydration);
+    if (state.autoRecoveryAllowed !== true) return rejectUnsafeModel(state, "before-nudge");
 
     const sent = await sendNudge(key);
     if (sent.ok) return true;
     lastRecoveryFailure = sent.failure;
     if (!sent.submitted && sent.failure === "send-not-ready" && allowReload) {
       clearNudge();
-      return guardedReload("send-readiness-timeout", key, postStopState);
+      return guardedReload("send-readiness-timeout", key, state);
     }
     return false;
   }
 
-  async function recoverCurrentStall(id, key, generation) {
-    const attemptId = identity(id, key);
+  async function runRecoveryTransaction({ id, key, allowReload, waitForModelHydration = false }) {
+    if (!(await settleRunForContinuation({ id, key, allowReload, waitForModelHydration }))) return false;
+    if (transaction?.phase === "reloading") return false;
+    return resumeSettledRun({ id, key, allowReload, waitForModelHydration });
+  }
+
+  async function recoverCurrentStall(id, key, generation, reason = "stall-timeout") {
+    const attemptId = identity(id, recoveryAttemptKey(key));
     if (transaction || attemptedTurns.has(attemptId) || generation !== monitorGeneration || key !== activeTurnKey) return;
-    transaction = { phase: "checking", id, key };
+    transaction = { phase: "checking", id, key, reason };
     recoveryStartedAt = Date.now();
     lastRecoveryResult = "in-flight";
     lastRecoveryFailure = null;
+    lastSettlementSource = null;
     attemptedTurnKey = key;
-    recordTransition("checking", "stall");
+    recordTransition("checking", reason);
     publishStatus();
     let completed = false;
     try {
-      completed = await performStopAndResume({ id, key, allowReload: true });
+      completed = await runRecoveryTransaction({ id, key, allowReload: true });
       if (transaction?.phase === "reloading") return;
       rememberAttempt(id, key);
       lastRecoveryResult = completed ? "completed" : "failed";
+      recordTransition(lastRecoveryResult, completed ? lastSettlementSource : lastRecoveryFailure);
     } finally {
       if (transaction?.phase !== "reloading") {
         if (!completed && composerContainsOnlyNudge()) clearNudge();
@@ -509,18 +607,12 @@
     if (loadingAt) {
       const elapsed = Date.now() - loadingAt;
       if (elapsed < STALL_TIMEOUT_MS) { scheduleDeadline(STALL_TIMEOUT_MS - elapsed); return; }
-      transaction = { phase: "checking", id: conversationId(), key: activeTurnKey };
-      recoveryStartedAt = Date.now();
-      lastRecoveryResult = "in-flight";
-      lastRecoveryFailure = null;
-      recordTransition("checking", "loading-timeout");
-      publishStatus();
-      const reloading = await guardedReload("loading-timeout", activeTurnKey, state);
-      if (!reloading) {
-        lastRecoveryResult = "failed";
-        lastRecoveryFinishedAt = Date.now();
-        clearTransaction();
-      }
+      const id = conversationId();
+      const key = activeTurnKey;
+      const generation = monitorGeneration;
+      const reason = preOutputLoading(activeTurn) ? "pre-output-timeout" : "shell-loading-timeout";
+      lastTriggerBackendStatus = null;
+      await recoverCurrentStall(id, key, generation, reason);
       return;
     }
 
@@ -534,24 +626,23 @@
     const id = conversationId();
     const key = activeTurnKey;
     const generation = monitorGeneration;
+    let triggerReason = longWait ? "long-wait-banner" : "stall-timeout";
+    lastTriggerBackendStatus = null;
     if (!longWait) {
-      if (await streamStatus(id) !== "IS_STREAMING") {
-        rememberBackendSettled(key);
+      const status = await streamStatus(id);
+      lastTriggerBackendStatus = status;
+      if (status !== null && status !== "IS_STREAMING") {
+        rememberSettledTurn(key);
+        recordTransition("settled", "backend-non-streaming");
         observeTurn(null);
         publishStatus();
         return;
       }
+      if (status === null) triggerReason = "stall-timeout-status-unknown";
       if (generation !== monitorGeneration || key !== activeTurnKey || hasUserDraft() || !stopButton()) return;
-      if (await streamStatus(id) !== "IS_STREAMING") {
-        rememberBackendSettled(key);
-        observeTurn(null);
-        publishStatus();
-        return;
-      }
-      if (generation !== monitorGeneration || key !== activeTurnKey) return;
     } else if (!hasLongWaitBanner(activeTurn) || !stopButton()) return;
     if (modelState().autoRecoveryAllowed !== true) return;
-    await recoverCurrentStall(id, key, generation);
+    await recoverCurrentStall(id, key, generation, triggerReason);
   }
 
   async function restoreReloadTransaction() {
@@ -562,6 +653,8 @@
     recoveryStartedAt = marker.createdAt || Date.now();
     lastRecoveryResult = "in-flight";
     lastRecoveryFailure = null;
+    lastTriggerBackendStatus = null;
+    lastSettlementSource = null;
     attemptedTurnKey = marker.turnKey || null;
     recordTransition("restoring", marker.reason || null);
     publishStatus();
@@ -569,6 +662,7 @@
     const finishEarly = (failure) => {
       lastRecoveryFailure = failure;
       lastRecoveryResult = "failed";
+      recordTransition("failed", failure);
       rememberAttempt(marker.conversationId, marker.turnKey);
       finishReloadMarker(false);
       lastRecoveryFinishedAt = Date.now();
@@ -589,36 +683,23 @@
       return;
     }
 
-    const state = modelState();
-    if (state.autoRecoveryAllowed !== true) {
-      finishEarly(state.decision === "pro" ? "model-pro-after-reload" : "model-unknown-after-reload");
-      return;
-    }
-
-    const status = await streamStatus(marker.conversationId);
-    const live = findActiveTurn();
-    const liveKey = turnKey(live);
-    const liveMatchesMarker = !!live && (!marker.turnKey || liveKey === marker.turnKey);
-    const running = status === "IS_STREAMING" ||
-      (status === null && (shellRunLoading() || !!stopButton() || liveMatchesMarker));
-    let ok = false;
-    let finalKey = marker.turnKey || liveKey;
-    if (running) {
-      const key = liveKey || marker.turnKey;
-      finalKey = key || finalKey;
-      RELOAD_STATE.updateStage?.("stop-after-reload", { turnKey: key });
-      ok = await performStopAndResume({ id: marker.conversationId, key, allowReload: false });
-    } else {
-      RELOAD_STATE.updateStage?.("send-after-reload");
-      const sent = await sendNudge(marker.turnKey);
-      ok = sent.ok;
-      if (!ok) lastRecoveryFailure = sent.failure;
-    }
+    // Reload is only transport recovery. Resume the exact same Stop -> settle ->
+    // safety -> nudge transaction used by an ordinary stall instead of maintaining
+    // a second implementation with subtly different rules.
+    RELOAD_STATE.updateStage?.("resume-transaction", { turnKey: marker.turnKey });
+    const finalKey = marker.turnKey;
+    const ok = await runRecoveryTransaction({
+      id: marker.conversationId,
+      key: finalKey,
+      allowReload: false,
+      waitForModelHydration: true
+    });
 
     if (!ok && composerContainsOnlyNudge()) clearNudge();
     rememberAttempt(marker.conversationId, finalKey);
     finishReloadMarker(ok);
     lastRecoveryResult = ok ? "completed" : "failed";
+    recordTransition(lastRecoveryResult, ok ? lastSettlementSource : lastRecoveryFailure);
     lastRecoveryFinishedAt = Date.now();
     clearTransaction();
     scheduleSync();
@@ -641,7 +722,10 @@
   function startObservers() {
     if (!document.documentElement) return;
     if (!rootObserver) {
-      rootObserver = new MutationObserver(scheduleSync);
+      rootObserver = new MutationObserver((records) => {
+        if (records?.length && records.every(mutationIsOnlyOwnStatusUi)) return;
+        scheduleSync();
+      });
       rootObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["inert", "data-stream-active", "data-streaming-response-status"] });
     }
     scheduleSync();
@@ -672,6 +756,9 @@
         activeTurnKey,
         liveTurnKey: turnKey(findActiveTurn()),
         newestAssistantStreaming: newestAssistantStreaming(),
+        attemptedCurrentTurn: attemptedCurrentTurn(),
+        stopUiSettled: stopUiSettled(),
+        domStopSettled: domStopSettled(),
         composerIdle: composerIdle(),
         shellLoading: shellRunLoading(),
         assistantOutputPresent: hasAssistantOutput(),
@@ -689,14 +776,17 @@
         lastRecoveryFinishedAt,
         lastRecoveryResult,
         lastRecoveryFailure,
+        lastTriggerBackendStatus,
+        lastSettlementSource,
         lastProgressAt,
         activeTurnStartedAt,
         shellLoadingStartedAt,
         attemptedTurnKey,
         attemptedTurnCount: attemptedTurns.size,
-        backendSettledTurnCount: backendSettledTurns.size,
+        settledTurnCount: settledTurns.size,
         timeoutSeconds: STALL_TIMEOUT_MS / 1000,
         phaseTimeoutSeconds: PHASE_TIMEOUT_MS / 1000,
+        streamStatusTimeoutSeconds: STREAM_STATUS_TIMEOUT_MS / 1000,
         sendConfirmTimeoutSeconds: SEND_CONFIRM_TIMEOUT_MS / 1000,
         reloadMarker: RELOAD_STATE?.read?.() || null,
         composerInput: COMPOSER_INPUT?.debug?.() || { present: !!COMPOSER_INPUT },

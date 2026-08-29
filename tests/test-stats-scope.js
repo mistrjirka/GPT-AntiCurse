@@ -9,6 +9,7 @@ const ROOT = path.resolve(__dirname, "..");
 const scopeSource = fs.readFileSync(path.join(ROOT, "chrome", "conversation-scope.js"), "utf8");
 const chromeContent = fs.readFileSync(path.join(ROOT, "chrome", "content.js"), "utf8");
 const firefoxContent = fs.readFileSync(path.join(ROOT, "firefox", "content.js"), "utf8");
+const recoveryStatusSource = fs.readFileSync(path.join(ROOT, "firefox", "recovery-status-ui.js"), "utf8");
 const STATUS_ID = "cg-conversation-guard-status";
 
 function tick() {
@@ -253,6 +254,53 @@ async function testFirefoxRejectsStaleStats() {
   assert.equal(context.__dispatched.length, 1, "blocked cursor-page stats must not replace/retrigger Firefox current-page state");
 }
 
+
+async function testRecoveryBadgeHasOneOwnerAndClearStates() {
+  const context = baseContext({ showGuardNotice: true });
+  context.browser = {
+    storage: {
+      local: { get() { return Promise.resolve({ enabled: true, showGuardNotice: true, cgLastIssue: null }); } },
+      onChanged: { addListener() {} }
+    },
+    runtime: {
+      sendMessage(message) {
+        assert.equal(message.type, "cg-get-stats");
+        return Promise.resolve(null);
+      },
+      onMessage: { addListener() {} }
+    }
+  };
+
+  vm.runInNewContext(scopeSource, context, { filename: "conversation-scope.js" });
+  vm.runInNewContext(recoveryStatusSource, context, { filename: "recovery-status-ui.js" });
+  vm.runInNewContext(firefoxContent, context, { filename: "firefox/content.js" });
+  await tick();
+
+  const stall = context.__windowListeners.get("__gpt_anticurse_stall_status__");
+  assert(stall, "content.js must be the sole stall-status event consumer");
+  stall({ detail: { active: true, conversationId: "b", phase: "stopping", remainingMs: null } });
+  let badges = context.document.querySelectorAll(`[id="${STATUS_ID}"]`);
+  assert.equal(badges.length, 1);
+  assert.deepEqual(badges[0].children.map((node) => node.textContent), ["AC", "·", "stopping"]);
+  assert(badges[0].title.includes("stopping the stalled response"));
+
+  stall({ detail: { active: true, conversationId: "b", phase: "settling", remainingMs: null } });
+  badges = context.document.querySelectorAll(`[id="${STATUS_ID}"]`);
+  assert.deepEqual(badges[0].children.map((node) => node.textContent), ["AC", "·", "stopped · preparing"]);
+  assert(badges[0].title.includes("response is stopped"));
+
+  stall({ detail: { active: true, conversationId: "b", phase: "countdown", remainingMs: 0 } });
+  badges = context.document.querySelectorAll(`[id="${STATUS_ID}"]`);
+  assert.deepEqual(badges[0].children.map((node) => node.textContent), ["AC", "·", "continue now"]);
+  assert(!badges[0].children.some((node) => node.textContent === "0s"));
+
+  stall({ detail: { active: false, conversationId: "b" } });
+  assert.equal(context.document.querySelectorAll(`[id="${STATUS_ID}"]`).length, 0, "inactive transition must release the recovery badge");
+  const queriesAfterFirstInactive = context.__queryAllCount();
+  stall({ detail: { active: false, conversationId: "b" } });
+  assert.equal(context.__queryAllCount(), queriesAfterFirstInactive, "repeated inactive watchdog noise must not rerender the badge");
+}
+
 async function testStatusBadgeIsDomSingleton() {
   const context = baseContext({ showGuardNotice: true });
   let runtimeListener = null;
@@ -314,6 +362,7 @@ async function testStatusBadgeIsDomSingleton() {
   await testChromiumRejectsStaleStats();
   await testFirefoxRejectsStaleStats();
   await testStatusBadgeIsDomSingleton();
+  await testRecoveryBadgeHasOneOwnerAndClearStates();
   console.log("conversation-scoped stats/status DOM tests: PASS");
 })().catch((error) => {
   console.error(error);

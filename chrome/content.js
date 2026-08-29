@@ -13,6 +13,7 @@ const RECOVERABLE_MAIN_CODES = new Set([
 ]);
 const DOM_GATE = globalThis.CGAntiCurseDomReady;
 const DIAGNOSTICS = globalThis.CGAntiCurseDiagnostics;
+const RECOVERY_UI = globalThis.CGAntiCurseRecoveryStatusUi;
 const conversationScope = globalThis.CGConversationScope.create();
 let currentSettings = { ...DEFAULT_SETTINGS };
 let settingsReady = false;
@@ -147,31 +148,36 @@ function activeStallStatus() {
   return belongsToCurrentConversation(stallStatus.conversationId) ? stallStatus : null;
 }
 
-function formatRecoveryCountdown(value) {
-  const seconds = Math.max(0, Math.ceil((Number(value) || 0) / 1000));
-  if (seconds >= 60) return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-  return `${seconds}s`;
+function recoveryPresentation(status) {
+  if (!status) return null;
+  if (RECOVERY_UI && typeof RECOVERY_UI.presentation === "function") return RECOVERY_UI.presentation(status);
+  return status.active === true ? { text: "Auto-Continue", title: "Auto-Continue is active." } : null;
 }
 
-function recoveryStatusText(status) {
-  if (!status) return "";
-  if (status.phase === "blocked-pro") return "Pro model · auto-continue disabled";
-  if (status.phase === "blocked-unknown") return "model not confirmed · auto-continue disabled";
-  if (status.phase === "loading") return "response loading · recovery not armed";
-  if (status.phase === "paused-hidden") return "auto-continue paused · tab hidden";
-  if (status.phase === "paused-draft") return "auto-continue paused · draft present";
-  if (status.phase === "checking") return "auto-continue checking…";
-  if (status.phase === "grace") return "auto-continue confirming…";
-  if (status.phase === "recovering") return "auto-continue resuming…";
-  if (status.longWaitBanner) return "auto-continue now";
-  return `${status.tool ? "tool " : ""}auto-continue in ${formatRecoveryCountdown(status.remainingMs)}`;
-}
-
-function appendRecoveryStatus(element) {
-  const status = activeStallStatus();
-  if (!element || !status) return false;
-  element.append(span("cg-sep", "•"), span("cg-recovery", recoveryStatusText(status)));
+function renderRecoveryBadge(status) {
+  const view = recoveryPresentation(status);
+  if (!view) return false;
+  const el = ensureBadge();
+  if (!el) return false;
+  clearTimeout(hideTimer);
+  const phase = status.phase || (status.longWaitBanner ? "now" : "countdown");
+  const title = `GPT AntiCurse — ${view.title}`;
+  if (el.dataset.mode === "recovery" && el.dataset.recoveryPhase === phase && el.dataset.recoveryText === view.text && el.title === title) return true;
+  el.dataset.mode = "recovery";
+  el.dataset.recoveryPhase = phase;
+  el.dataset.recoveryText = view.text;
+  el.classList.remove("cg-compact");
+  const strong = document.createElement("strong");
+  strong.textContent = "AC";
+  el.replaceChildren(strong, span("cg-sep", "·"), span("cg-state", view.text));
+  el.title = title;
   return true;
+}
+
+function clearRecoveryBadgeState(element) {
+  if (!element) return;
+  delete element.dataset.recoveryPhase;
+  delete element.dataset.recoveryText;
 }
 
 function queueRenderAfterDomReady() {
@@ -188,10 +194,10 @@ function renderIssueIfNeeded() {
   if (!["history", "archive", "chromium-main", "settings"].includes(lastIssue.scope)) return false;
   const el = ensureBadge();
   el.dataset.mode = "error";
+  clearRecoveryBadgeState(el);
   el.classList.remove("cg-compact");
   el.textContent = "AntiCurse issue — open extension details";
   el.title = `${lastIssue.scope}/${lastIssue.code}\n${lastIssue.message}`;
-  appendRecoveryStatus(el);
   return true;
 }
 
@@ -211,20 +217,13 @@ function render(stats) {
     removeBadge(true);
     return;
   }
+  const recovery = activeStallStatus();
+  if (recovery && renderRecoveryBadge(recovery)) return;
   if (renderIssueIfNeeded()) return;
-  if (!lastStats) {
-    const status = activeStallStatus();
-    if (!status) { removeBadge(); return; }
-    const el = ensureBadge();
-    el.dataset.mode = "waiting";
-    el.classList.remove("cg-compact");
-    renderSimpleBadge(el, "watching response");
-    appendRecoveryStatus(el);
-    el.title = "Automatic stalled-run recovery countdown";
-    return;
-  }
+  if (!lastStats) { removeBadge(); return; }
   const el = ensureBadge();
   el.dataset.mode = lastStats.mode || "unknown";
+  clearRecoveryBadgeState(el);
   el.classList.remove("cg-compact");
 
   if (lastStats.mode === "trimmed") {
@@ -248,7 +247,6 @@ function render(stats) {
     hideTimer = setTimeout(() => {
       if (el && el.dataset.mode === "trimmed" && currentSettings.showGuardNotice && !renderIssueIfNeeded()) {
         renderTrimmedBadge(el, metric, recent, true);
-        appendRecoveryStatus(el);
         el.classList.add("cg-compact");
       }
     }, 9000);
@@ -260,7 +258,6 @@ function render(stats) {
   } else {
     renderSimpleBadge(el, `not optimized${lastStats.reason ? ` · ${lastStats.reason}` : ""}`);
   }
-  appendRecoveryStatus(el);
 }
 
 function syncPerformanceClass() {
@@ -332,7 +329,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
 window.addEventListener(STALL_STATUS_EVENT, (event) => {
   const detail = event && event.detail;
   if (detail && detail.active === true && !belongsToCurrentConversation(detail.conversationId)) return;
-  stallStatus = detail && detail.active === true ? { ...detail } : null;
+  const next = detail && detail.active === true ? { ...detail } : null;
+  if (!next && !stallStatus) return;
+  stallStatus = next;
   render(lastStats);
 });
 

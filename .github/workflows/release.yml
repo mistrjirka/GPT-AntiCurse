@@ -38,6 +38,7 @@ jobs:
           cmp firefox/composer-native-input.js chrome/composer-native-input.js
           cmp firefox/recovery-reload-state.js chrome/recovery-reload-state.js
           cmp firefox/recovery-status-ui.js chrome/recovery-status-ui.js
+          cmp firefox/recovery-policy.js chrome/recovery-policy.js
           cmp firefox/pro-recovery-guard.js chrome/pro-recovery-guard.js
           cmp firefox/stall-recovery.js chrome/stall-recovery.js
           cmp firefox/archive.js chrome/archive.js
@@ -100,6 +101,7 @@ jobs:
             tests/test-conversation-endpoints.js
             tests/test-pro-recovery-guard.js
             tests/test-stall-recovery.js
+            tests/test-recovery-contract.js
           )
           for test in "${tests[@]}"; do
             echo "==> $test"
@@ -123,7 +125,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: gpt-anticurse-0.7.7-candidate
+          name: gpt-anticurse-candidate
           path: dist/*.zip
           if-no-files-found: error
       - name: Install browser E2E runtimes
@@ -137,16 +139,12 @@ jobs:
           echo '127.0.0.1 chatgpt.com' | sudo tee -a /etc/hosts >/dev/null
       - name: Run Chromium extension E2E
         run: node tests/e2e-chromium.js
-      - name: Run Chromium stall-recovery E2E
-        run: timeout --foreground 60s node tests/e2e-stall-recovery-chromium.js
       - name: Run Chromium hydration-boundary E2E
         run: node tests/e2e-hydration-chromium.js
       - name: Run Chromium native-fidelity E2E
         run: node tests/e2e-fidelity-chromium.js
       - name: Run Firefox extension E2E
         run: node tests/e2e-firefox.js
-      - name: Run Firefox stall-recovery E2E
-        run: timeout --foreground 90s node tests/e2e-stall-recovery-firefox.js
       - name: Run Firefox native-fidelity E2E
         run: node tests/e2e-fidelity-firefox.js
       - name: Create GitHub Release if missing

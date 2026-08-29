@@ -56,7 +56,7 @@ For most people, the defaults are a good starting point.
 3. Leave **Performance guard** on.
 4. **Auto window** is the default: it loads another older page when you reach the top. You can switch to **Recent N + button** if you prefer an explicit **Load previous** control.
 5. Set **Window size** if you want more or less recent context kept in ChatGPT's normal thread.
-6. Leave **Auto-recover stalled runs** on if you want AntiCurse to conservatively recover a run that remains backend-streaming but makes no visible progress for about 2 minutes (5 minutes for an active tool).
+6. Leave **Auto-recover stalled runs** on if you want AntiCurse to recover a response that makes no visible progress for about 2 minutes. Pro runs are excluded.
 7. Press **Save & reload** after changing the main settings.
 
 ### What the main number means
@@ -93,9 +93,11 @@ Older-history loading remains available during the current page session without 
 
 ## Stalled-run recovery
 
-When **Auto-recover stalled runs** is enabled, AntiCurse watches only the currently streaming turn for meaningful progress. After roughly 2 minutes without progress (5 minutes while a tool is visibly active), it checks ChatGPT's `stream_status` twice with a 10-second grace period. Recovery proceeds only while the tab is visible, the backend still reports exactly `IS_STREAMING`, the real Stop button is present, and the composer has no text or attachment. The bottom-right status pill shows the remaining recovery countdown and the current recovery phase.
+When **Auto-recover stalled runs** is enabled, AntiCurse watches the active response for meaningful progress. After roughly 2 minutes without progress—or immediately when ChatGPT shows its unusually-long-wait warning—it starts the same recovery transaction. Explicit Pro runs are always excluded, unknown model state remains fail-closed, and a user draft or attachment pauses recovery.
 
-A recovery clicks Stop, waits for the run to stop, inserts a fixed `.` continuation nudge, waits for ChatGPT to enable the Send control, and submits it. It attempts each turn at most once and never overwrites a draft. AntiCurse does **not** reload the page as a recovery fallback.
+For an ordinary timeout, a bounded `stream_status` check may cancel recovery only when ChatGPT explicitly reports that the run is no longer streaming; an unavailable/failed status check does not masquerade as a completed run. Recovery then stops the current run when a Stop control is present and waits for the composer itself to remain stably interactive after Stop disappears. That UI readiness is what permits the fixed `.` continuation nudge, so stale streaming markers or stale backend status cannot leave recovery stuck in `stopping`. If the page never becomes usable, AntiCurse may perform one guarded reload and resume the same transaction. It does not overwrite a draft or repeatedly retry a completed/failed turn.
+
+The bottom-right pill describes what Auto-Continue is doing in user-facing terms, for example **continue in 1:20**, **checking stall**, **stopping**, **stopped · preparing**, **continuing**, and **starting…**. It shows **off for Pro** when the current run is explicitly Pro and **waiting for model** while model detection is not yet safe.
 
 ## Privacy
 
@@ -146,6 +148,6 @@ Build both packages:
 bash ./scripts/build.sh
 ```
 
-Run the same unit/code-quality tests used by CI by following `.github/workflows/release.yml`. Release CI also runs real Chromium and Firefox extension E2E tests, including cursor pagination, Auto window, conservative stall recovery, hydration-boundary behavior, and native-fidelity rendering.
+Run the same unit/code-quality tests used by CI by following `.github/workflows/release.yml`. Auto-Continue edge cases are covered by direct recovery-policy/DOM contracts derived from real ChatGPT failure states. Release CI keeps browser E2Es for extension loading, request/interception boundaries, hydration behavior, cursor pagination, and native-fidelity rendering.
 
 </details>

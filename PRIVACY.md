@@ -44,7 +44,7 @@ The extension:
 - does not load or execute remotely hosted extension code; and
 - does not provide collected user data to third parties.
 
-Your normal use of ChatGPT still communicates with OpenAI/ChatGPT as it would without the extension. GPT AntiCurse may request the current ChatGPT session information and make same-origin requests to ChatGPT itself for three extension features: reconstructing older visible history outside ChatGPT's active page state, explicitly exporting a cursor-paginated conversation, and confirming that a suspected stalled run still reports `IS_STREAMING` before recovery. These requests go to ChatGPT, not to the extension developer or any developer-controlled server. Access tokens used for these requests are kept only in memory and are not written to extension storage or included in exported/diagnostic files.
+Your normal use of ChatGPT still communicates with OpenAI/ChatGPT as it would without the extension. GPT AntiCurse may request the current ChatGPT session information and make same-origin requests to ChatGPT itself for three extension features: reconstructing older visible history outside ChatGPT's active page state, explicitly exporting a cursor-paginated conversation, and checking ChatGPT's backend streaming state around a suspected stalled run. These requests go to ChatGPT, not to the extension developer or any developer-controlled server. Access tokens used for these requests are kept only in memory and are not written to extension storage or included in exported/diagnostic files.
 
 ## Permissions
 
