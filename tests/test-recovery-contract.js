@@ -66,10 +66,56 @@ assert.equal(policy.recoveryVisible({ shellLoading: true }), true);
 assert.equal(policy.recoveryVisible({ transactionActive: false, liveTurnPresent: false, shellLoading: false }), false,
   "a quarantined stale turn must not leave an AC 0s zombie indicator");
 
+// Captured 0.7.8 failure shape: ChatGPT has returned to an idle composer, the
+// assistant turn only contains stopped-thinking/tool activity, and no final answer
+// was rendered. This should reuse Auto-Continue's normal nudge transaction.
+result = policy.terminalEmpty({
+  observedRunning: true,
+  latestRole: "assistant",
+  stopPresent: false,
+  composerIdle: true,
+  hasFinalOutput: false,
+  hasIncompleteEvidence: true,
+  attempted: false,
+  stableMs: 750,
+  graceMs: 750,
+  retryCount: 0,
+  retryLimit: 3
+});
+assert.equal(result.ready, true, "a completed tool-only/stopped turn must be eligible for continuation");
+
+for (const override of [
+  { observedRunning: false },
+  { latestRole: "user" },
+  { stopPresent: true },
+  { composerIdle: false },
+  { hasFinalOutput: true },
+  { hasIncompleteEvidence: false },
+  { attempted: true }
+]) {
+  const state = {
+    observedRunning: true, latestRole: "assistant", stopPresent: false, composerIdle: true,
+    hasFinalOutput: false, hasIncompleteEvidence: true, attempted: false, stableMs: 750, graceMs: 750,
+    retryCount: 0, retryLimit: 3, ...override
+  };
+  assert.equal(policy.terminalEmpty(state).ready, false, `terminal-empty safety gate failed for ${JSON.stringify(override)}`);
+}
+assert.equal(policy.terminalEmpty({
+  observedRunning: true, latestRole: "assistant", stopPresent: false, composerIdle: true,
+  hasFinalOutput: false, hasIncompleteEvidence: true, attempted: false, stableMs: 749, graceMs: 750,
+  retryCount: 0, retryLimit: 3
+}).ready, false, "terminal completion must remain stable briefly before nudging");
+assert.equal(policy.terminalEmpty({
+  observedRunning: true, latestRole: "assistant", stopPresent: false, composerIdle: true,
+  hasFinalOutput: false, hasIncompleteEvidence: true, attempted: false, stableMs: 750, graceMs: 750,
+  retryCount: 3, retryLimit: 3
+}).capped, true, "empty-response continuation must have a bounded retry chain");
+
 const phases = new Map([
   ["blocked-pro", "off for Pro"],
   ["blocked-unknown", "waiting for model"],
   ["checking", "checking stall"],
+  ["checking-empty", "no answer · checking"],
   ["stopping", "stopping"],
   ["settling", "stopped · preparing"],
   ["sending", "continuing"],

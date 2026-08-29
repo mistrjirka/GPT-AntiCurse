@@ -24,6 +24,7 @@
       case "loading": return scheduledPresentation(value.remainingMs);
       case "paused-draft": return { text: "paused · draft present", title: "Auto-Continue is paused because there is text or an attachment in the composer." };
       case "checking": return { text: "checking stall", title: "Auto-Continue detected a possible stall and is verifying it." };
+      case "checking-empty": return { text: "no answer · checking", title: "Auto-Continue detected that the response ended without a visible answer." };
       case "stopping": return { text: "stopping", title: "Auto-Continue is stopping the stalled response." };
       case "settling": return { text: "stopped · preparing", title: "The response is stopped; Auto-Continue is waiting briefly for ChatGPT's composer to become stable." };
       case "sending": return { text: "continuing", title: "Auto-Continue is preparing the continuation message." };

@@ -44,6 +44,10 @@ assert(chromeSource.includes('preOutputLoading(activeTurn) ? "pre-output-timeout
 assert(!chromeSource.includes('guardedReload("loading-timeout"'), "loading timeout must not bypass the shared recovery transaction");
 assert(chromeSource.includes("RECOVERY_POLICY?.settlement?."), "settlement must use the directly tested recovery policy");
 assert(chromeSource.includes("RECOVERY_POLICY?.recoveryVisible?."), "badge visibility must use the directly tested recovery policy");
+assert(chromeSource.includes("RECOVERY_POLICY?.terminalEmpty?."), "terminal no-answer detection must use the directly tested recovery policy");
+assert(chromeSource.includes('reason === "empty-completion"'), "terminal no-answer recovery must enter the shared transaction, not a second implementation");
+assert(chromeSource.includes("observedRunningTurns"), "terminal retries must only apply to turns AntiCurse actually observed running");
+assert(chromeSource.includes("EMPTY_COMPLETION_RETRY_LIMIT = 3"), "terminal no-answer retries must be bounded");
 assert(chromeSource.includes("const ok = await runRecoveryTransaction({"), "reload must resume the shared transaction");
 assert(!chromeSource.includes("performStopAndResume"), "do not reintroduce a second stop/resume implementation");
 assert(chromeSource.includes("function mutationIsOnlyOwnStatusUi"), "watchdog must ignore its own status-badge mutations");

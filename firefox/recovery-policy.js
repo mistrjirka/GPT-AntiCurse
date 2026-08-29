@@ -14,5 +14,33 @@
     return transactionActive || shellLoading || liveTurnPresent;
   }
 
-  globalThis.CGAntiCurseRecoveryPolicy = { settlement, recoveryVisible };
+  function terminalEmpty({
+    observedRunning = false,
+    latestRole = null,
+    stopPresent = false,
+    composerIdle = false,
+    hasFinalOutput = false,
+    hasIncompleteEvidence = false,
+    attempted = false,
+    stableMs = 0,
+    graceMs = 750,
+    retryCount = 0,
+    retryLimit = 3
+  } = {}) {
+    const candidate = observedRunning === true &&
+      latestRole === "assistant" &&
+      stopPresent !== true &&
+      composerIdle === true &&
+      hasFinalOutput !== true &&
+      hasIncompleteEvidence === true &&
+      attempted !== true &&
+      Number(retryCount) < Number(retryLimit);
+    return {
+      candidate,
+      ready: candidate && Number(stableMs) >= Number(graceMs),
+      capped: Number(retryCount) >= Number(retryLimit)
+    };
+  }
+
+  globalThis.CGAntiCurseRecoveryPolicy = { settlement, recoveryVisible, terminalEmpty };
 })();

@@ -14,6 +14,8 @@
   const UNKNOWN_MODEL_RECHECK_MS = 500;
   const STREAM_STATUS_TIMEOUT_MS = 5_000;
   const UI_SETTLE_GRACE_MS = 750;
+  const EMPTY_COMPLETION_GRACE_MS = 750;
+  const EMPTY_COMPLETION_RETRY_LIMIT = 3;
   const SEND_CONFIRM_TIMEOUT_MS = 30_000;
   const STATUS_EVENT = "__gpt_anticurse_stall_status__";
   const STATUS_BADGE_ID = "cg-conversation-guard-status";
@@ -37,10 +39,12 @@
   let syncQueued = false;
   let deadlineTimer = null;
   let countdownUiTimer = null;
+  let terminalEmptyTimer = null;
   let monitorGeneration = 0;
   let transaction = null;
   const attemptedTurns = new Set();
   const settledTurns = new Set();
+  const observedRunningTurns = new Set();
   let attemptedTurnKey = null;
   let recoveryStartedAt = 0;
   let lastRecoveryFinishedAt = 0;
@@ -48,6 +52,11 @@
   let lastRecoveryFailure = null;
   let lastTriggerBackendStatus = null;
   let lastSettlementSource = null;
+  let terminalEmptyCandidateKey = null;
+  let terminalEmptySince = 0;
+  let emptyCompletionRecoveryCount = 0;
+  let lastObservedUserTurnKey = null;
+  let monitoredConversationId = null;
   const transitionLog = [];
 
   function applySettings(next) {
@@ -124,6 +133,22 @@
     return null;
   }
 
+  function newestRoleTurn() {
+    const turns = document.querySelectorAll(TURN_CONTAINER_SELECTOR);
+    for (let index = turns.length - 1; index >= 0; index--) {
+      const turn = turns[index];
+      if (turn.querySelector('[data-message-author-role="user"], [data-turn="user"]')) return { turn, role: "user" };
+      if (turn.querySelector('[data-message-author-role="assistant"], [data-turn="assistant"]')) return { turn, role: "assistant" };
+    }
+    return { turn: null, role: null };
+  }
+
+  function userTurnText(turn) {
+    if (!turn) return "";
+    const node = turn.querySelector('[data-message-author-role="user"], [data-turn="user"]');
+    return String(node?.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
   function findActiveTurn() {
     const newest = newestAssistantTurn();
     if (!newest || !newest.querySelector(STREAMING_SELECTOR)) return null;
@@ -179,6 +204,31 @@
   }
 
   function hasAssistantOutput(turn = activeTurn) { return !!outputSignature(turn); }
+
+  function hasFinalOutputRegion(turn) {
+    if (!turn) return false;
+    const regions = turn.querySelectorAll('[data-conversation-screenshot-content]');
+    const region = regions.length > 1 ? regions[regions.length - 1] : null;
+    if (!region) return false;
+    if (String(region.textContent || "").trim()) return true;
+    return !!region.querySelector('[data-writing-block], img[src], video, audio, canvas, iframe, a[href], button:not([aria-label="Open tool call list"])');
+  }
+
+  function hasSubstantiveFinalOutput(turn) {
+    if (!turn) return false;
+    if (hasAssistantOutput(turn) || hasFinalOutputRegion(turn)) return true;
+    return !!turn.querySelector('[data-writing-block], img[src], video, audio, canvas, iframe, a[download], a[href*="/backend-api/files/"]');
+  }
+
+  function hasIncompleteTerminalEvidence(turn) {
+    if (!turn) return false;
+    if (turn.querySelector('[aria-label="Open tool call list"], [data-testid="cot-v5-tool-icon-pile"], [data-testid="cot-v5-native-tool-icon"], [class*="group/tool-message"]')) return true;
+    for (const button of turn.querySelectorAll('button')) {
+      if (String(button.textContent || "").replace(/\s+/g, " ").trim().toLowerCase() === "stopped thinking") return true;
+    }
+    return false;
+  }
+
   function preOutputLoading(turn = activeTurn) { return !!turn && !!turn.querySelector(STREAMING_SELECTOR) && !hasLongWaitBanner(turn) && !hasAssistantOutput(turn); }
 
   function recordTransition(phase, detail = null) {
@@ -188,6 +238,7 @@
 
   function clearDeadlineTimer() { if (deadlineTimer !== null) clearTimeout(deadlineTimer); deadlineTimer = null; }
   function clearCountdownTimer() { if (countdownUiTimer !== null) clearTimeout(countdownUiTimer); countdownUiTimer = null; }
+  function clearTerminalEmptyTimer() { if (terminalEmptyTimer !== null) clearTimeout(terminalEmptyTimer); terminalEmptyTimer = null; }
 
   function currentLoadingStartedAt() {
     if (preOutputLoading(activeTurn)) return activeTurnStartedAt || lastProgressAt || Date.now();
@@ -250,6 +301,8 @@
 
   function clearTransaction() {
     transaction = null;
+    terminalEmptyCandidateKey = null;
+    terminalEmptySince = 0;
     publishStatus();
   }
 
@@ -295,14 +348,109 @@
     activityObserver.observe(activeTurn, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["data-streaming-response-status"] });
   }
 
+  function rememberObservedRunningTurn(turn) {
+    const key = turnKey(turn);
+    const id = conversationId();
+    if (!key || !id || !stopButton()) return;
+    observedRunningTurns.add(identity(id, key));
+    if (observedRunningTurns.size > 256) observedRunningTurns.delete(observedRunningTurns.values().next().value);
+  }
+
+  function resetTerminalEmptyCandidate() {
+    clearTerminalEmptyTimer();
+    terminalEmptyCandidateKey = null;
+    terminalEmptySince = 0;
+  }
+
+  function maybeResetEmptyRecoveryChain() {
+    const latest = newestRoleTurn();
+    const key = turnKey(latest.turn);
+    if (latest.role === "assistant" && hasSubstantiveFinalOutput(latest.turn)) {
+      emptyCompletionRecoveryCount = 0;
+      return;
+    }
+    if (latest.role === "user" && key && key !== lastObservedUserTurnKey) {
+      lastObservedUserTurnKey = key;
+      if (userTurnText(latest.turn) !== ".") emptyCompletionRecoveryCount = 0;
+    }
+  }
+
+  async function recoverTerminalEmptyTurn(id, key) {
+    if (transaction || !id || !key) return;
+    const latest = newestRoleTurn();
+    if (latest.role !== "assistant" || turnKey(latest.turn) !== key) return;
+    const attemptId = identity(id, recoveryAttemptKey(key));
+    const decision = RECOVERY_POLICY?.terminalEmpty?.({
+      observedRunning: observedRunningTurns.has(identity(id, key)),
+      latestRole: latest.role,
+      stopPresent: !!stopButton(),
+      composerIdle: composerIdle(),
+      hasFinalOutput: hasSubstantiveFinalOutput(latest.turn),
+      hasIncompleteEvidence: hasIncompleteTerminalEvidence(latest.turn),
+      attempted: attemptedTurns.has(attemptId),
+      stableMs: terminalEmptySince ? Date.now() - terminalEmptySince : 0,
+      graceMs: EMPTY_COMPLETION_GRACE_MS,
+      retryCount: emptyCompletionRecoveryCount,
+      retryLimit: EMPTY_COMPLETION_RETRY_LIMIT
+    });
+    if (!decision?.ready || hasUserDraft()) return;
+    await recoverTurn(id, key, null, "empty-completion", false);
+  }
+
+  function syncTerminalEmptyCandidate() {
+    if (transaction || !settings.stallRecoveryEnabled) { resetTerminalEmptyCandidate(); return; }
+    maybeResetEmptyRecoveryChain();
+    const id = conversationId();
+    const latest = newestRoleTurn();
+    const key = turnKey(latest.turn);
+    const attempted = !!key && attemptedTurns.has(identity(id, recoveryAttemptKey(key)));
+    const decision = RECOVERY_POLICY?.terminalEmpty?.({
+      observedRunning: !!key && observedRunningTurns.has(identity(id, key)),
+      latestRole: latest.role,
+      stopPresent: !!stopButton(),
+      composerIdle: composerIdle(),
+      hasFinalOutput: hasSubstantiveFinalOutput(latest.turn),
+      hasIncompleteEvidence: hasIncompleteTerminalEvidence(latest.turn),
+      attempted,
+      stableMs: terminalEmptyCandidateKey === key && terminalEmptySince ? Date.now() - terminalEmptySince : 0,
+      graceMs: EMPTY_COMPLETION_GRACE_MS,
+      retryCount: emptyCompletionRecoveryCount,
+      retryLimit: EMPTY_COMPLETION_RETRY_LIMIT
+    });
+    if (!decision?.candidate || !key || !id || hasUserDraft()) { resetTerminalEmptyCandidate(); return; }
+    if (terminalEmptyCandidateKey !== key) {
+      resetTerminalEmptyCandidate();
+      terminalEmptyCandidateKey = key;
+      terminalEmptySince = Date.now();
+    }
+    const elapsed = Date.now() - terminalEmptySince;
+    if (elapsed >= EMPTY_COMPLETION_GRACE_MS) {
+      clearTerminalEmptyTimer();
+      queueMicrotask(() => recoverTerminalEmptyTurn(id, key));
+      return;
+    }
+    clearTerminalEmptyTimer();
+    terminalEmptyTimer = setTimeout(() => { terminalEmptyTimer = null; syncMonitoring(); }, EMPTY_COMPLETION_GRACE_MS - elapsed);
+  }
+
   function syncMonitoring() {
     if (!settings.stallRecoveryEnabled) return;
+    const currentConversationId = conversationId();
+    if (currentConversationId !== monitoredConversationId) {
+      monitoredConversationId = currentConversationId;
+      emptyCompletionRecoveryCount = 0;
+      lastObservedUserTurnKey = null;
+      resetTerminalEmptyCandidate();
+    }
     const shell = shellRunLoading();
     if (shell && !shellLoadingStartedAt) shellLoadingStartedAt = Date.now();
     if (!shell) shellLoadingStartedAt = 0;
     if (!transaction) {
+      const newest = newestAssistantTurn();
+      rememberObservedRunningTurn(newest);
       const live = findActiveTurn();
       if (live !== activeTurn) observeTurn(live);
+      syncTerminalEmptyCandidate();
     }
     scheduleDeadline();
     publishStatus();
@@ -568,22 +716,30 @@
     return resumeSettledRun({ id, key, allowReload, waitForModelHydration });
   }
 
-  async function recoverCurrentStall(id, key, generation, reason = "stall-timeout") {
+  async function recoverTurn(id, key, generation, reason = "stall-timeout", requireActiveMatch = true) {
     const attemptId = identity(id, recoveryAttemptKey(key));
-    if (transaction || attemptedTurns.has(attemptId) || generation !== monitorGeneration || key !== activeTurnKey) return;
-    transaction = { phase: "checking", id, key, reason };
+    if (transaction || attemptedTurns.has(attemptId)) return;
+    if (requireActiveMatch && (generation !== monitorGeneration || key !== activeTurnKey)) return;
+    const initialPhase = reason === "empty-completion" ? "checking-empty" : "checking";
+    transaction = { phase: initialPhase, id, key, reason };
     recoveryStartedAt = Date.now();
     lastRecoveryResult = "in-flight";
     lastRecoveryFailure = null;
     lastSettlementSource = null;
     attemptedTurnKey = key;
-    recordTransition("checking", reason);
+    recordTransition(initialPhase, reason);
     publishStatus();
     let completed = false;
     try {
-      completed = await runRecoveryTransaction({ id, key, allowReload: true });
+      completed = await runRecoveryTransaction({
+        id,
+        key,
+        allowReload: true,
+        waitForModelHydration: reason === "empty-completion"
+      });
       if (transaction?.phase === "reloading") return;
       rememberAttempt(id, key);
+      if (completed && reason === "empty-completion") emptyCompletionRecoveryCount++;
       lastRecoveryResult = completed ? "completed" : "failed";
       recordTransition(lastRecoveryResult, completed ? lastSettlementSource : lastRecoveryFailure);
     } finally {
@@ -594,6 +750,10 @@
         scheduleSync();
       }
     }
+  }
+
+  async function recoverCurrentStall(id, key, generation, reason = "stall-timeout") {
+    return recoverTurn(id, key, generation, reason, true);
   }
 
   async function checkDeadline() {
@@ -709,6 +869,7 @@
     monitorGeneration++;
     clearDeadlineTimer();
     clearCountdownTimer();
+    clearTerminalEmptyTimer();
     if (activityObserver) activityObserver.disconnect();
     if (rootObserver) rootObserver.disconnect();
     activityObserver = null;
@@ -716,6 +877,8 @@
     activeTurn = null;
     activeTurnKey = null;
     transaction = null;
+    terminalEmptyCandidateKey = null;
+    terminalEmptySince = 0;
     publishStatus();
   }
 
@@ -762,6 +925,13 @@
         composerIdle: composerIdle(),
         shellLoading: shellRunLoading(),
         assistantOutputPresent: hasAssistantOutput(),
+        newestAssistantHasFinalOutput: hasSubstantiveFinalOutput(newestAssistantTurn()),
+        newestAssistantHasFinalOutputRegion: hasFinalOutputRegion(newestAssistantTurn()),
+        newestAssistantIncompleteEvidence: hasIncompleteTerminalEvidence(newestAssistantTurn()),
+        terminalEmptyCandidateKey,
+        terminalEmptySince,
+        emptyCompletionRecoveryCount,
+        emptyCompletionRetryLimit: EMPTY_COMPLETION_RETRY_LIMIT,
         preOutputLoading: preOutputLoading(),
         recoveryModelState: {
           decision: state.decision || "unknown",

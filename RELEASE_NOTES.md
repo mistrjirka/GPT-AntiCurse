@@ -1,24 +1,20 @@
-# GPT AntiCurse 0.7.9
+# GPT AntiCurse 0.7.10
 
-This release fixes internal tool traces and ChatGPT rich-token syntax appearing as plain text when Performance Guard reconstructs older conversation history.
+This release extends Auto-Continue to recover responses that finish without producing a user-visible final answer.
 
-## Older-history rendering
+## Auto-Continue
 
-- Tool-targeted assistant records are now excluded by the same shared visibility rule for both graph and paginated conversation formats.
-- Fixes raw traces such as `fast|...`, `open|...`, and `length|...` being merged into archived assistant prose.
-- Keeps a defensive legacy classifier so already-flattened web-tool traces render as compact activity rather than raw commands.
-- Projects ChatGPT rich response tokens before archived Markdown is rendered:
-  - `url` tokens remain clickable links;
-  - citation/file-citation/memory-citation transport tokens are removed;
-  - product/business entities keep their display name;
-  - image groups and interactive widgets become concise placeholders instead of raw `...` syntax.
+- Detects a response that AntiCurse actually observed running, then ends with an idle composer but no substantive final answer.
+- Uses incomplete-output evidence such as ChatGPT's `Stopped thinking` state or tool-call activity, so ordinary completed responses are not retried.
+- Uses ChatGPT's separate final-output region as an additional completion signal; images, writing blocks, media, links, and other visible final content prevent an unnecessary retry.
+- Reuses the same recovery transaction and native `.` insertion/submission path as stalled-response recovery; there is no second continuation implementation.
+- Completed-turn model detection waits for hydration when needed and retains the hard rule that Pro runs are never auto-continued.
+- Only applies to turns observed running in the current page session, avoiding automatic continuation of old historical turns when opening a conversation.
+- Resets the empty-response retry chain after a real answer or a new non-`.` user prompt.
+- Caps consecutive empty-response automatic retries at 3 to prevent a broken tool loop from sending `.` indefinitely.
+- Adds a clearer `no answer · checking` status while this recovery is starting.
 
-## Architecture
+## Diagnostics and tests
 
-- Moves tool-targeted-message visibility into the shared trim/history core instead of maintaining separate graph and paginated rules.
-- The lightweight older-history renderer remains bounded and synthetic; it does not impersonate React-owned ChatGPT turns.
-
-## Regression coverage
-
-- Adds direct contracts for the observed free-form web trace shape and ChatGPT rich-token projection.
-- Extends display-candidate tests so a tool-targeted assistant record can never count as a visible conversation turn.
+- Debug state now reports the terminal-empty candidate, final-output-region detection, and consecutive empty-response recovery count.
+- Recovery policy contracts cover the captured `Stopped thinking` + tool activity + empty final-answer shape directly.
