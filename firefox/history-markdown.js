@@ -2,6 +2,68 @@
 (function (global) {
   "use strict";
 
+  const RICH_START = "\uE200";
+  const RICH_SEP = "\uE202";
+  const RICH_END = "\uE201";
+
+  function markdownLink(label, href) {
+    const text = String(label || "Link").replace(/[\[\]]/g, "").trim() || "Link";
+    try {
+      const base = typeof location !== "undefined" && location?.href ? location.href : "https://chatgpt.com/";
+      const url = new URL(String(href || ""), base);
+      if (!/^https?:$/.test(url.protocol)) return text;
+      return `[${text}](${url.href})`;
+    } catch (error) {
+      void error;
+      return text;
+    }
+  }
+
+  function richEntityName(value) {
+    try {
+      const parsed = JSON.parse(String(value || ""));
+      if (Array.isArray(parsed) && typeof parsed[1] === "string") return parsed[1];
+      if (parsed && Array.isArray(parsed.selections)) {
+        const names = parsed.selections.map((item) => Array.isArray(item) && typeof item[1] === "string" ? item[1] : "").filter(Boolean);
+        return names.length ? names.join(", ") : "";
+      }
+    } catch (error) {
+      void error;
+    }
+    return "";
+  }
+
+  function projectRichToken(kind, body) {
+    const parts = body == null ? [] : String(body).split(RICH_SEP);
+    switch (String(kind || "").toLowerCase()) {
+      case "cite":
+      case "filecite":
+      case "memcite":
+        return "";
+      case "url":
+        return markdownLink(parts[0], parts[1]);
+      case "entity":
+      case "product":
+      case "products":
+        return richEntityName(parts[0]) || "[Rich item from original response]";
+      case "video":
+        return String(parts[0] || "Video from original response");
+      case "navlist":
+        return String(parts[0] || "Related sources");
+      case "image_group":
+        return "[Images from original response]";
+      case "genui":
+        return "[Interactive content from original response]";
+      default:
+        return "[Rich content from original response]";
+    }
+  }
+
+  function projectRichTokens(source) {
+    const token = new RegExp(`${RICH_START}([A-Za-z_]+)(?:${RICH_SEP}([\\s\\S]*?))?${RICH_END}`, "g");
+    return String(source || "").replace(token, (_match, kind, body) => projectRichToken(kind, body));
+  }
+
   function appendInline(parent, source) {
     const text = String(source || "");
     const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\([^\s)]+\))/g;
@@ -55,7 +117,7 @@
   }
 
   function renderMarkdown(root, source) {
-    const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+    const lines = projectRichTokens(source).replace(/\r\n?/g, "\n").split("\n");
     let index = 0;
 
     while (index < lines.length) {
@@ -169,5 +231,7 @@
     }
   }
 
-  global.CGHistoryMarkdown = { renderMarkdown };
+  const api = Object.freeze({ renderMarkdown, projectRichTokens });
+  global.CGHistoryMarkdown = api;
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(globalThis);

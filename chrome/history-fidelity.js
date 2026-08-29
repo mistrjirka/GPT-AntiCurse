@@ -148,6 +148,12 @@
     if (!raw) return { kind: "empty" };
     if (/^\[Non-text visible message\]$/i.test(raw)) return { kind: "noise" };
 
+    // Legacy captured histories may already have flattened free-form web tool
+    // calls into assistant text. They are activity, not assistant prose.
+    if (/^(?:fast|slow|open|click|find|screen|length|image|product|business|availability|genui_search|genui_run)\|/i.test(raw)) {
+      return { kind: "activity", label: "Searched the web", raw };
+    }
+
     if (/^(?:bash\s+-lc|\/bin\/bash\s+-lc|sh\s+-lc|python(?:3)?\s+-c)\b/i.test(raw)) {
       return { kind: "activity", label: "Ran command", raw };
     }
@@ -334,5 +340,7 @@
     };
   }
 
-  global.CGHistoryFidelity = { wrap, enhancePage };
+  const api = Object.freeze({ wrap, enhancePage, classifyBlock });
+  global.CGHistoryFidelity = api;
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(globalThis);

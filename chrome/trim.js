@@ -31,9 +31,16 @@
     ));
   }
 
+  function isToolTargetedMessage(message) {
+    if (!message || message?.author?.role !== "assistant") return false;
+    const recipient = String(message.recipient || "").trim().toLowerCase();
+    return !!recipient && recipient !== "all" && recipient !== "assistant";
+  }
+
   function isDisplayCandidate(node) {
     if (!node || !node.message || isExplicitlyHidden(node)) return false;
     const role = getRole(node);
+    if (role === "assistant" && isToolTargetedMessage(node.message)) return false;
     return role === "user" || role === "assistant";
   }
 
@@ -255,7 +262,8 @@
     extractVisibleHistory,
     DEFAULTS,
     isDisplayCandidate,
-    isExplicitlyHidden
+    isExplicitlyHidden,
+    isToolTargetedMessage
   });
 
   global.CGTrimCore = api;

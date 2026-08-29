@@ -85,6 +85,7 @@ jobs:
             tests/test-counter-ordering.js
             tests/test-stats-scope.js
             tests/test-history-inline.js
+            tests/test-history-rich-tokens.js
             tests/test-history-virtualized.js
             tests/test-history-fidelity.js
             tests/test-history-request-loop.js

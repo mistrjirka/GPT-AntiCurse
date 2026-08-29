@@ -28,6 +28,7 @@ const chromeManifest = JSON.parse(source("chrome/manifest.json"));
 const firefoxManifest = JSON.parse(source("firefox/manifest.json"));
 
 assert(markdown.includes("function renderMarkdown"), "history Markdown parser must remain packaged");
+assert(markdown.includes("function projectRichTokens"), "archived history must project ChatGPT rich tokens instead of printing transport syntax");
 assert(markdown.includes("global.CGHistoryMarkdown"), "Markdown helper must expose a named module");
 assert(!markdown.includes("CGHistoryOverlay"), "Markdown parsing must not publish or mutate the final history overlay");
 assert(virtualized.includes('document.querySelector("#thread")'), "active history must anchor to ChatGPT #thread");

@@ -20,6 +20,7 @@ assert(fidelity.includes("user-message-bubble-color"), "native user bubble looku
 assert(!fidelity.includes("template.userBubble = copyClass(first"), "attachments/file rows must never be sampled as the user text bubble");
 assert(fidelity.includes("text-token-text-tertiary"), "tool activity must use ChatGPT tertiary activity styling");
 assert(fidelity.includes("Non-text visible message"), "legacy non-text placeholders must be explicitly recognized");
+assert(fidelity.includes("genui_search|genui_run"), "legacy free-form web tool traces must collapse to activity instead of raw prose");
 assert(fidelity.includes('kind: "noise"'), "legacy non-text placeholders must be suppressed");
 assert(fidelity.includes("JSON.parse(raw)"), "legacy serialized tool calls must be recognized structurally");
 assert(fidelity.includes("search_query$"), "provider-specific web-search payloads must be recognized as activity instead of raw JSON");
@@ -59,6 +60,15 @@ for (const manifest of [firefoxManifest, chromeManifest]) {
   } else {
     assert.equal(fidelityIndex, styles.length - 1, "Chromium fidelity CSS must remain the final history stylesheet");
   }
+}
+
+
+const fidelityApi = require("../firefox/history-fidelity.js");
+{
+  const webTrace = fidelityApi.classifyBlock('fast|OG Star Tracker V2 manual Go-To|3650|ogstartech.com\nlength|short');
+  assert.equal(webTrace.kind, "activity", "legacy free-form web tool traces must not render as assistant prose");
+  assert.equal(webTrace.label, "Searched the web");
+  assert.equal(fidelityApi.classifyBlock("This is ordinary assistant prose.").kind, "content");
 }
 
 console.log("history fidelity tests: PASS");

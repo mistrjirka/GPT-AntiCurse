@@ -329,9 +329,8 @@ function messageHidden(message) {
 }
 
 function messageToolTargeted(message) {
-  if (messageRole(message) !== "assistant") return false;
-  const recipient = String(message && message.recipient || "").trim().toLowerCase();
-  return !!recipient && recipient !== "all" && recipient !== "assistant";
+  return !!(globalThis.CGTrim && typeof globalThis.CGTrim.isToolTargetedMessage === "function" &&
+    globalThis.CGTrim.isToolTargetedMessage(message));
 }
 
 function messageText(message) {

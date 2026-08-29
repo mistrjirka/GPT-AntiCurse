@@ -3,7 +3,7 @@
 const assert = require("assert");
 const { trimConversation, extractVisibleHistory, isDisplayCandidate } = require("../firefox/trim.js");
 
-function makeNode(id, parent, role, metadata = {}) {
+function makeNode(id, parent, role, metadata = {}, recipient = "") {
   return {
     id,
     parent,
@@ -11,7 +11,8 @@ function makeNode(id, parent, role, metadata = {}) {
     message: role ? {
       author: { role },
       content: { content_type: "text", parts: [id] },
-      metadata
+      metadata,
+      recipient
     } : null
   };
 }
@@ -89,6 +90,8 @@ function testDisplayCandidateRules() {
   assert.equal(isDisplayCandidate(makeNode("b", null, "assistant", { is_visually_hidden_from_conversation: true })), false);
   assert.equal(isDisplayCandidate(makeNode("c", null, "user", { is_user_system_message: true })), false);
   assert.equal(isDisplayCandidate(makeNode("d", null, "tool")), false);
+  assert.equal(isDisplayCandidate(makeNode("e", null, "assistant", {}, "web.run")), false, "tool-targeted assistant calls are not visible turns");
+  assert.equal(isDisplayCandidate(makeNode("f", null, "assistant", {}, "assistant")), true, "ordinary assistant prose stays visible");
 }
 const tests = [testRecentSafeWindow, testAutoUsesSameBoundedGraphSemantics, testBelowLimitKeepsWholeActiveChainButPrunesBranches, testUnknownLegacyModeFallsBackToRecent, testZeroPrefixNodesIsPreserved, testVisibleArchiveExtraction, testDisplayCandidateRules];
 for (const test of tests) test();
