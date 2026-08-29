@@ -13,7 +13,7 @@ function fixtureHtml() {
   return String.raw`<!doctype html><html><head><meta charset="utf-8"><title>AntiCurse recovery E2E</title></head><body>
 <div id="main"><div id="turn-list"></div></div>
 <form data-type="unified-composer">
-  <button class="__composer-pill" type="button"><span data-animated-slider-trigger="true"></span></button>
+  <button class="__composer-pill" type="button" aria-haspopup="menu"><span class="text-token-text-tertiary"></span></button>
   <div id="prompt-textarea" contenteditable="true"></div>
   <button id="composer-submit-button" type="button"></button>
 </form>
@@ -29,15 +29,15 @@ function fixtureHtml() {
   window.__state = s;
   const save = () => sessionStorage.setItem(key, JSON.stringify(s));
   save();
-  const list=document.getElementById('turn-list'), composer=document.getElementById('prompt-textarea'), form=composer.closest('form'), button=document.getElementById('composer-submit-button'), modelLabel=document.querySelector('[data-animated-slider-trigger="true"]');
+  const list=document.getElementById('turn-list'), composer=document.getElementById('prompt-textarea'), form=composer.closest('form'), button=document.getElementById('composer-submit-button'), modelLabel=document.querySelector('button.__composer-pill .text-token-text-tertiary');
   if(!list||!composer||!form||!button||!modelLabel) throw new Error('incomplete fixture DOM');
   const second=s.loads>=2;
-  modelLabel.textContent=id==='reload-pro'&&second?'Pro':'Thinking';
+  modelLabel.textContent=(id==='reload-pro'&&second)||id==='current-composer-pro'?'Pro':id==='current-composer-fallback'?'Extra High':'Thinking';
   const sync=()=>{Object.assign(window.__state,s);save();};
   function turn(n,{output=true,streaming=true,model='gpt-5-6-thinking'}={}){
     const w=document.createElement('div');w.setAttribute('data-turn-id-container','turn-'+n);
     const section=document.createElement('section');section.setAttribute('data-testid','conversation-turn-'+n);section.setAttribute('data-turn-id','turn-'+n);section.setAttribute('data-turn','assistant');
-    const msg=document.createElement('div');msg.setAttribute('data-message-author-role','assistant');msg.setAttribute('data-message-model-slug',model);
+    const msg=document.createElement('div');msg.setAttribute('data-message-author-role','assistant');if(model)msg.setAttribute('data-message-model-slug',model);
     if(output){const md=document.createElement('div');md.className='markdown';md.textContent='assistant output '+n;msg.append(md);}section.append(msg);
     const stream=document.createElement('div');if(streaming)stream.setAttribute('data-streaming-response-status','streaming');section.append(stream);w.append(section);list.append(w);return{wrapper:w,stream};
   }
@@ -50,7 +50,7 @@ function fixtureHtml() {
     else if(id==='reload-stopped-stale'){turn(0,{output:true,streaming:true});active=turn(1,{output:true,streaming:false});setSend(false);}
     else {active=turn(1,{output:true,streaming:false});setSend(id==='reload-send-not-ready');}
   }else if(id==='shell-loading-reload'){form.setAttribute('inert','');document.documentElement.setAttribute('data-stream-active','true');setStop();}
-  else {active=turn(1,{output:id!=='pre-output-reload',streaming:true});setStop();}
+  else {active=turn(1,{output:id!=='pre-output-reload',streaming:true,model:['current-composer-fallback','current-composer-pro'].includes(id)?'':'gpt-5-6-thinking'});setStop();}
   if(id==='stale-stop'&&active){const stale=turn(-1,{output:true,streaming:true});list.insertBefore(stale.wrapper,active.wrapper);}
   if(id==='system-delay-banner'&&active){const b=document.createElement('span');b.className='loading-shimmer-tertiary';b.append('Our systems are thinking a bit more about this request before responding. ');const a=document.createElement('a');a.href='https://help.openai.com/articles/20001326';a.textContent='Learn more';b.append(a);active.stream.append(b);}
   if(id==='draft-protection')composer.textContent='do not overwrite me';
@@ -125,15 +125,16 @@ async function waitForSend(p,id,timeout){
       await r.fulfill({status:200,contentType:'application/json',body:JSON.stringify({status:streaming?'IS_STREAMING':'NOT_STREAMING'})});
     });
     extWorker=await worker(context);await configure(extWorker);
-    for(const id of ['basic','tool-fixed','controlled-editor','stale-stop']){const p=await openCase(context,id);await waitForSend(p,id,6000);const s=await state(p);assert.equal(s.stopClicks,1,id+': one Stop');assert.equal(s.sentText,'.',id+': dot');assert((counts.get(id)||0)>=3,id+': backend checks');if(id==='controlled-editor')assert(s.trustedInputEvents>=1,'native editor event required');await p.close();}
+    for(const id of ['basic','tool-fixed','controlled-editor','stale-stop','current-composer-fallback']){const p=await openCase(context,id);await waitForSend(p,id,6000);const s=await state(p);assert.equal(s.stopClicks,1,id+': one Stop');assert.equal(s.sentText,'.',id+': dot');assert((counts.get(id)||0)>=3,id+': backend checks');if(id==='controlled-editor')assert(s.trustedInputEvents>=1,'native editor event required');await p.close();}
     {const p=await openCase(context,'slow-stop');await p.waitForFunction(()=>window.__state.stopClicks===1,null,{timeout:4000});await p.waitForFunction(()=>(document.querySelector('#cg-conversation-guard-status')?.textContent||'').includes('stopping'),null,{timeout:1500});await p.waitForTimeout(350);let s=await state(p);assert.equal(s.sends,0);assert.equal(s.draft,'');await waitForSend(p,'slow-stop',5000);assert.equal((await state(p)).sentText,'.');await p.close();}
     {const p=await openCase(context,'system-delay-banner');await waitForSend(p,'system-delay-banner',3500);assert.equal((await state(p)).sentText,'.');await p.close();}
+    {const p=await openCase(context,'current-composer-pro');await p.waitForTimeout(700);const s=await state(p);assert.equal(s.stopClicks,0,'current composer Pro must never be stopped');assert.equal(s.sends,0,'current composer Pro must never be continued');await p.close();}
     {const p=await openCase(context,'draft-protection');await p.waitForTimeout(700);const s=await state(p);assert.equal(s.stopClicks,0);assert.equal(s.sends,0);assert.equal(s.draft,'do not overwrite me');await p.close();}
     for(const id of ['pre-output-reload','shell-loading-reload','reload-stopped-stale']){const p=await openCase(context,id);await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await waitForSend(p,id,6000);const s=await state(p);assert.equal(s.loads,2,id+': one reload');assert.equal(s.sentText,'.');await p.close();}
     {const p=await openCase(context,'reload-running');await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await waitForSend(p,'reload-running',7000);const s=await state(p);assert.equal(s.loads,2);assert.equal(s.stopClicks,2);assert.equal(s.sentText,'.');await p.close();}
     {const p=await openCase(context,'reload-pro');await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await p.waitForTimeout(1200);const s=await state(p);assert.equal(s.loads,2);assert.equal(s.sends,0);await p.close();}
     {const p=await openCase(context,'reload-loop');await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await p.waitForTimeout(3800);const s=await state(p);assert.equal(s.loads,2,'no second reload');assert.equal(s.sends,0);await p.close();}
     {const p=await openCase(context,'reload-send-not-ready');await p.waitForFunction(()=>window.__state.loads>=2,null,{timeout:5000});await p.waitForTimeout(2400);const s=await state(p);assert.equal(s.loads,2);assert.equal(s.sends,0);assert.equal(s.draft,'','failed post-reload Send must roll back dot');await p.close();}
-    console.log('Chromium stall-recovery 0.7.6 E2E: PASS',JSON.stringify(Object.fromEntries(counts)));
+    console.log('Chromium stall-recovery 0.7.7 E2E: PASS',JSON.stringify(Object.fromEntries(counts)));
   }finally{await context.close();fs.rmSync(tmp,{recursive:true,force:true});}
 })().catch(e=>{console.error(e?.stack||e);process.exit(1);});

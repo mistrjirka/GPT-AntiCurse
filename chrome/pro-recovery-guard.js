@@ -5,7 +5,8 @@
   const TURN_CONTAINER_SELECTOR = '[data-turn-id-container]';
   const STREAMING_SELECTOR = '[data-streaming-response-status]';
   const MODEL_SELECTOR = '[data-message-model-slug]';
-  const MODEL_TRIGGER_SELECTOR = 'button.__composer-pill [data-animated-slider-trigger="true"]';
+  const LEGACY_MODEL_TRIGGER_SELECTOR = 'button.__composer-pill [data-animated-slider-trigger="true"]';
+  const COMPOSER_MODEL_CANDIDATE_SELECTOR = 'form[data-type="unified-composer"] button.__composer-pill';
   const SUBMIT_SELECTOR = '#composer-submit-button';
   const COMPOSER_SELECTOR = '#prompt-textarea[contenteditable="true"]';
   const BLOCK_EVENT = '__gpt_anticurse_pro_recovery_blocked__';
@@ -86,13 +87,30 @@
     return null;
   }
 
-  function selectedComposerModelLabel() {
-    const nodes = document.querySelectorAll(MODEL_TRIGGER_SELECTOR);
+  function composerModelLabelCandidates() {
+    const nodes = document.querySelectorAll(`${LEGACY_MODEL_TRIGGER_SELECTOR}, ${COMPOSER_MODEL_CANDIDATE_SELECTOR}`);
+    const labels = [];
+    const seen = new Set();
     for (let index = nodes.length - 1; index >= 0; index--) {
-      const label = String(nodes[index].textContent || "").replace(/\s+/g, " ").trim();
-      if (label) return label;
+      const node = nodes[index];
+      const label = String(node.textContent || node.getAttribute?.("aria-label") || "").replace(/\s+/g, " ").trim();
+      const key = normalize(label);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      labels.push(label);
     }
-    return null;
+    return labels;
+  }
+
+  function selectedComposerModelLabel() {
+    const labels = composerModelLabelCandidates();
+    // Current ChatGPT no longer exposes data-animated-slider-trigger on the
+    // intelligence pill. Prefer explicit Pro evidence first, then labels that
+    // map to ChatGPT's own preset lanes, then the narrow capture-backed labels.
+    for (const label of labels) if (labelIsPro(label)) return label;
+    for (const label of labels) if (PRESET_LANES.has(selectedComposerModelLane(label))) return label;
+    for (const label of labels) if (CONFIRMED_NON_PRO_LABELS.has(normalize(label))) return label;
+    return labels[0] || null;
   }
 
   function decodeJsString(value) { try { return JSON.parse(`"${value}"`); } catch { return String(value || ""); } }

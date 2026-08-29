@@ -15,6 +15,8 @@ assert(chrome.includes('slug.endsWith("-pro")'));
 assert(chrome.includes("function requestModelSlugForTurn"));
 assert(chrome.includes("previousElementSibling"), "request lookup must remain adjacent, not historical search");
 assert(chrome.includes("selected_display_title"));
+assert(chrome.includes('form[data-type="unified-composer"] button.__composer-pill'), "current composer pill must be a model-detection candidate");
+assert(chrome.includes("composerModelLabelCandidates"));
 assert(chrome.includes('lane:"(instant|thinking|pro)"'));
 assert(chrome.includes('selectedModelLane === "pro"'));
 assert(chrome.includes('selectedModelLane === "instant" || selectedModelLane === "thinking"'));
@@ -42,6 +44,59 @@ assert(chrome.includes("event.preventDefault()"));
 assert(chrome.includes("event.stopImmediatePropagation()"));
 assert(!chrome.includes("setInterval("));
 assert(!/(^|[^\w])(eval|Function)\s*\(/.test(chrome));
+
+function executeGuardWithCurrentComposerLabel(label) {
+  const vm = require("vm");
+  const streaming = {};
+  const section = {
+    getAttribute(name) { return name === "data-turn-id" ? "turn-current" : null; }
+  };
+  const turn = {
+    parentElement: null,
+    previousElementSibling: null,
+    matches() { return false; },
+    getAttribute(name) { return name === "data-turn-id-container" ? "turn-current" : null; },
+    querySelector(selector) {
+      if (selector === '[data-streaming-response-status]') return streaming;
+      if (selector === '[data-testid^="conversation-turn-"]') return section;
+      if (selector.includes('[data-message-author-role="assistant"]') || selector.includes('[data-turn="assistant"]')) return section;
+      return null;
+    },
+    querySelectorAll() { return []; }
+  };
+  const pill = {
+    textContent: label,
+    getAttribute(name) { return name === "aria-label" ? label : null; }
+  };
+  const context = {
+    console,
+    CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
+    Element: class Element {},
+    document: {
+      scripts: [],
+      querySelectorAll(selector) {
+        if (selector === '[data-turn-id-container]') return [turn];
+        if (selector.includes('button.__composer-pill')) return [pill];
+        return [];
+      },
+      querySelector() { return null; },
+      addEventListener() {}
+    },
+    window: { dispatchEvent() {} }
+  };
+  context.globalThis = context;
+  vm.runInNewContext(chrome, context, { filename: "pro-recovery-guard.js" });
+  return context.CGAntiCurseProRecoveryGuard.debug();
+}
+
+{
+  const currentThinking = executeGuardWithCurrentComposerLabel("Extra High");
+  assert.equal(currentThinking.recoveryDecision, "non-pro", "current Extra High composer pill must authorize Auto-Continue without a message model slug");
+  assert.equal(currentThinking.detectionSource, "composer-model-label");
+  const currentPro = executeGuardWithCurrentComposerLabel("Pro");
+  assert.equal(currentPro.recoveryDecision, "pro", "current Pro composer pill must remain hard-blocked");
+  assert.equal(currentPro.autoRecoveryAllowed, false);
+}
 
 for (const [browser, manifest] of [["chrome", chromeManifest], ["firefox", firefoxManifest]]) {
   const scripts = manifest.content_scripts.flatMap((entry) => entry.js || []);

@@ -123,7 +123,7 @@ jobs:
         if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: gpt-anticurse-0.7.6-candidate
+          name: gpt-anticurse-0.7.7-candidate
           path: dist/*.zip
           if-no-files-found: error
       - name: Install browser E2E runtimes

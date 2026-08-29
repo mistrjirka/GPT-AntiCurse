@@ -73,7 +73,7 @@ for (const expected of ['return "Pro off"', 'return "model ?"', 'return "stoppin
 assert(statusUi.includes('`load ${countdown(value.remainingMs)}`'));
 
 for (const [browser, manifest] of [["chrome", chromeManifest], ["firefox", firefoxManifest]]) {
-  assert.equal(manifest.version, "0.7.6", `${browser} manifest must identify the 0.7.6 candidate`);
+  assert.equal(manifest.version, "0.7.7", `${browser} manifest must identify the 0.7.7 candidate`);
   const scripts = manifest.content_scripts.flatMap((entry) => entry.js || []);
   for (const file of ["composer-native-input.js", "recovery-reload-state.js", "pro-recovery-guard.js", "stall-recovery.js"]) {
     assert(scripts.includes(file), `${browser}: missing ${file}`);
@@ -83,4 +83,4 @@ for (const [browser, manifest] of [["chrome", chromeManifest], ["firefox", firef
   assert(scripts.indexOf("pro-recovery-guard.js") < scripts.indexOf("stall-recovery.js"));
 }
 
-console.log("stall recovery 0.7.6 transaction/reload regression tests: PASS");
+console.log("stall recovery 0.7.7 transaction/reload regression tests: PASS");
