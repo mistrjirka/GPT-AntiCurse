@@ -8,6 +8,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { Builder, By, until } = require("selenium-webdriver");
 const firefox = require("selenium-webdriver/firefox");
+const { buildFirefoxE2eXpi } = require("./firefox-e2e-package");
 
 function makeNode(id, parent, role, metadata = {}) {
   return {
@@ -226,7 +227,7 @@ async function waitForValue(driver, script, timeout = 12000) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "anticurse-firefox-e2e-"));
   const xpi = path.join(temp, "gpt-anticurse-firefox.xpi");
   const extensionDir = path.resolve(__dirname, "..", "firefox");
-  execFileSync("zip", ["-qr", xpi, "."], { cwd: extensionDir });
+  buildFirefoxE2eXpi({ sourceDir: extensionDir, tempDir: temp, xpiPath: xpi, performanceGuardEnabled: true });
 
   const fullConversation = conversation();
   const counters = { authoritativeHistoryRequests: 0 };

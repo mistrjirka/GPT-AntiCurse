@@ -31,7 +31,7 @@ function conversation() {
   for (let exchange = 0; exchange < 6; exchange++) {
     const user = `user-${exchange}`;
     mapping[user] = node(user, parent, "user", `User message ${exchange}`);
-    if (exchange === 0) {
+    if (exchange === 2) {
       mapping[user].message.content = {
         content_type: "multimodal_text",
         parts: [

@@ -1,12 +1,17 @@
-# Unreleased
+# GPT AntiCurse 0.7.13
 
-## Defaults and Auto-Continue controls
+This release includes the history-fidelity work that was committed as 0.7.12 but never published, plus new Auto-Continue controls and safer defaults.
 
-- Performance Guard is now opt-in on fresh/default-less installs; existing saved choices are preserved.
-- Auto-Continue remains enabled independently of Performance Guard.
-- Adds a user-settable Auto-Continue stall timeout from 10 to 3600 seconds, with the existing 120-second behavior as the default. Timeout changes reschedule the active watchdog immediately.
+## Auto-Continue and defaults
 
-# GPT AntiCurse 0.7.12
+- Performance Guard is now off by default on fresh/default-less installs; an existing saved on/off choice is preserved.
+- Auto-Continue stays enabled independently of Performance Guard. Turning Performance Guard off does not disable stalled-run recovery.
+- Adds a user-settable Auto-Continue timeout from 10 to 3600 seconds. The default remains 120 seconds.
+- Changing the timeout reschedules the active watchdog immediately.
+- Existing Pro-run exclusion, draft protection, backend stall verification, continuation nudge, and one-reload fallback remain intact.
+
+## Previously unreleased 0.7.12 changes
+
 
 Follow-up to 0.7.11's reconstructed-history fidelity fixes.
 

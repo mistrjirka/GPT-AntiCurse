@@ -107,6 +107,7 @@ jobs:
             tests/test-pro-recovery-guard.js
             tests/test-stall-recovery.js
             tests/test-recovery-contract.js
+            tests/test-settings-defaults.js
           )
           for test in "${tests[@]}"; do
             echo "==> $test"

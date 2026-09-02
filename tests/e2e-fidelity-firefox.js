@@ -8,6 +8,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { Builder, By, until } = require("selenium-webdriver");
 const firefox = require("selenium-webdriver/firefox");
+const { buildFirefoxE2eXpi } = require("./firefox-e2e-package");
 
 function node(id, parent, role, text) {
   return {
@@ -35,7 +36,7 @@ function conversation(exchanges = 36) {
   for (let exchange = 0; exchange < exchanges; exchange++) {
     const user = `user-${exchange}`;
     mapping[user] = node(user, parent, "user", `User message ${exchange}`);
-    if (exchange === 0) {
+    if (exchange === 2) {
       mapping[user].message.content = {
         content_type: "multimodal_text",
         parts: [
@@ -208,7 +209,7 @@ async function waitForValue(driver, script, timeout = 12000) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), "anticurse-firefox-fidelity-e2e-"));
   const xpi = path.join(temp, "gpt-anticurse-firefox.xpi");
   const extensionDir = path.resolve(__dirname, "..", "firefox");
-  execFileSync("zip", ["-qr", xpi, "."], { cwd: extensionDir });
+  buildFirefoxE2eXpi({ sourceDir: extensionDir, tempDir: temp, xpiPath: xpi, performanceGuardEnabled: true });
 
   const fullConversation = conversation();
   const server = createServer(createCertificate(temp), fullConversation);
