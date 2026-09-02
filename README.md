@@ -53,10 +53,10 @@ For most people, the defaults are a good starting point.
 
 1. Open a long conversation on `chatgpt.com`.
 2. Click the AntiCurse toolbar icon or open it from Firefox Android's **Add-ons** menu.
-3. Leave **Performance guard** on.
-4. **Auto window** is the default: it loads another older page when you reach the top. You can switch to **Recent N + button** if you prefer an explicit **Load previous** control.
+3. **Performance guard** is off by default. Enable it only if you want AntiCurse to reduce heavy long-conversation state.
+4. When Performance Guard is enabled, **Auto window** is the default history mode. You can switch to **Recent N + button** if you prefer an explicit **Load previous** control.
 5. Set **Window size** if you want more or less recent context kept in ChatGPT's normal thread.
-6. Leave **Auto-recover stalled runs** on if you want AntiCurse to recover a response that makes no visible progress for about 2 minutes. Pro runs are excluded.
+6. **Auto-Continue stalled runs** remains on by default and is independent of Performance Guard. Its timeout defaults to 120 seconds and can be changed from 10 to 3600 seconds. Pro runs are excluded.
 7. Press **Save & reload** after changing the main settings.
 
 ### What the main number means
@@ -93,7 +93,7 @@ Older-history loading remains available during the current page session without 
 
 ## Stalled-run recovery
 
-When **Auto-recover stalled runs** is enabled, AntiCurse watches the active response for meaningful progress. After roughly 2 minutes without progress—or immediately when ChatGPT shows its unusually-long-wait warning—it starts the same recovery transaction. Explicit Pro runs are always excluded, unknown model state remains fail-closed, and a user draft or attachment pauses recovery.
+When **Auto-Continue stalled runs** is enabled, AntiCurse watches the active response for meaningful progress. After the configured timeout (120 seconds by default) without progress—or immediately when ChatGPT shows its unusually-long-wait warning—it starts the same recovery transaction. The timeout can be set from 10 to 3600 seconds. Explicit Pro runs are always excluded, unknown model state remains fail-closed, and a user draft or attachment pauses recovery. Performance Guard can be off while Auto-Continue remains active.
 
 For an ordinary timeout, a bounded `stream_status` check may cancel recovery only when ChatGPT explicitly reports that the run is no longer streaming; an unavailable/failed status check does not masquerade as a completed run. Recovery then stops the current run when a Stop control is present and waits for the composer itself to remain stably interactive after Stop disappears. That UI readiness is what permits the fixed `.` continuation nudge, so stale streaming markers or stale backend status cannot leave recovery stuck in `stopping`. If the page never becomes usable, AntiCurse may perform one guarded reload and resume the same transaction. It does not overwrite a draft or repeatedly retry a completed/failed turn.
 

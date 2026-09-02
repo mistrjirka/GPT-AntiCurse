@@ -5,7 +5,7 @@ const STATS_EVENT = "__gpt_anticurse_stats_ready__";
 const STALL_STATUS_EVENT = "__gpt_anticurse_stall_status__";
 const STATUS_BADGE_ID = "cg-conversation-guard-status";
 const STATUS_BADGE_SELECTOR = `[id="${STATUS_BADGE_ID}"]`;
-const DEFAULT_SETTINGS = { enabled: true, mode: "windowed-visible", maxDisplayMessages: 64, showGuardNotice: true };
+const DEFAULT_SETTINGS = { enabled: false, mode: "windowed-visible", maxDisplayMessages: 64, showGuardNotice: true };
 const RECOVERABLE_MAIN_CODES = new Set([
   "unsupported-conversation-shape",
   "conversation-transform-failed",
@@ -315,7 +315,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   let settingsChanged = false;
   for (const key of Object.keys(DEFAULT_SETTINGS)) {
     if (!changes[key]) continue;
-    currentSettings[key] = changes[key].newValue;
+    currentSettings[key] = changes[key].newValue === undefined ? DEFAULT_SETTINGS[key] : changes[key].newValue;
     settingsChanged = true;
   }
   const issueChanged = !!changes.cgLastIssue;

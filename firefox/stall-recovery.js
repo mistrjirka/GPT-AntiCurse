@@ -7,8 +7,10 @@
   const COMPOSER_INPUT = globalThis.CGAntiCurseComposerInput;
   const RELOAD_STATE = globalThis.CGAntiCurseRecoveryReloadState;
   const RECOVERY_POLICY = globalThis.CGAntiCurseRecoveryPolicy;
-  const DEFAULTS = Object.freeze({ stallRecoveryEnabled: true });
-  const STALL_TIMEOUT_MS = 120_000;
+  const DEFAULT_STALL_TIMEOUT_SECONDS = 120;
+  const MIN_STALL_TIMEOUT_SECONDS = 10;
+  const MAX_STALL_TIMEOUT_SECONDS = 3600;
+  const DEFAULTS = Object.freeze({ stallRecoveryEnabled: true, stallRecoveryTimeoutSeconds: DEFAULT_STALL_TIMEOUT_SECONDS });
   const PHASE_TIMEOUT_MS = 120_000;
   const MODEL_HYDRATION_TIMEOUT_MS = 15_000;
   const UNKNOWN_MODEL_RECHECK_MS = 500;
@@ -59,8 +61,18 @@
   let monitoredConversationId = null;
   const transitionLog = [];
 
+  function normalizeStallRecoveryTimeoutSeconds(value) {
+    const number = Number(value);
+    return Math.max(MIN_STALL_TIMEOUT_SECONDS, Math.min(MAX_STALL_TIMEOUT_SECONDS, Number.isFinite(number) ? Math.round(number) : DEFAULT_STALL_TIMEOUT_SECONDS));
+  }
+
+  function stallTimeoutMs() { return settings.stallRecoveryTimeoutSeconds * 1000; }
+
   function applySettings(next) {
     if (next && typeof next.stallRecoveryEnabled === "boolean") settings.stallRecoveryEnabled = next.stallRecoveryEnabled;
+    if (next && Object.prototype.hasOwnProperty.call(next, "stallRecoveryTimeoutSeconds")) {
+      settings.stallRecoveryTimeoutSeconds = normalizeStallRecoveryTimeoutSeconds(next.stallRecoveryTimeoutSeconds);
+    }
   }
 
   function conversationId() {
@@ -252,9 +264,9 @@
     if (state.autoRecoveryAllowed !== true) return null;
     if (hasLongWaitBanner(activeTurn)) return 0;
     const loadingAt = currentLoadingStartedAt();
-    if (loadingAt) return Math.max(0, STALL_TIMEOUT_MS - (Date.now() - loadingAt));
+    if (loadingAt) return Math.max(0, stallTimeoutMs() - (Date.now() - loadingAt));
     if (!activeTurn || !stopButton()) return null;
-    return Math.max(0, STALL_TIMEOUT_MS - (Date.now() - (lastProgressAt || activeTurnStartedAt || Date.now())));
+    return Math.max(0, stallTimeoutMs() - (Date.now() - (lastProgressAt || activeTurnStartedAt || Date.now())));
   }
 
   function publishStatus() {
@@ -465,8 +477,8 @@
     if (!loadingAt && (!activeTurn || !stopButton())) return;
     const delay = delayOverride !== null ? Math.max(0, delayOverride) :
       hasLongWaitBanner(activeTurn) ? 0 :
-      loadingAt ? Math.max(0, STALL_TIMEOUT_MS - (Date.now() - loadingAt)) :
-      Math.max(0, STALL_TIMEOUT_MS - (Date.now() - (lastProgressAt || activeTurnStartedAt || Date.now())));
+      loadingAt ? Math.max(0, stallTimeoutMs() - (Date.now() - loadingAt)) :
+      Math.max(0, stallTimeoutMs() - (Date.now() - (lastProgressAt || activeTurnStartedAt || Date.now())));
     deadlineTimer = setTimeout(checkDeadline, delay);
   }
 
@@ -766,7 +778,7 @@
     const loadingAt = currentLoadingStartedAt();
     if (loadingAt) {
       const elapsed = Date.now() - loadingAt;
-      if (elapsed < STALL_TIMEOUT_MS) { scheduleDeadline(STALL_TIMEOUT_MS - elapsed); return; }
+      if (elapsed < stallTimeoutMs()) { scheduleDeadline(stallTimeoutMs() - elapsed); return; }
       const id = conversationId();
       const key = activeTurnKey;
       const generation = monitorGeneration;
@@ -780,7 +792,7 @@
     const longWait = hasLongWaitBanner(activeTurn);
     if (!longWait) {
       const elapsed = Date.now() - (lastProgressAt || activeTurnStartedAt || Date.now());
-      if (elapsed < STALL_TIMEOUT_MS) { scheduleDeadline(STALL_TIMEOUT_MS - elapsed); return; }
+      if (elapsed < stallTimeoutMs()) { scheduleDeadline(stallTimeoutMs() - elapsed); return; }
     }
 
     const id = conversationId();
@@ -899,10 +911,15 @@
     try { stored = await ext.storage.local.get(DEFAULTS); } catch { /* defaults */ }
     applySettings(stored);
     ext.storage?.onChanged?.addListener((changes, area) => {
-      if (area !== "local" || !changes.stallRecoveryEnabled) return;
-      applySettings({ stallRecoveryEnabled: changes.stallRecoveryEnabled.newValue });
+      if (area !== "local") return;
+      const next = {};
+      let relevant = false;
+      if (changes.stallRecoveryEnabled) { next.stallRecoveryEnabled = changes.stallRecoveryEnabled.newValue; relevant = true; }
+      if (changes.stallRecoveryTimeoutSeconds) { next.stallRecoveryTimeoutSeconds = changes.stallRecoveryTimeoutSeconds.newValue; relevant = true; }
+      if (!relevant) return;
+      applySettings(next);
       if (!settings.stallRecoveryEnabled) teardown();
-      else startObservers();
+      else { startObservers(); scheduleSync(); }
     });
     if (!settings.stallRecoveryEnabled) return;
     startObservers();
@@ -954,7 +971,7 @@
         attemptedTurnKey,
         attemptedTurnCount: attemptedTurns.size,
         settledTurnCount: settledTurns.size,
-        timeoutSeconds: STALL_TIMEOUT_MS / 1000,
+        timeoutSeconds: settings.stallRecoveryTimeoutSeconds,
         phaseTimeoutSeconds: PHASE_TIMEOUT_MS / 1000,
         streamStatusTimeoutSeconds: STREAM_STATUS_TIMEOUT_MS / 1000,
         sendConfirmTimeoutSeconds: SEND_CONFIRM_TIMEOUT_MS / 1000,

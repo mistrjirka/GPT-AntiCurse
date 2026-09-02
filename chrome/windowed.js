@@ -9,7 +9,7 @@
   const RUNTIME_BROWSER = /Firefox\//.test(String(navigator.userAgent || "")) ? "firefox" : "chromium";
   const NETWORK_ARCHIVE_EVENT = "__gpt_anticurse_archive_ready__";
   const STATS_EVENT = "__gpt_anticurse_stats_ready__";
-  const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "windowed-visible", maxDisplayMessages: 64 });
+  const DEFAULT_SETTINGS = Object.freeze({ enabled: false, mode: "windowed-visible", maxDisplayMessages: 64 });
   const TOP_EPSILON = 16;
   const HISTORY_WATCHDOG_MS = 2000;
   const HISTORY_RETRY_BASE_MS = 1000;
@@ -79,7 +79,7 @@
 
   function applySavedSettings(saved) {
     settings = {
-      enabled: saved && typeof saved.enabled === "boolean" ? saved.enabled : true,
+      enabled: saved && typeof saved.enabled === "boolean" ? saved.enabled : false,
       mode: normalizeMode(saved && saved.mode),
       maxDisplayMessages: normalizeLimit(saved && saved.maxDisplayMessages)
     };
@@ -652,7 +652,7 @@
     if (!settingsChanged) return;
 
     const next = { ...settings };
-    if (changes.enabled) next.enabled = changes.enabled.newValue;
+    if (changes.enabled) next.enabled = changes.enabled.newValue === undefined ? DEFAULT_SETTINGS.enabled : changes.enabled.newValue;
     if (changes.mode) next.mode = changes.mode.newValue;
     if (changes.maxDisplayMessages) next.maxDisplayMessages = changes.maxDisplayMessages.newValue;
     applySavedSettings(next);

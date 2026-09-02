@@ -18,7 +18,7 @@
   const SETTINGS_WAIT_MS = 2500;
   const HYDRATION_WAIT_MS = 8000;
   const VALID_MODES = new Set(["recent", "windowed-visible"]);
-  const DEFAULT_SETTINGS = Object.freeze({ enabled: true, mode: "windowed-visible", maxDisplayMessages: 64 });
+  const DEFAULT_SETTINGS = Object.freeze({ enabled: false, mode: "windowed-visible", maxDisplayMessages: 64 });
   const PAGINATION = globalThis.CGPaginationFirewall;
   const ENDPOINT = globalThis.CGConversationEndpoint;
   const VISIBILITY = globalThis.CGAntiCurseMessageVisibility;

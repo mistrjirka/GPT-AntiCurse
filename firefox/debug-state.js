@@ -52,11 +52,12 @@
 
   async function snapshot() {
     const saved = await ext.storage.local.get({
-      enabled: true,
+      enabled: false,
       mode: "windowed-visible",
       maxDisplayMessages: 64,
       showGuardNotice: true,
       stallRecoveryEnabled: true,
+      stallRecoveryTimeoutSeconds: 120,
       archiveExportLevel: "progress",
       cgLastIssue: null
     });
@@ -78,11 +79,12 @@
       documentReadyState: document.readyState,
       domGateReady: !DOM_GATE || DOM_GATE.isReady(),
       settings: {
-        enabled: saved.enabled !== false,
+        enabled: saved.enabled === true,
         mode: saved.mode === "windowed-visible" ? "windowed-visible" : "recent",
         maxDisplayMessages: Number(saved.maxDisplayMessages) || 64,
         showGuardNotice: saved.showGuardNotice !== false,
         stallRecoveryEnabled: saved.stallRecoveryEnabled !== false,
+        stallRecoveryTimeoutSeconds: Math.max(10, Math.min(3600, Math.round(Number(saved.stallRecoveryTimeoutSeconds) || 120))),
         archiveMode: "on-demand",
         archiveExportLevel: saved.archiveExportLevel || "progress"
       },

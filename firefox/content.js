@@ -293,8 +293,8 @@ function acceptStats(stats) {
   return true;
 }
 
-browser.storage.local.get({ enabled: true, showGuardNotice: true, cgLastIssue: null }).then((saved) => {
-  performanceEnabled = saved.enabled !== false;
+browser.storage.local.get({ enabled: false, showGuardNotice: true, cgLastIssue: null }).then((saved) => {
+  performanceEnabled = saved.enabled === true;
   syncPerformanceClass();
   showGuardNotice = saved.showGuardNotice !== false;
   lastIssue = saved.cgLastIssue || null;
@@ -307,7 +307,7 @@ browser.storage.onChanged.addListener((changes, area) => {
   const noticeChanged = !!changes.showGuardNotice;
   const issueChanged = !!changes.cgLastIssue;
   if (!enabledChanged && !noticeChanged && !issueChanged) return;
-  if (enabledChanged) { performanceEnabled = changes.enabled.newValue !== false; syncPerformanceClass(); }
+  if (enabledChanged) { performanceEnabled = changes.enabled.newValue === true; syncPerformanceClass(); }
   if (noticeChanged) showGuardNotice = changes.showGuardNotice.newValue !== false;
   if (issueChanged) lastIssue = changes.cgLastIssue.newValue || null;
   if (showGuardNotice) render(lastStats);

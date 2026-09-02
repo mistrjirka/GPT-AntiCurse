@@ -9,11 +9,12 @@
 "use strict";
 
 const DEFAULT_SETTINGS = {
-  enabled: true,
+  enabled: false,
   mode: "windowed-visible",
   maxDisplayMessages: 64,
   showGuardNotice: true,
-  stallRecoveryEnabled: true
+  stallRecoveryEnabled: true,
+  stallRecoveryTimeoutSeconds: 120
 };
 const EMPTY_TOTALS = Object.freeze({
   responsesTrimmed: 0,
@@ -82,6 +83,11 @@ function resolveMode(value) {
   return LIMITED_MODES.has(value) ? value : "recent";
 }
 
+function normalizeStallRecoveryTimeoutSeconds(value) {
+  const number = Number(value);
+  return Math.max(10, Math.min(3600, Number.isFinite(number) ? Math.round(number) : 120));
+}
+
 function applySettingChanges(target, changes) {
   const next = { ...target };
   for (const key of Object.keys(DEFAULT_SETTINGS)) {
@@ -89,6 +95,7 @@ function applySettingChanges(target, changes) {
   }
   next.mode = resolveMode(next.mode);
   next.maxDisplayMessages = normalizeMessageLimit(next.maxDisplayMessages);
+  next.stallRecoveryTimeoutSeconds = normalizeStallRecoveryTimeoutSeconds(next.stallRecoveryTimeoutSeconds);
   return next;
 }
 
@@ -963,16 +970,17 @@ browser.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
   if (!settingsInitialized) {
     for (const key of Object.keys(DEFAULT_SETTINGS)) {
-      if (changes[key]) pendingSettingChanges[key] = changes[key].newValue;
+      if (changes[key]) pendingSettingChanges[key] = changes[key].newValue === undefined ? DEFAULT_SETTINGS[key] : changes[key].newValue;
     }
     if (changes.cgTotals) pendingTotalsChange = changes.cgTotals.newValue;
     return;
   }
   for (const key of Object.keys(DEFAULT_SETTINGS)) {
-    if (changes[key]) settings[key] = changes[key].newValue;
+    if (changes[key]) settings[key] = changes[key].newValue === undefined ? DEFAULT_SETTINGS[key] : changes[key].newValue;
   }
   settings.mode = resolveMode(settings.mode);
   settings.maxDisplayMessages = normalizeMessageLimit(settings.maxDisplayMessages);
+  settings.stallRecoveryTimeoutSeconds = normalizeStallRecoveryTimeoutSeconds(settings.stallRecoveryTimeoutSeconds);
   if (changes.cgTotals) totals = normalizeTotals(changes.cgTotals.newValue);
 });
 
@@ -1066,6 +1074,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       if (Number.isFinite(Number(message.maxDisplayMessages))) next.maxDisplayMessages = normalizeMessageLimit(message.maxDisplayMessages);
       if (typeof message.showGuardNotice === "boolean") next.showGuardNotice = message.showGuardNotice;
       if (typeof message.stallRecoveryEnabled === "boolean") next.stallRecoveryEnabled = message.stallRecoveryEnabled;
+      if (Number.isFinite(Number(message.stallRecoveryTimeoutSeconds))) next.stallRecoveryTimeoutSeconds = normalizeStallRecoveryTimeoutSeconds(message.stallRecoveryTimeoutSeconds);
       return browser.storage.local.set(next).then(() => {
         settings = applySettingChanges(settings, next);
         return settings;

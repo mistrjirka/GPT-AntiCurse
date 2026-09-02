@@ -149,7 +149,7 @@
     feedback.textContent = "Collecting AntiCurse health state…";
     const activeTab = await popupContext.currentTab();
     const stored = await ext.storage.local.get({
-      enabled: true,
+      enabled: false,
       mode: "windowed-visible",
       maxDisplayMessages: 64,
       showGuardNotice: true,
@@ -200,7 +200,7 @@
         chromeHostAccess: await probeRuntimeHostAccess(activeTab)
       },
       settings: {
-        enabled: stored.enabled !== false,
+        enabled: stored.enabled === true,
         mode: stored.mode === "windowed-visible" ? "windowed-visible" : "recent",
         maxDisplayMessages: Number(stored.maxDisplayMessages) || 64,
         showGuardNotice: stored.showGuardNotice !== false,

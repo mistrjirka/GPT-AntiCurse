@@ -35,6 +35,8 @@ assert(chromeSource.includes("function resumeSettledRun"));
 assert(chromeSource.includes("async function recoverySafety"), "model safety/hydration policy must be centralized");
 assert(chromeSource.includes('longWait ? "long-wait-banner" : "stall-timeout"'), "long-wait banner must be a trigger reason, not a separate recovery algorithm");
 assert(chromeSource.includes("const STREAM_STATUS_TIMEOUT_MS = 5_000;"), "backend status checks must be bounded");
+assert(chromeSource.includes("stallRecoveryTimeoutSeconds: DEFAULT_STALL_TIMEOUT_SECONDS"), "stall timeout must come from the persisted Auto-Continue setting");
+assert(chromeSource.includes("changes.stallRecoveryTimeoutSeconds"), "changing the timeout must reschedule Auto-Continue without requiring a reload");
 assert(chromeSource.includes("const UNKNOWN_MODEL_RECHECK_MS = 500;"), "temporary unknown model state must have an explicit recheck path");
 assert(chromeSource.includes('state.decision === "unknown") countdownUiTimer = setTimeout(syncMonitoring, UNKNOWN_MODEL_RECHECK_MS)'), "waiting-for-model must not depend on unrelated DOM churn");
 assert(chromeSource.includes("Promise.race([request, timedOut])"), "backend status checks must not block a recovery transaction indefinitely");
